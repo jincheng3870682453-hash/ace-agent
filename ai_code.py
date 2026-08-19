@@ -24,7 +24,7 @@ ai_code.py —— ACE（AI Code Engine）命令行
 
 斜杠命令（输入 / 或命令前缀会自动给出补全提示）：
     /help  /clear  /status  /stats  /memory  /snapshots  /undo  /rollback <id>
-    /report  /permission [level]  /model [模型名]  /provider [编号|id] [api-key]
+    /report  /permission [level]  /mock  /model [模型名]  /provider [编号|id] [api-key]
     /config  /open <路径>  /edit <路径>  /exit
 """
 
@@ -564,6 +564,7 @@ class AgentCLI:
         "/rollback": "回滚到指定快照（用法: /rollback <快照id>）",
         "/report": "生成 POC 报告（Nuwa）",
         "/permission": "查看/切换权限（用法: /permission [readonly|write|full]）",
+        "/mock": "切换离线演示 / 真实模型模式（可来回切换）",
         "/model": "查看/自定义模型（用法: /model <名> | base-url <url> | api-key <key>）",
         "/provider": "查看/切换 AI 提供商（智谱/DeepSeek/Kimi/OpenAI/Qwen/本地…，用法: /provider [编号|id] [api-key]）",
         "/config": "交互式配置模型（向导）",
@@ -649,6 +650,8 @@ class AgentCLI:
                 print(json.dumps(self.el.permission.get_status(), ensure_ascii=False, indent=2))
         elif name == "/model":
             self._handle_model(parts)
+        elif name == "/mock":
+            self._toggle_mock()
         elif name == "/provider":
             self._handle_provider(parts)
         elif name == "/config":
@@ -907,10 +910,27 @@ class AgentCLI:
             print(c("yellow", "  ⚠ 尚未配置 API Key —— 选择 2 配置向导完成首次登录"))
         print()
         for i, (label, desc, _action) in enumerate(self.LANDING_ITEMS, 1):
+            if _action == "mock":
+                # 根据当前模式动态显示：可来回切换
+                if self.client.mock:
+                    label, desc = "切换回真实模型", "回到真实 API 模式"
+                else:
+                    label, desc = "离线演示", "mock 模式，无需密钥"
             mark = c("magenta", "❯") if i - 1 == sel else " "
             print(f"  {mark} {i}. {label}   {c('dim', desc)}")
         print()
         print(c("dim", "  ↑/↓ 选择 · 数字直选 · Enter 确认 · Esc/q 退出"))
+
+    def _toggle_mock(self) -> None:
+        """切换离线演示 / 真实模型模式（可来回切换）"""
+        if self.client.mock:
+            self.client = ModelClient(self.cfg, mock=False)
+            print(c("green", "已切换回真实模型模式: " + self.client.describe()))
+            if not self.cfg.get("base_url") or not self.cfg.get("api_key"):
+                print(c("yellow", "  ⚠ 尚未配置模型/密钥，请先用 /config 或首页配置向导设置"))
+        else:
+            self.client = ModelClient(self.cfg, mock=True)
+            print(c("green", "已切换为离线演示模式（mock，无需密钥）"))
 
     def _run_landing_action(self, action: str) -> bool:
         """执行首页菜单动作；返回 True 表示整体退出"""
@@ -919,8 +939,8 @@ class AgentCLI:
             print(c("dim", "  再见，ACE 已退出。"))
             return True
         if action == "chat":
-            self.repl()
-            return True
+            self.repl(return_to_landing=True)
+            return False   # 聊天退出后回到主界面，而不是直接退出程序
         if action == "wizard":
             try:
                 self._config_wizard()
@@ -932,8 +952,7 @@ class AgentCLI:
             self._wait_key()
             return False
         if action == "mock":
-            self.client = ModelClient(self.cfg, mock=True)
-            print(c("green", "已切换为离线演示模式（mock）。"))
+            self._toggle_mock()
             self._wait_key()
             return False
         if action == "status":
@@ -1020,7 +1039,8 @@ class AgentCLI:
 
     # ---------- REPL ----------
 
-    def repl(self) -> None:
+    def repl(self, return_to_landing: bool = False) -> None:
+        """聊天 REPL；return_to_landing=True 时退出聊天回到主界面，否则结束程序"""
         print(c("bold", "ACE") + c("dim", " v1.0 · AI Code Engine"))
         print(f"  模型: {self.client.describe()}")
         print(f"  权限: {self.cfg['permission']} | 目录: {self.cfg['project_root']}")
@@ -1094,7 +1114,8 @@ class AgentCLI:
                 print("\n已中断")
             except Exception as e:
                 print(c("red", f"对话异常: {e}"))
-        print(c("dim", "  再见，ACE 已退出。"))
+        print(c("dim", "  已返回主界面。") if return_to_landing
+              else c("dim", "  再见，ACE 已退出。"))
 
 
 def main() -> None:

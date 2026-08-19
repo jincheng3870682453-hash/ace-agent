@@ -510,6 +510,22 @@ try:
         ret = cli_cmd._run_landing_action("exit")
     out_text = buf.getvalue()
     check("首页动作: 退出返回 True", ret is True and "再见" in out_text, out_text[:200])
+
+    # —— mock 可来回切换 + 聊天退出回主界面 ——
+    cli_toggle = ai_code.AgentCLI({"project_root": str(mktemp()), "permission": "write",
+                                   "bait": False, "base_url": "https://api.deepseek.com/v1",
+                                   "api_key": "sk-test", "model": "deepseek-chat"}, mock=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cli_toggle._toggle_mock()
+    check("mock 可切回真实模式", cli_toggle.client.mock is False, buf.getvalue()[:200])
+    with contextlib.redirect_stdout(io.StringIO()):
+        cli_toggle._toggle_mock()
+    check("真实模式可切回 mock", cli_toggle.client.mock is True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cli_toggle.run_command("/mock")
+    check("/mock 斜杠命令切换", cli_toggle.client.mock is False, buf.getvalue()[:200])
 finally:
     ai_code.AgentCLI._wait_key = _orig_wait_key
 
