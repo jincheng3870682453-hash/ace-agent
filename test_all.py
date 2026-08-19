@@ -478,6 +478,41 @@ hints2 = ai_code._config_sanity_hints(
     {"model": "glm-4.6", "base_url": "https://open.bigmodel.cn/api/anthropic"})
 check("防蠢: 真实模型名不误报", len(hints2) == 0, hints2)
 
+# —— 登录页 / 首页（AI-CLI 启动平台同款） ——
+check("ACE logo 存在", "██" in ai_code.ACE_LOGO)
+check("首页菜单 7 项且含进入聊天", len(ai_code.AgentCLI.LANDING_ITEMS) == 7
+      and ai_code.AgentCLI.LANDING_ITEMS[0][2] == "chat")
+
+
+class _FakeStdin:
+    def isatty(self):
+        return False
+
+
+_old_stdin = sys.stdin
+sys.stdin = _FakeStdin()
+key_res = ai_code.AgentCLI._read_key()
+sys.stdin = _old_stdin
+check("非 tty 下按键读取返回 None", key_res is None)
+
+# 打桩按键等待，避免测试环境伪终端阻塞
+_orig_wait_key = ai_code.AgentCLI._wait_key
+ai_code.AgentCLI._wait_key = lambda self: None
+try:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ret = cli_cmd._run_landing_action("status")
+    out_text = buf.getvalue()
+    check("首页动作: 状态页返回菜单", ret is False and "会话" in out_text, out_text[:200])
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ret = cli_cmd._run_landing_action("exit")
+    out_text = buf.getvalue()
+    check("首页动作: 退出返回 True", ret is True and "再见" in out_text, out_text[:200])
+finally:
+    ai_code.AgentCLI._wait_key = _orig_wait_key
+
 # ============================================================
 print("[10] 上线加固 —— 路径越界 / math_calc 白名单 / API 协议 / 解析器防御")
 # ============================================================

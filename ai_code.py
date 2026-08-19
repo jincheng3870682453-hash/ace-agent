@@ -64,6 +64,16 @@ class CommandCancelled(Exception):
     """交互子流程被用户取消（如 Ctrl+C），区别于致命异常：只中止当前命令，不退出整个 CLI"""
 
 
+# ACE ASCII 品牌 logo（ANSI Shadow 字体）
+ACE_LOGO = r"""
+ █████╗  ██████╗ ███████╗
+██╔══██╗██╔════╝ ██╔════╝
+███████║██║      █████╗
+██╔══██║██║      ██╔══╝
+██║  ██║╚██████╗ ███████╗
+╚═╝  ╚═╝ ╚═════╝ ╚══════╝""".strip("\n")
+
+
 # AI 提供商注册表（参考本机 cli/AI-CLI-安装平台/lib/api.js，模型名 2026-08 调研整理）
 PROVIDERS = [
     {"id": "zhipu", "name": "智谱 GLM（Anthropic 兼容端点）",
@@ -825,6 +835,142 @@ class AgentCLI:
         print(c("yellow", f"“{line.strip()}” 看起来是 ACE 的命令行参数/系统命令，不是发给 Agent 的话。"))
         print(c("dim", "  请先输入 exit 退出 ACE，再在 cmd 里直接运行它。"))
 
+    # ---------- 登录页 / 首页（参考 AI-CLI 启动平台主菜单） ----------
+
+    LANDING_ITEMS = [
+        ("进入聊天", "开始与 Agent 对话", "chat"),
+        ("配置向导", "提供商 → API Key → 模型", "wizard"),
+        ("切换提供商 / 模型", "一键换 AI 提供商", "provider"),
+        ("离线演示", "mock 模式，无需密钥", "mock"),
+        ("状态与统计", "会话 / 快照 / 模块状态", "status"),
+        ("帮助", "斜杠命令速查", "help"),
+        ("退出", "再见", "exit"),
+    ]
+
+    @staticmethod
+    def _clear_screen() -> None:
+        if sys.stdout.isatty():
+            sys.stdout.write("\x1b[2J\x1b[H")
+            sys.stdout.flush()
+
+    @staticmethod
+    def _read_key() -> Optional[str]:
+        """读取单次按键（↑/↓/数字/回车/Esc/q）；非 tty 返回 None"""
+        if not sys.stdin.isatty():
+            return None
+        try:
+            import msvcrt  # Windows
+            first = msvcrt.getwch()
+            if first in ("\x00", "\xe0"):
+                second = msvcrt.getwch()
+                return {"H": "up", "P": "down", "K": "left", "M": "right"}.get(second, None)
+            if first in ("\r", "\n"):
+                return "enter"
+            if first == "\x1b":
+                return "esc"
+            return first
+        except ImportError:
+            pass
+        try:
+            import termios
+            import tty
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+            try:
+                ch = sys.stdin.read(1)
+                if ch == "\x1b":
+                    nxt = sys.stdin.read(2)
+                    return {"[A": "up", "[B": "down"}.get(nxt, "esc")
+                if ch in ("\r", "\n"):
+                    return "enter"
+                return ch
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except (ImportError, OSError):
+            return input()
+
+    def _wait_key(self) -> None:
+        print(c("dim", "  按任意键返回..."))
+        self._read_key()
+
+    def _draw_landing(self, sel: int) -> None:
+        self._clear_screen()
+        for line in ACE_LOGO.split("\n"):
+            print(c("magenta", " " + line))
+        print(c("bold", " ACE v1.0 · AI Code Engine"))
+        print()
+        print(f"  {c('dim', '模型:')} {self.client.describe()}")
+        print(f"  {c('dim', '权限:')} {self.cfg.get('permission', 'write')}   "
+              f"{c('dim', '目录:')} {self.cfg.get('project_root', '.')}")
+        if not self.cfg.get("api_key") and not self.client.mock:
+            print(c("yellow", "  ⚠ 尚未配置 API Key —— 选择 2 配置向导完成首次登录"))
+        print()
+        for i, (label, desc, _action) in enumerate(self.LANDING_ITEMS, 1):
+            mark = c("magenta", "❯") if i - 1 == sel else " "
+            print(f"  {mark} {i}. {label}   {c('dim', desc)}")
+        print()
+        print(c("dim", "  ↑/↓ 选择 · 数字直选 · Enter 确认 · Esc/q 退出"))
+
+    def _run_landing_action(self, action: str) -> bool:
+        """执行首页菜单动作；返回 True 表示整体退出"""
+        if action == "exit":
+            self._clear_screen()
+            print(c("dim", "  再见，ACE 已退出。"))
+            return True
+        if action == "chat":
+            self.repl()
+            return True
+        if action == "wizard":
+            try:
+                self._config_wizard()
+            except CommandCancelled:
+                print(c("yellow", "已取消。"))
+            return False
+        if action == "provider":
+            self._handle_provider(["/provider"])
+            self._wait_key()
+            return False
+        if action == "mock":
+            self.client = ModelClient(self.cfg, mock=True)
+            print(c("green", "已切换为离线演示模式（mock）。"))
+            self._wait_key()
+            return False
+        if action == "status":
+            self._show_status()
+            self._wait_key()
+            return False
+        if action == "help":
+            self.run_command("/help")
+            self._wait_key()
+            return False
+        return False
+
+    def landing(self) -> None:
+        """登录页：默认进入的欢迎界面（清屏 → logo → ❯ 光标菜单）"""
+        sel = 0
+        while True:
+            self._draw_landing(sel)
+            key = self._read_key()
+            if key is None:
+                # 非交互（管道/重定向）：跳过首页直接进聊天
+                self.repl()
+                return
+            if key == "up":
+                sel = (sel - 1) % len(self.LANDING_ITEMS)
+            elif key == "down":
+                sel = (sel + 1) % len(self.LANDING_ITEMS)
+            elif key == "enter":
+                if self._run_landing_action(self.LANDING_ITEMS[sel][2]):
+                    return
+            elif key == "esc" or key == "q":
+                self._clear_screen()
+                print(c("dim", "  再见，ACE 已退出。"))
+                return
+            elif key.isdigit() and 1 <= int(key) <= len(self.LANDING_ITEMS):
+                if self._run_landing_action(self.LANDING_ITEMS[int(key) - 1][2]):
+                    return
+
     # ---------- 无感回滚 ----------
 
     def _undo_last(self) -> None:
@@ -985,7 +1131,10 @@ def main() -> None:
     if args.input:
         cli.converse(args.input)
         return
-    cli.repl()
+    if args.mock:
+        cli.repl()          # 显式离线演示直接进聊天
+        return
+    cli.landing()           # 默认进入登录页（AI-CLI 启动平台同款首页菜单）
 
 
 if __name__ == "__main__":

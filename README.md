@@ -15,7 +15,7 @@
 | `execution_layer.py` | 主入口：解析 INTERNAL/EXTERNAL、权限裁决、工具执行、安全闸门串联 | ✅ |
 | `agent_runner.py` | 交互循环：LLM ↔ 执行层多轮闭环，错误自动回喂模型修正 | ✅ |
 | `ai_code.py` | AI Code 命令行：流式输出 / 斜杠命令 / 复用本机已有模型配置 | ✅ |
-| `test_all.py` | 全模块端到端测试（115 项，纯 stdlib） | ✅ |
+| `test_all.py` | 全模块端到端测试（148 项，纯 stdlib） | ✅ |
 
 ## 快速开始
 
@@ -23,12 +23,13 @@
 # 跑全部测试
 python test_all.py
 
-# AI Code（ACE）命令行 —— cmd 里敲 ace 随时唤醒（自动复用本机已有模型配置）
-ace                             # 全局命令（已注册到 PATH，新开 cmd 生效）
-python ai_code.py               # 或直接用 python 跑交互模式
-python ai_code.py --input "现在几点了"
-python ai_code.py --mock        # 离线演示，无需密钥
+# AI Code（ACE）命令行 —— cmd 里敲 ace 随时唤醒
+ace                             # 默认进入登录页（首页菜单：logo + ❯ 光标，↑/↓ 选择 · 数字直选）
+ace --mock                      # 离线演示直接进聊天，无需密钥
+ace --input "现在几点了"         # 单次对话
+python ai_code.py               # 或直接用 python 跑
 
+# 首次使用：首页选 2「配置向导」（提供商 → API Key → 模型），之后选 1「进入聊天」
 # 指定自己的模型
 python ai_code.py --base-url https://api.deepseek.com/v1 --api-key sk-xxx --model deepseek-chat
 
