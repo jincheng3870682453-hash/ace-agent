@@ -3,13 +3,17 @@ __pycache__/
 *.py[cod]
 *.pyo
 
-# 执行层运行时产物（快照/飞轮/报告/记忆/沙箱/测试）
+# 执行层运行时产物（快照/飞轮/报告/记忆/沙箱/测试/数据库/截图/图片/通知）
 .guardian/
 .agent_flywheel/
 .agent_memory.json
 .poc_reports/
 .sandbox_tmp/
 .test_tmp/
+.ace_shots/
+.ace_images/
+agent.db
+notifications.log
 *.jsonl
 
 # 虚拟环境与依赖

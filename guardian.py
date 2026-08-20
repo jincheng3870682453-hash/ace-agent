@@ -27,7 +27,8 @@ from typing import Dict, List, Optional, Tuple
 
 EXCLUDE_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
                 ".idea", ".vscode", ".guardian", ".agent_flywheel",
-                ".poc_reports", ".sandbox_tmp", ".test_tmp"}
+                ".poc_reports", ".sandbox_tmp", ".test_tmp",
+                ".ace_shots", ".ace_images"}
 
 
 class SnapshotError(Exception):

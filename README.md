@@ -18,6 +18,7 @@
 - 🛡️ **无感安全**：写入前自动快照（上限自动清理）、`/undo` 一键回滚、快照 HMAC 签名、路径越界防护、SSRF 防护、`math_calc` 白名单
 - 🧠 **记忆与报告**：SimHash 主题切换记忆注入（多会话隔离）、Nuwa POC 报告（HTML+JSON）
 - 🔍 **真实联网能力**：`search` 工具真实搜索（DuckDuckGo → Bing 双引擎兜底，无需 API Key）；CLI `/search <关键词>` 直接验证；`api_get` 抓取网页正文
+- 🗄️ **真实工具全家桶**：SQLite 数据库（db_query 只读/db_write 受控写入）、真实打开浏览器（browser_open）、屏幕截图（browser_screenshot，可选 pillow）、通知（notify_send：console/file/toast）、免费图像生成（image_generate，pollinations.ai）
 - 📄 **文档解析**：N 合一（Word/Excel/PPT/PDF/OCR/纯文本）+ 50MB 大文件防线
 - 🚪 **层层退出**：聊天内 exit 回首页，首页 7/Esc/q 才真正退出
 
@@ -102,7 +103,7 @@ flowchart TB
 |---|---|---|
 | `ai_code.py` | ACE 命令行：登录页 / REPL / 斜杠补全 / 提供商注册表 / 配置向导 | ✅ |
 | `agent_runner.py` | 交互循环：LLM ↔ 执行层多轮闭环，错误自动回喂 | ✅ |
-| `execution_layer.py` | 执行层主入口：解析、权限、安全闸门、工具执行、真实联网搜索（DDG/Bing） | ✅ |
+| `execution_layer.py` | 执行层主入口：解析、权限、安全闸门、工具执行（真实搜索/SQLite/浏览器/通知/图像） | ✅ |
 | `gateway_v2.py` | L1-L5 五层网关：意图 / 技能 / 模型 / 守门 / 飞轮 | ✅ |
 | `work.py` | 诱饵工厂（5 种语义诱饵）+ ASTDetector（6 规则）+ BehaviorConstraint | ✅ |
 | `guardian.py` | 物理快照回滚：自动快照、完整性预检、HMAC 签名、自动清理 | ✅ |
@@ -110,7 +111,7 @@ flowchart TB
 | `Nuwa.py` | POC 报告：通过率/平均响应/回滚计数，HTML + JSON | ✅ |
 | `universal_document_parser.py` | N 合一文档解析 + 懒加载 + 截断 + 50MB 防线 | ✅ |
 | `agent_system_prompt_v7.md` | Agent 系统提示词（INTERNAL/EXTERNAL 协议） | ✅ |
-| `test_all.py` | 全模块端到端测试（151 项，纯 stdlib） | ✅ |
+| `test_all.py` | 全模块端到端测试（167 项，纯 stdlib） | ✅ |
 
 ---
 

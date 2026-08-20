@@ -154,6 +154,7 @@ answer.
 
 4. db_query
    {"tool":"db_query","query":"SELECT * FROM table"}
+   SQLite 只读查询（仅 SELECT/WITH），返回列名+行数据，上限 100 行
 
 5. search
    {"tool":"search","query":"关键词","top_k":5}
@@ -162,6 +163,7 @@ answer.
 
 6. browser_screenshot
    {"tool":"browser_screenshot"}
+   屏幕截图保存到项目 .ace_shots/（需 pillow，仅 Windows；未安装时返回 500）
 
 7. math_calc
    {"tool":"math_calc","expression":"2+2*10"}
@@ -171,6 +173,7 @@ answer.
 
 9. browser_open
    {"tool":"browser_open","url":"https://example.com"}
+   用系统默认浏览器打开 http/https 链接（真实实现）
 
 10. parse_document
     {"tool":"parse_document","path":"/path/to/file.docx","force_ocr":false}
@@ -199,18 +202,25 @@ answer.
 
 17. browser_click
     {"tool":"browser_click","selector":"#btn"}
+    ⚠️ 暂未实现（返回 501）：浏览器自动化需接入 Playwright 等驱动
 
 18. browser_type
     {"tool":"browser_type","selector":"#input","text":"admin"}
+    ⚠️ 暂未实现（返回 501）：浏览器自动化需接入 Playwright 等驱动
 
 19. db_write
     {"tool":"db_write","query":"INSERT ..."}
+    SQLite 写入（INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER），
+    拒绝 DROP/ATTACH/PRAGMA/VACUUM 等危险操作；SELECT 请用 db_query
 
 20. notify_send
-    {"tool":"notify_send","channel":"email","to":"...","content":"..."}
+    {"tool":"notify_send","channel":"file","to":"...","content":"..."}
+    通知渠道：console（终端打印）/ file（写入项目 notifications.log）/
+    toast（系统弹窗，需 plyer）；email 暂未接入（501）
 
 21. image_generate
     {"tool":"image_generate","prompt":"...","size":"512x512"}
+    通过 pollinations.ai 免费生成图片（无需密钥），保存到项目 .ace_images/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【正确 vs 错误示例】

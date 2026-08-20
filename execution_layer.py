@@ -825,8 +825,23 @@ class ToolExecutor:
         })
 
     def _exec_browser_screenshot(self, params: Dict) -> ExecutionResult:
-        return ExecutionResult(status="error", error_code="501",
-                               message="browser_screenshot 尚未接入浏览器（POC 占位）")
+        """屏幕截图（可选依赖 pillow 的 ImageGrab，Windows），保存到项目 .ace_shots/"""
+        shot_dir = self.project_root / ".ace_shots"
+        shot_dir.mkdir(parents=True, exist_ok=True)
+        shot_path = shot_dir / f"shot_{int(time.time() * 1000)}.png"
+        try:
+            from PIL import ImageGrab
+        except ImportError:
+            return ExecutionResult(status="error", error_code="500",
+                                   message="browser_screenshot 需要 pillow（pip install pillow），"
+                                           "且 ImageGrab 仅支持 Windows")
+        try:
+            img = ImageGrab.grab()
+            img.save(str(shot_path))
+        except Exception as e:
+            return ExecutionResult(status="error", error_code="500", message=f"截图失败: {e}")
+        return ExecutionResult(status="success", data={
+            "image_path": str(shot_path), "format": "png"})
 
     def _exec_math_calc(self, params: Dict) -> ExecutionResult:
         expression = str(params.get("expression", ""))
@@ -947,16 +962,79 @@ class ToolExecutor:
             return ExecutionResult(status="error", error_code="500", message=str(e))
 
     def _exec_db_query(self, params: Dict) -> ExecutionResult:
-        return ExecutionResult(status="error", error_code="501",
-                               message="db_query 尚未接入数据库（POC 占位）")
+        """SQLite 只读查询（仅 SELECT/WITH），返回列名+行数据，上限 100 行"""
+        query = str(params.get("query", "")).strip()
+        if not query:
+            return ExecutionResult(status="error", error_code="400", message="query 参数为空")
+        m = re.match(r"(?is)^\s*(select|with)\b", query)
+        if not m:
+            return ExecutionResult(status="error", error_code="403",
+                                   message="db_query 仅允许只读查询（SELECT/WITH）")
+        if m.group(1).lower() == "with" and not re.search(r"(?is)\bselect\b", query):
+            return ExecutionResult(status="error", error_code="403",
+                                   message="db_query 的 WITH 必须包含 SELECT（禁止借道写入）")
+        import sqlite3
+        db_path = self.project_root / "agent.db"
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=5)
+            try:
+                cur = conn.cursor()
+                cur.execute(query)
+                fetched = cur.fetchmany(101)
+                columns = [d[0] for d in cur.description] if cur.description else []
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            return ExecutionResult(status="error", error_code="400", message=f"查询失败: {e}")
+        truncated = len(fetched) > 100
+        rows = [list(r) for r in fetched[:100]]
+        return ExecutionResult(status="success", data={
+            "columns": columns, "rows": rows,
+            "row_count": len(rows), "truncated": truncated, "db": str(db_path),
+        })
 
     def _exec_db_write(self, params: Dict) -> ExecutionResult:
-        return ExecutionResult(status="error", error_code="501",
-                               message="db_write 尚未接入数据库（POC 占位）")
+        """SQLite 写入（INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER），危险操作拒绝"""
+        query = str(params.get("query", "")).strip()
+        if not query:
+            return ExecutionResult(status="error", error_code="400", message="query 参数为空")
+        if re.match(r"(?is)^\s*(select|with)\b", query):
+            return ExecutionResult(status="error", error_code="400",
+                                   message="只读查询请使用 db_query 工具")
+        if re.search(r"(?i)\b(drop|attach|detach|pragma|vacuum|reindex|load_extension)\b", query):
+            return ExecutionResult(status="error", error_code="403",
+                                   message="db_write 拒绝危险操作（DROP/ATTACH/PRAGMA/VACUUM 等）")
+        if not re.match(r"(?is)^\s*(insert|update|delete|replace|create|alter)\b", query):
+            return ExecutionResult(status="error", error_code="400",
+                                   message="不支持的语句类型（支持 INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER）")
+        import sqlite3
+        db_path = self.project_root / "agent.db"
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=5)
+            try:
+                cur = conn.cursor()
+                cur.execute(query)
+                conn.commit()
+                affected = cur.rowcount
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            return ExecutionResult(status="error", error_code="400", message=f"写入失败: {e}")
+        return ExecutionResult(status="success", data={
+            "affected_rows": affected, "db": str(db_path)})
 
     def _exec_browser_open(self, params: Dict) -> ExecutionResult:
-        return ExecutionResult(status="error", error_code="501",
-                               message="browser_open 尚未接入浏览器（POC 占位）")
+        """用系统默认浏览器打开 URL（真实实现，仅 http/https）"""
+        url = str(params.get("url", ""))
+        url_err = self._check_url(url)
+        if url_err:
+            return ExecutionResult(status="error", error_code="400", message=url_err)
+        import webbrowser
+        try:
+            ok = webbrowser.open(url)
+        except Exception as e:
+            return ExecutionResult(status="error", error_code="500", message=str(e))
+        return ExecutionResult(status="success", data={"url": url, "opened": bool(ok)})
 
     def _exec_browser_click(self, params: Dict) -> ExecutionResult:
         return ExecutionResult(status="error", error_code="501",
@@ -967,12 +1045,71 @@ class ToolExecutor:
                                message="browser_type 尚未接入浏览器（POC 占位）")
 
     def _exec_notify_send(self, params: Dict) -> ExecutionResult:
-        return ExecutionResult(status="error", error_code="501",
-                               message="notify_send 尚未接入通知服务（POC 占位）")
+        """发送通知：channel = console / file / toast（toast 可选 plyer；email 未接入）"""
+        channel = str(params.get("channel", "console")).lower()
+        to = str(params.get("to", ""))
+        content = str(params.get("content", ""))
+        if not content:
+            return ExecutionResult(status="error", error_code="400", message="content 参数为空")
+        if channel in ("console", "stdout"):
+            print(f"[ACE 通知] {content}")
+            return ExecutionResult(status="success", data={"channel": channel, "delivered": True})
+        if channel == "file":
+            log_path = self.project_root / "notifications.log"
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {to or '-'}: {content}\n")
+            except Exception as e:
+                return ExecutionResult(status="error", error_code="500", message=str(e))
+            return ExecutionResult(status="success", data={
+                "channel": "file", "path": str(log_path), "delivered": True})
+        if channel == "toast":
+            try:
+                from plyer import notification
+                notification.notify(title=to or "ACE", message=content[:200], timeout=5)
+            except ImportError:
+                return ExecutionResult(status="error", error_code="500",
+                                       message="toast 通知需要 plyer（pip install plyer）")
+            except Exception as e:
+                return ExecutionResult(status="error", error_code="500", message=f"toast 失败: {e}")
+            return ExecutionResult(status="success", data={"channel": "toast", "delivered": True})
+        if channel == "email":
+            return ExecutionResult(status="error", error_code="501",
+                                   message="email 通知需要 SMTP 配置，暂未接入（可用 console/file/toast）")
+        return ExecutionResult(status="error", error_code="400",
+                               message=f"未知通知渠道: {channel}（支持 console/file/toast）")
 
     def _exec_image_generate(self, params: Dict) -> ExecutionResult:
-        return ExecutionResult(status="error", error_code="501",
-                               message="image_generate 尚未接入图像模型（POC 占位）")
+        """真实图像生成（pollinations.ai 免费端点，无需密钥），保存到项目 .ace_images/"""
+        prompt = str(params.get("prompt", "")).strip()
+        if not prompt:
+            return ExecutionResult(status="error", error_code="400", message="prompt 参数为空")
+        size = str(params.get("size", "512x512"))
+        m = re.match(r"^(\d{2,4})x(\d{2,4})$", size)
+        if not m:
+            return ExecutionResult(status="error", error_code="400",
+                                   message=f"size 格式应为 宽x高（如 512x512），收到: {size}")
+        width, height = m.group(1), m.group(2)
+        try:
+            import requests
+        except ImportError:
+            return ExecutionResult(status="error", error_code="500",
+                                   message="image_generate 需要 requests 库: pip install requests")
+        img_dir = self.project_root / ".ace_images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        img_path = img_dir / f"gen_{int(time.time() * 1000)}.png"
+        url = (f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
+               f"?width={width}&height={height}&nologo=true")
+        try:
+            resp = requests.get(url, timeout=60)
+            resp.raise_for_status()
+            img_path.write_bytes(resp.content)
+        except Exception as e:
+            return ExecutionResult(status="error", error_code="500", message=f"图像生成失败: {e}")
+        return ExecutionResult(status="success", data={
+            "image_path": str(img_path), "size": f"{width}x{height}",
+            "bytes": len(resp.content), "service": "pollinations.ai",
+        })
 
 
 # ============================================================

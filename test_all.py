@@ -631,6 +631,40 @@ check("Bing 解析器: 标题/链接/摘要",
       and "Bing Result" in bing_results[0]["title"]
       and "snippet" in bing_results[0]["snippet"], bing_results)
 
+# —— 新落地的真实工具（SQLite / 浏览器 / 通知 / 图像） ——
+r = run_agent(el_h, "db_write", query="CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+check("db_write 建表", r["status"] == "SUCCESS", r.get("message"))
+r = run_agent(el_h, "db_write", query="INSERT INTO t (name) VALUES ('小明'), ('小红')")
+check("db_write 插入数据", r["status"] == "SUCCESS" and r["data"]["affected_rows"] == 2, r)
+r = run_agent(el_h, "db_query", query="SELECT name FROM t ORDER BY id")
+check("db_query 查询结果", r["status"] == "SUCCESS"
+      and r["data"]["columns"] == ["name"]
+      and r["data"]["rows"] == [["小明"], ["小红"]], r)
+r = run_agent(el_h, "db_query", query="UPDATE t SET name='x'")
+check("db_query 拒绝写入语句", r["status"] == "403", r.get("message"))
+r = run_agent(el_h, "db_write", query="DROP TABLE t")
+check("db_write 拒绝 DROP", r["status"] == "403", r.get("message"))
+r = run_agent(el_h, "db_write", query="SELECT 1")
+check("db_write 拒绝 SELECT", r["status"] == "400", r.get("message"))
+
+r = run_agent(el_h, "notify_send", channel="file", to="测试", content="这是一条测试通知")
+check("notify_send 文件渠道落盘", r["status"] == "SUCCESS"
+      and (el_h.project_root / "notifications.log").exists()
+      and "测试通知" in (el_h.project_root / "notifications.log").read_text(encoding="utf-8"), r)
+
+r = run_agent(el_h, "browser_open", url="file:///etc/passwd")
+check("browser_open 协议校验", r["status"] == "400", r.get("message"))
+
+r = run_agent(el_h, "browser_screenshot")
+check("browser_screenshot 优雅降级（无 pillow 时 500）",
+      r["status"] in ("SUCCESS", "500"), r.get("message"))
+
+r = run_agent(el_h, "image_generate", prompt="test", size="bad")
+check("image_generate 尺寸校验", r["status"] == "400", r.get("message"))
+r = run_agent(el_h, "image_generate", prompt="一只猫")
+check("image_generate 无网时优雅报错",
+      r["status"] in ("SUCCESS", "500"), r.get("message"))
+
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")
 rep_fib = ad.check_all(fib_code)
