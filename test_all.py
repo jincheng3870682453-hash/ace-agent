@@ -594,7 +594,36 @@ res_direct = el_h.executor.execute({"tool": "datetime_now"})
 check("elapsed 元数据正确附加", res_direct.metadata.get("elapsed", 0) > 0, res_direct.metadata)
 
 r = run_agent(el_h, "search", query="测试")
-check("未实现工具返回 501 而非假成功", r["status"] == "501", r.get("message"))
+check("联网搜索（无网/被拒时优雅报错）",
+      r["status"] in ("SUCCESS", "500"),
+      f"{r.get('status')}: {r.get('message')}")
+if r["status"] == "SUCCESS":
+    check("联网搜索结果结构完整",
+          len(r["data"]["results"]) >= 1
+          and all(k in r["data"]["results"][0] for k in ("title", "url")),
+          r["data"])
+
+# —— 联网搜索解析器（离线样本验证） ——
+from execution_layer import ToolExecutor  # noqa: E402
+sample_ddg = ('<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?'
+              'uddg=https%3A%2F%2Fexample.com%2Fai&amp;rut=abc">Example <b>AI</b> result</a>'
+              '<a class="result__snippet" href="//x">Some <b>snippet</b> text</a>')
+ddg_results = ToolExecutor._parse_ddg(sample_ddg, 5)
+check("DDG 解析器: 链接解码 + 标题",
+      len(ddg_results) == 1
+      and ddg_results[0]["url"] == "https://example.com/ai"
+      and "Example AI result" in ddg_results[0]["title"], ddg_results)
+check("DDG 解析器: 摘要提取",
+      "snippet" in ddg_results[0] and "snippet" in ddg_results[0]["snippet"], ddg_results)
+
+sample_bing = ('<li class="b_algo"><h2><a href="https://bing.example.com">'
+               'Bing <b>Result</b></a></h2><p>Bing snippet here</p></li>')
+bing_results = ToolExecutor._parse_bing(sample_bing, 5)
+check("Bing 解析器: 标题/链接/摘要",
+      len(bing_results) == 1
+      and bing_results[0]["url"] == "https://bing.example.com"
+      and "Bing Result" in bing_results[0]["title"]
+      and "snippet" in bing_results[0]["snippet"], bing_results)
 
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")

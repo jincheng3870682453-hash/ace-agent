@@ -17,6 +17,7 @@
 - 🔄 **mock 双向切换**：`/mock` 随时在离线演示与真实模型间切换
 - 🛡️ **无感安全**：写入前自动快照（上限自动清理）、`/undo` 一键回滚、快照 HMAC 签名、路径越界防护、SSRF 防护、`math_calc` 白名单
 - 🧠 **记忆与报告**：SimHash 主题切换记忆注入（多会话隔离）、Nuwa POC 报告（HTML+JSON）
+- 🔍 **真实联网能力**：`search` 工具真实搜索（DuckDuckGo → Bing 双引擎兜底，无需 API Key）；CLI `/search <关键词>` 直接验证；`api_get` 抓取网页正文
 - 📄 **文档解析**：N 合一（Word/Excel/PPT/PDF/OCR/纯文本）+ 50MB 大文件防线
 - 🚪 **层层退出**：聊天内 exit 回首页，首页 7/Esc/q 才真正退出
 
@@ -101,7 +102,7 @@ flowchart TB
 |---|---|---|
 | `ai_code.py` | ACE 命令行：登录页 / REPL / 斜杠补全 / 提供商注册表 / 配置向导 | ✅ |
 | `agent_runner.py` | 交互循环：LLM ↔ 执行层多轮闭环，错误自动回喂 | ✅ |
-| `execution_layer.py` | 执行层主入口：解析、权限、安全闸门、工具执行 | ✅ |
+| `execution_layer.py` | 执行层主入口：解析、权限、安全闸门、工具执行、真实联网搜索（DDG/Bing） | ✅ |
 | `gateway_v2.py` | L1-L5 五层网关：意图 / 技能 / 模型 / 守门 / 飞轮 | ✅ |
 | `work.py` | 诱饵工厂（5 种语义诱饵）+ ASTDetector（6 规则）+ BehaviorConstraint | ✅ |
 | `guardian.py` | 物理快照回滚：自动快照、完整性预检、HMAC 签名、自动清理 | ✅ |
@@ -134,7 +135,7 @@ ace --install-ui                # 一键安装 / 实时补全依赖（多镜像�
 
 - **首页**：↑/↓ 选择 · 数字直选 · Enter 确认 · Esc/q 退出
 - **聊天**：输入 `/` 实时弹出命令菜单（需 `prompt_toolkit`，未装自动降级）
-- **斜杠命令**：`/help` `/clear` `/status` `/stats` `/memory` `/snapshots` `/undo` `/rollback <id>` `/report` `/permission [level]` `/mock` `/model` `/provider` `/config` `/open <路径>` `/edit <路径>` `/exit`
+- **斜杠命令**：`/help` `/clear` `/status` `/stats` `/memory` `/snapshots` `/undo` `/rollback <id>` `/report` `/permission [level]` `/mock` `/model` `/provider` `/config` `/open <路径>` `/edit <路径>` `/search <关键词>` `/exit`
 - **退出**：聊天内 `exit` → 回首页；首页 `7`/`Esc`/`q` → 退出 ACE
 
 **切换提供商 / 模型**：
@@ -161,7 +162,7 @@ ace --install-ui                # 一键安装 / 实时补全依赖（多镜像�
 - `code_execute` 策略层沙箱：AST 拦截危险模块（os/subprocess/socket/pickle/importlib...）、内建逃逸链（`__builtins__`/`__class__`）、open 全禁 → 环境变量清洗 → 临时目录 + 30s 超时
 - `math_calc` 白名单 AST 求值：仅纯算术，幂运算限 100^1000，杜绝 eval 逃逸与指数 DoS
 - 路径穿越防护：文件工具与 ls/cat 默认限制在项目目录内（`confine_files`，含跨盘符检查）
-- `api_get/api_post` 仅 http/https（防 SSRF）；未实现工具返回 501 而非假成功
+- `api_get/api_post` 仅 http/https，且 **DNS 解析后拦截内网/回环/链路本地地址**（防 SSRF）；未实现工具返回 501 而非假成功
 - 快照 HMAC-SHA256 签名（`signing_key`）防元信息伪造；快照上限自动清理防备份爆炸
 - 诱饵验证循环：首次 code_execute 自动注入语义诱饵 → 修复后重提；按任务隔离
 - AST 熔断：未用导入/类型注解/无限递归/循环引用/硬编码密钥/SQL 注入（收敛为真实注入模式，不误伤正常递归）

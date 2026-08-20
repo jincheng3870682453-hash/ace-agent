@@ -28,10 +28,13 @@ import os
 import re
 import ast
 import sys
+import html
 import json
 import shutil
 import time
 import tempfile
+import ipaddress
+import urllib.parse
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
@@ -729,9 +732,97 @@ class ToolExecutor:
             except Exception:
                 pass
 
+    # ---------- 真实联网搜索（DuckDuckGo → Bing 兜底，无需 API Key） ----------
+
+    @staticmethod
+    def _clean_html(seg: str) -> str:
+        return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", seg))).strip()
+
+    @staticmethod
+    def _parse_ddg(html_text: str, top_k: int) -> List[Dict]:
+        """解析 DuckDuckGo HTML 搜索结果"""
+        out: List[Dict] = []
+        for m in re.finditer(
+                r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                html_text, re.DOTALL):
+            url = html.unescape(m.group(1))   # 先还原 &amp; 等实体再解析
+            title = ToolExecutor._clean_html(m.group(2))
+            if "uddg=" in url:   # DDG 跳转链接解码
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                url = qs.get("uddg", [url])[0]
+            if url.startswith("//"):
+                url = "https:" + url
+            out.append({"title": title, "url": url, "snippet": ""})
+            if len(out) >= top_k:
+                break
+        snippets = re.findall(
+            r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html_text, re.DOTALL)
+        for i, sn in enumerate(snippets[:len(out)]):
+            out[i]["snippet"] = ToolExecutor._clean_html(sn)
+        return out
+
+    @staticmethod
+    def _parse_bing(html_text: str, top_k: int) -> List[Dict]:
+        """解析 Bing 搜索结果"""
+        out: List[Dict] = []
+        for m in re.finditer(
+                r'<li class="b_algo".*?<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)</a></h2>(.*?)</li>',
+                html_text, re.DOTALL):
+            url = m.group(1)
+            title = ToolExecutor._clean_html(m.group(2))
+            p = re.search(r"<p[^>]*>(.*?)</p>", m.group(3), re.DOTALL)
+            snippet = ToolExecutor._clean_html(p.group(1)) if p else ""
+            out.append({"title": title, "url": url, "snippet": snippet})
+            if len(out) >= top_k:
+                break
+        return out
+
+    @staticmethod
+    def _search_engine(engine_url: str, query: str, top_k: int,
+                       requests, parser) -> List[Dict]:
+        try:
+            resp = requests.get(
+                engine_url, params={"q": query},
+                headers={"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                        "Chrome/124.0 Safari/537.36")},
+                timeout=15)
+        except Exception:
+            return []
+        if resp.status_code != 200 or not resp.text:
+            return []
+        return parser(resp.text, top_k)
+
     def _exec_search(self, params: Dict) -> ExecutionResult:
-        return ExecutionResult(status="error", error_code="501",
-                               message="search 尚未接入真实搜索服务（POC 占位）")
+        """真实联网搜索（DuckDuckGo HTML → Bing 兜底，无需 API Key）"""
+        query = str(params.get("query", "")).strip()
+        if not query:
+            return ExecutionResult(status="error", error_code="400", message="query 参数为空")
+        try:
+            top_k = max(1, min(int(params.get("top_k", 5)), 10))
+        except (TypeError, ValueError):
+            top_k = 5
+        try:
+            import requests
+        except ImportError:
+            return ExecutionResult(status="error", error_code="500",
+                                   message="search 需要 requests 库: pip install requests")
+        results = self._search_engine(
+            "https://html.duckduckgo.com/html/", query, top_k, requests, self._parse_ddg)
+        engine = "duckduckgo"
+        if not results:
+            results = self._search_engine(
+                "https://www.bing.com/search", query, top_k, requests, self._parse_bing)
+            engine = "bing"
+        if not results:
+            return ExecutionResult(status="error", error_code="500",
+                                   message="联网搜索失败（无网络或搜索源拒绝访问），请稍后重试")
+        return ExecutionResult(status="success", data={
+            "query": query,
+            "engine": engine,
+            "results": results,
+            "network_status": "ON",
+        })
 
     def _exec_browser_screenshot(self, params: Dict) -> ExecutionResult:
         return ExecutionResult(status="error", error_code="501",
@@ -794,16 +885,35 @@ class ToolExecutor:
 
     @staticmethod
     def _check_url(url: str) -> Optional[str]:
-        """URL 协议校验：仅允许 http/https（防 SSRF 类协议滥用），返回错误描述"""
+        """URL 协议校验 + 私网地址防护（DNS 解析后拦截内网/回环/链路本地，防 SSRF）"""
         from urllib.parse import urlparse
         try:
-            scheme = urlparse(url).scheme.lower()
+            parsed = urlparse(url)
+            scheme = parsed.scheme.lower()
         except Exception:
             return "URL 解析失败"
         if not scheme:
             return "URL 缺少协议（需要 http/https）"
         if scheme not in ("http", "https"):
             return f"仅支持 http/https 协议，拒绝: {scheme}"
+        host = parsed.hostname
+        if host:
+            try:
+                import socket
+                for info in socket.getaddrinfo(host, None):
+                    ip = info[4][0].split("%")[0]
+                    try:
+                        addr = ipaddress.ip_address(ip)
+                    except ValueError:
+                        continue
+                    if (addr.is_private or addr.is_loopback or addr.is_link_local
+                            or addr.is_multicast or addr.is_reserved
+                            or addr.is_unspecified
+                            or (addr.version == 4 and ip.startswith("100.64."))):
+                        return f"拒绝访问内网/回环/链路本地地址: {ip}"
+                    break   # 首个公网解析结果即放行
+            except Exception:
+                pass
         return None
 
     def _exec_api_get(self, params: Dict) -> ExecutionResult:

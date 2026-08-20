@@ -570,6 +570,7 @@ class AgentCLI:
         "/config": "交互式配置模型（向导）",
         "/open": "用系统默认程序打开文件（用法: /open <路径>）",
         "/edit": "用 VS Code（或默认编辑器）打开文件（用法: /edit <路径>）",
+        "/search": "联网搜索（DuckDuckGo/Bing，用法: /search <关键词>）",
         "/exit": "退出",
     }
 
@@ -660,11 +661,33 @@ class AgentCLI:
             self._open_file(" ".join(parts[1:]), prefer_editor=False)
         elif name == "/edit":
             self._open_file(" ".join(parts[1:]), prefer_editor=True)
+        elif name == "/search":
+            self._search_web(" ".join(parts[1:]).strip())
         elif name in ("/exit", "/quit", "exit", "quit"):
             return False
         else:
             print(f"未知命令: {name}（输入 / 查看全部命令）")
         return True
+
+    # ---------- 联网搜索（人可用的 /search，与 Agent 的 search 工具同源） ----------
+
+    def _search_web(self, query: str) -> None:
+        if not query:
+            print("用法: /search <关键词>")
+            return
+        print(c("dim", f"  正在搜索「{query}」..."))
+        res = self.el.executor.execute({"tool": "search", "query": query, "top_k": 5})
+        if res.status != "success":
+            print(c("red", f"  搜索失败: {res.message}"))
+            return
+        data = res.data
+        print(c("dim", f"  引擎: {data.get('engine', '?')} · 网络: {data.get('network_status', '?')}"))
+        for i, item in enumerate(data.get("results", []), 1):
+            print(f"  {i}. {item.get('title', '')}")
+            print(f"     {c('dim', item.get('url', ''))}")
+            snippet = item.get("snippet", "")
+            if snippet:
+                print(f"     {c('dim', snippet[:120])}")
 
     # ---------- 文件打开（编辑器无关，裸终端可用） ----------
 
