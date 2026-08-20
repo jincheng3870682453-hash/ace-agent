@@ -686,6 +686,17 @@ res_srz = el_srz.executor.execute({"tool": "datetime_now"})
 check("render_result 可序列化（不因 Path 崩溃）",
       isinstance(_rr({"status": "SUCCESS", "data": res_srz.data, "tool": "datetime_now"}), str))
 
+# —— 对话内打开文件（open_file / edit_file） ——
+from execution_layer import READ_TOOLS as _READ_TOOLS  # noqa: E402
+check("open_file/edit_file 已注册为只读工具",
+      "open_file" in _READ_TOOLS and "edit_file" in _READ_TOOLS)
+r = run_agent(el_h, "open_file", path="")
+check("open_file 空路径报 400", r["status"] == "400", r.get("message"))
+r = run_agent(el_h, "open_file", path="no_such_file_xyz.docx")
+check("open_file 不存在文件报 404", r["status"] == "404", r.get("message"))
+r = run_agent(el_h, "edit_file", path="no_such_file_xyz.py")
+check("edit_file 不存在文件报 404", r["status"] == "404", r.get("message"))
+
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")
 rep_fib = ad.check_all(fib_code)

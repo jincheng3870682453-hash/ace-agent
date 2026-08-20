@@ -151,7 +151,13 @@ ace --install-ui                # 一键安装 / 实时补全依赖（多镜像�
 
 **内置提供商**：智谱 GLM（Anthropic/OpenAI 双端点，含免费开源的 **glm-4.7-flash**）、DeepSeek、Kimi/Moonshot、OpenAI、Anthropic Claude、通义 Qwen、硅基流动、OpenRouter、Ollama 本地。
 
-**在终端里直接开文件**：`/open 报告.docx`（系统默认程序）· `/edit main.py`（优先 VS Code，可自动创建新文件）
+**在对话里打开文件（两种方式，都不用退出 ACE）**：
+```
+（自己动手）❯ /open 报告.docx        # 系统默认程序打开
+             ❯ /edit main.py          # 优先 VS Code
+（叫 Agent 干）❯ 帮我打开桌面的报告.docx   # Agent 调用 open_file 工具自动打开
+             ❯ 用 VS Code 打开 main.py  # Agent 调用 edit_file 工具
+```
 
 配置优先级：命令行参数 > `~/.ai_code.json` > `~/.claude/settings.json`（本机已有模型配置）> 环境变量。API 格式自动识别：`/anthropic` 端点走 Anthropic Messages，其余走 OpenAI 兼容。
 

@@ -121,7 +121,7 @@ WRITE_TOOLS = {
 READ_TOOLS = {
     "terminal_view", "file_read", "api_get", "db_query", "search",
     "browser_screenshot", "math_calc", "datetime_now", "browser_open",
-    "parse_document"
+    "parse_document", "open_file", "edit_file"
 }
 
 HIGH_RISK_TOOLS = {
@@ -350,6 +350,10 @@ class ToolExecutor:
         try:
             if tool_name == "parse_document":
                 result = self._exec_parse_document(params)
+            elif tool_name == "open_file":
+                result = self._exec_open_file(params)
+            elif tool_name == "edit_file":
+                result = self._exec_edit_file(params)
             elif tool_name in ("file_read", "file_write", "file_delete", "file_move"):
                 result = self._exec_file_ops(tool_name, params)
             elif tool_name == "terminal_view":
@@ -1079,6 +1083,62 @@ class ToolExecutor:
         except Exception as e:
             return ExecutionResult(status="error", error_code="500", message=str(e))
         return ExecutionResult(status="success", data={"url": url, "opened": bool(ok)})
+
+    def _resolve_read_path(self, path_str: str) -> Optional[Path]:
+        """解析对话内文件路径：支持 ~ 展开与相对项目路径"""
+        p = Path(os.path.expanduser(path_str))
+        if not p.is_absolute():
+            p = self.project_root / p
+        return p.resolve()
+
+    def _exec_open_file(self, params: Dict) -> ExecutionResult:
+        """对话内打开文件：系统默认程序（Agent 可直接调用，如'帮我打开报告.docx'）"""
+        path_str = str(params.get("path", "")).strip()
+        if not path_str:
+            return ExecutionResult(status="error", error_code="400", message="path 参数为空")
+        p = self._resolve_read_path(path_str)
+        if not p.exists():
+            return ExecutionResult(status="error", error_code="404", message=f"文件不存在: {p}")
+        import subprocess
+        try:
+            if os.name == "nt":
+                os.startfile(str(p))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(p)])
+            else:
+                subprocess.Popen(["xdg-open", str(p)])
+        except Exception as e:
+            return ExecutionResult(status="error", error_code="500", message=f"打开失败: {e}")
+        return ExecutionResult(status="success", data={"path": str(p), "opened": True})
+
+    def _exec_edit_file(self, params: Dict) -> ExecutionResult:
+        """对话内编辑文件：优先 VS Code（code 命令），否则回退系统默认程序"""
+        path_str = str(params.get("path", "")).strip()
+        if not path_str:
+            return ExecutionResult(status="error", error_code="400", message="path 参数为空")
+        p = self._resolve_read_path(path_str)
+        if not p.exists():
+            return ExecutionResult(status="error", error_code="404",
+                                   message=f"文件不存在: {p}（可先用 file_write 创建）")
+        import subprocess
+        code = shutil.which("code")
+        if code:
+            try:
+                subprocess.Popen([code, str(p)])
+                return ExecutionResult(status="success",
+                                       data={"path": str(p), "editor": "vscode"})
+            except Exception as e:
+                return ExecutionResult(status="error", error_code="500", message=f"打开失败: {e}")
+        try:
+            if os.name == "nt":
+                os.startfile(str(p))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(p)])
+            else:
+                subprocess.Popen(["xdg-open", str(p)])
+        except Exception as e:
+            return ExecutionResult(status="error", error_code="500", message=f"打开失败: {e}")
+        return ExecutionResult(status="success", data={"path": str(p), "editor": "system_default"})
 
     def _exec_browser_click(self, params: Dict) -> ExecutionResult:
         return ExecutionResult(status="error", error_code="501",

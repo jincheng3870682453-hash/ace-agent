@@ -179,6 +179,16 @@ answer.
     {"tool":"parse_document","path":"/path/to/file.docx","force_ocr":false}
     支持：.doc .docx .wps .xls .xlsx .et .ppt .pptx .dps .pdf 及图片
 
+11. open_file
+    {"tool":"open_file","path":"报告.docx"}
+    在对话中直接打开文件（系统默认程序，如 Word/记事本/看图器）；
+    支持相对路径（相对于项目目录）与绝对路径
+
+12. edit_file
+    {"tool":"edit_file","path":"main.py"}
+    在对话中打开文件编辑（优先 VS Code，找不到 code 命令则用系统默认程序）；
+    文件不存在会报 404，可先用 file_write 创建
+
 ✏️ 写入工具（执行层自动创建快照并监控）：
 
 11. terminal_exec
