@@ -112,11 +112,11 @@ class ModelProvider:
 
 
 def render_result(r: Dict) -> str:
-    """把执行层返回压缩成给模型看的文本"""
+    """把执行层返回压缩成给模型看的文本（default=str 兜底 Path 等非 JSON 类型）"""
     keys = ("status", "message", "data", "tool", "instruction", "report",
             "bait_type", "baited_code", "rule", "memory_injected")
     d = {k: r[k] for k in keys if k in r}
-    return json.dumps(d, ensure_ascii=False)
+    return json.dumps(d, ensure_ascii=False, default=str)
 
 
 def run_conversation(provider: ModelProvider, el: ExecutionLayer,

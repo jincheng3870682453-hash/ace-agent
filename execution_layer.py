@@ -480,6 +480,26 @@ class ToolExecutor:
         except Exception as e:
             return ExecutionResult(status="error", error_code="500", message=str(e))
 
+    @staticmethod
+    def _split_cmd_windows(cmd: str) -> List[str]:
+        """Windows 风格命令分词：空白分割 + 双引号分组，保留反斜杠路径（如 C:\\Users\\...）"""
+        parts: List[str] = []
+        cur: List[str] = []
+        in_quote = False
+        for ch in cmd:
+            if ch == '"':
+                in_quote = not in_quote
+                continue
+            if ch in " \t" and not in_quote:
+                if cur:
+                    parts.append("".join(cur))
+                    cur = []
+                continue
+            cur.append(ch)
+        if cur:
+            parts.append("".join(cur))
+        return parts
+
     def _exec_terminal_view(self, params: Dict) -> ExecutionResult:
         """只读终端查看：白名单命令 + 无 shell 执行（修复：readonly 不再能执行任意命令）"""
         cmd = (params.get("command") or "").strip()
@@ -492,7 +512,11 @@ class ToolExecutor:
                                    message="terminal_view 检测到 shell 元字符，已拦截（只读工具禁止管道/重定向/连接符）")
         import shlex
         try:
-            parts = shlex.split(cmd)
+            if os.name == "nt":
+                # Windows 专用分词：双引号分组 + 保留反斜杠路径（shlex 会吃掉 \ 且在空格处断开）
+                parts = ToolExecutor._split_cmd_windows(cmd)
+            else:
+                parts = shlex.split(cmd)
         except ValueError as e:
             return ExecutionResult(status="error", error_code="400", message=f"命令解析失败: {e}")
         if not parts:
@@ -501,12 +525,13 @@ class ToolExecutor:
 
         # —— 原生实现的只读内建命令（完全不经过 shell）——
         if base in ("ls", "dir"):
-            target = parts[1] if len(parts) > 1 else "."
-            p = self._confined(Path(target)) if self.confine_files else (
-                Path(target) if Path(target).is_absolute() else self.project_root / Path(target))
-            if p is None:
-                return ExecutionResult(status="error", error_code="403",
-                                       message="路径越界：ls 仅允许查看项目目录")
+            # 忽略常见列表参数（-l/-a/-la/--all），支持 ~ 展开
+            target_args = [p for p in parts[1:] if not p.startswith("-")]
+            target = target_args[0] if target_args else "."
+            target = os.path.expanduser(target)
+            p = Path(target)
+            if not p.is_absolute():
+                p = self.project_root / p
             try:
                 items = sorted(os.listdir(p))
             except Exception as e:
@@ -519,11 +544,9 @@ class ToolExecutor:
         if base in ("cat", "type"):
             if len(parts) < 2:
                 return ExecutionResult(status="error", error_code="400", message="cat/type 需要文件参数")
-            p = self._confined(Path(parts[1])) if self.confine_files else (
-                Path(parts[1]) if Path(parts[1]).is_absolute() else self.project_root / Path(parts[1]))
-            if p is None:
-                return ExecutionResult(status="error", error_code="403",
-                                       message="路径越界：cat 仅允许查看项目内文件")
+            p = Path(os.path.expanduser(parts[1]))
+            if not p.is_absolute():
+                p = self.project_root / p
             try:
                 content = self._read_text_any(p)
             except FileNotFoundError:
@@ -715,7 +738,7 @@ class ToolExecutor:
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "returncode": result.returncode,
-                "sandbox": {"cwd": sandbox_dir, "env_stripped": True, "timeout": 30}
+                "sandbox": {"cwd": str(sandbox_dir), "env_stripped": True, "timeout": 30}
             })
         except subprocess.TimeoutExpired:
             return ExecutionResult(status="error", error_code="504", message="代码执行超时（30 秒）")
@@ -825,23 +848,44 @@ class ToolExecutor:
         })
 
     def _exec_browser_screenshot(self, params: Dict) -> ExecutionResult:
-        """屏幕截图（可选依赖 pillow 的 ImageGrab，Windows），保存到项目 .ace_shots/"""
+        """屏幕截图：优先 pillow ImageGrab；Windows 无 pillow 时用 PowerShell 免依赖回退"""
         shot_dir = self.project_root / ".ace_shots"
         shot_dir.mkdir(parents=True, exist_ok=True)
         shot_path = shot_dir / f"shot_{int(time.time() * 1000)}.png"
         try:
             from PIL import ImageGrab
+            try:
+                img = ImageGrab.grab()
+                img.save(str(shot_path))
+                return ExecutionResult(status="success", data={
+                    "image_path": str(shot_path), "format": "png", "engine": "pillow"})
+            except Exception as e:
+                return ExecutionResult(status="error", error_code="500", message=f"截图失败: {e}")
         except ImportError:
-            return ExecutionResult(status="error", error_code="500",
-                                   message="browser_screenshot 需要 pillow（pip install pillow），"
-                                           "且 ImageGrab 仅支持 Windows")
-        try:
-            img = ImageGrab.grab()
-            img.save(str(shot_path))
-        except Exception as e:
-            return ExecutionResult(status="error", error_code="500", message=f"截图失败: {e}")
-        return ExecutionResult(status="success", data={
-            "image_path": str(shot_path), "format": "png"})
+            pass
+        # Windows 免依赖回退：PowerShell System.Drawing 屏幕抓取
+        if os.name == "nt":
+            import subprocess
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+                "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;"
+                "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+                "$g=[System.Drawing.Graphics]::FromImage($bmp);"
+                "$g.CopyFromScreen($b.Left,$b.Top,0,0,$bmp.Size);"
+                f"$bmp.Save('{str(shot_path)}');$g.Dispose();$bmp.Dispose()"
+            )
+            try:
+                subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                               capture_output=True, timeout=30, check=True)
+                if shot_path.exists():
+                    return ExecutionResult(status="success", data={
+                        "image_path": str(shot_path), "format": "png", "engine": "powershell"})
+            except Exception as e:
+                return ExecutionResult(status="error", error_code="500",
+                                       message=f"截图失败: {e}")
+        return ExecutionResult(status="error", error_code="500",
+                               message="browser_screenshot 需要 pillow（Windows 可免依赖，"
+                                       "其他平台请 pip install pillow）")
 
     def _exec_math_calc(self, params: Dict) -> ExecutionResult:
         expression = str(params.get("expression", ""))

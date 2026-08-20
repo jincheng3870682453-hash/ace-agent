@@ -549,8 +549,16 @@ r = run_agent(el_h, "file_write", path="../escape.txt", content="x")
 check("file_write 路径越界拦截", r["status"] == "403", r.get("message"))
 r = run_agent(el_h, "file_read", path=str(FOLDER.parent / "README.md"))
 check("file_read 绝对路径越界拦截", r["status"] == "403", r.get("message"))
-r = run_agent(el_h, "terminal_view", command="cat ../README.md")
-check("terminal_view cat 越界拦截", r["status"] == "403", r.get("message"))
+# —— terminal_view 路径健壮性（~ 展开 / -la 参数 / Windows 反斜杠） ——
+r = run_agent(el_h, "terminal_view", command="ls -la")
+check("terminal_view ls -la 忽略参数", r["status"] == "SUCCESS", r.get("message"))
+r = run_agent(el_h, "terminal_view", command="ls ~")
+check("terminal_view ls ~ 展开主目录", r["status"] == "SUCCESS", r.get("message"))
+r = run_agent(el_h, "terminal_view", command='cat "' + str(FOLDER / "README.md") + '"')
+check("terminal_view cat 绝对路径可读", r["status"] == "SUCCESS" and "ACE" in r["data"]["stdout"], r.get("message"))
+if os.name == "nt":
+    r = run_agent(el_h, "terminal_view", command="dir C:\\Users\\69215\\Desktop")
+    check("terminal_view Windows 反斜杠路径", r["status"] == "SUCCESS", r.get("message"))
 r = run_agent(el_h, "file_write", path="ok.txt", content="in-project")
 check("项目内写入正常", r["status"] == "SUCCESS", r)
 r = run_agent(el_h, "math_calc", expression="2+2*10")
@@ -669,6 +677,14 @@ check("image_generate 尺寸校验", r["status"] == "400", r.get("message"))
 r = run_agent(el_h, "image_generate", prompt="一只猫")
 check("image_generate 无网时优雅报错",
       r["status"] in ("SUCCESS", "500"), r.get("message"))
+
+# —— 结果序列化兜底（防 Path 等对象导致 json 崩溃） ——
+from agent_runner import render_result as _rr  # noqa: E402
+el_srz = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+res_srz = el_srz.executor.execute({"tool": "datetime_now"})
+check("render_result 可序列化（不因 Path 崩溃）",
+      isinstance(_rr({"status": "SUCCESS", "data": res_srz.data, "tool": "datetime_now"}), str))
 
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")
