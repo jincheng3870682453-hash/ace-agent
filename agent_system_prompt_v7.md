@@ -156,8 +156,9 @@ answer.
    {"tool":"db_query","query":"SELECT * FROM table"}
 
 5. search
-   {"tool":"search","query":"关键词"}
-   注意：执行层根据联网状态自动分流
+   {"tool":"search","query":"关键词","top_k":5}
+   真实联网搜索：DuckDuckGo → Bing 双引擎兜底（无需 API Key），
+   返回标题+链接+摘要；top_k 默认 5、上限 10；无网络时返回 500 错误码
 
 6. browser_screenshot
    {"tool":"browser_screenshot"}
