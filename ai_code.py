@@ -37,7 +37,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 # Windows GBK 控制台兼容：强制 UTF-8 输出（否则 emoji 会 UnicodeEncodeError）
 for _stream in (sys.stdout, sys.stderr):
@@ -313,25 +313,35 @@ class ModelClient:
         return (f"{self.model} @ {self.base_url} "
                 f"(api: {self.api_format}, key: {mask_secret(self.api_key)})")
 
-    def stream_generate(self, system: str, messages: List[Dict]) -> str:
+    def stream_generate(self, system: str, messages: List[Dict],
+                        on_delta: Optional[Callable] = None) -> str:
+        """on_delta(full_text)：接收增量完整文本，用于自定义展示（不打印原始输出）"""
         if self.mock:
-            return self._stream_mock(messages)
+            return self._stream_mock(messages, on_delta)
         if not self.base_url or not self.api_key:
             raise RuntimeError(
                 "未配置模型：用 --base-url/--api-key/--model 指定，"
                 "或写入 ~/.ai_code.json；也可 --mock 离线演示")
         if self.api_format == "anthropic":
-            return self._stream_anthropic(system, messages)
-        return self._stream_openai(system, messages)
+            return self._stream_anthropic(system, messages, on_delta)
+        return self._stream_openai(system, messages, on_delta)
 
-    def _stream_mock(self, messages: List[Dict]) -> str:
+    def _stream_mock(self, messages: List[Dict], on_delta: Optional[Callable] = None) -> str:
         text = self._mock_provider.generate(messages[-1]["content"])
+        if on_delta is None:
+            for line in text.splitlines():
+                print(line)
+                time.sleep(0.02)
+            return text
+        buf = ""
         for line in text.splitlines():
-            print(line)
+            buf += line + "\n"
+            on_delta(buf)
             time.sleep(0.02)
         return text
 
-    def _stream_openai(self, system: str, messages: List[Dict]) -> str:
+    def _stream_openai(self, system: str, messages: List[Dict],
+                       on_delta: Optional[Callable] = None) -> str:
         import requests
         payload = {
             "model": self.model,
@@ -366,8 +376,12 @@ class ModelClient:
                 content = delta.get("content") if isinstance(delta, dict) else None
                 if content:
                     full += content
-                    print(content, end="", flush=True)
-        print()
+                    if on_delta is not None:
+                        on_delta(full)
+                    else:
+                        print(content, end="", flush=True)
+        if on_delta is None:
+            print()
         return full
 
     def _anthropic_payload_variants(self, system: str, messages: List[Dict]) -> List[Dict]:
@@ -388,7 +402,8 @@ class ModelClient:
             {**base, "system": sys_blocks, "stream": False},
         ]
 
-    def _post_anthropic(self, payload: Dict) -> str:
+    def _post_anthropic(self, payload: Dict,
+                        on_delta: Optional[Callable] = None) -> str:
         """POST /v1/messages，自动处理流式（SSE）与非流式（JSON）两种响应"""
         import requests
         stream = bool(payload.get("stream"))
@@ -407,8 +422,11 @@ class ModelClient:
                 blocks = data.get("content") or []
                 full = "".join(b.get("text", "") for b in blocks
                                if isinstance(b, dict) and b.get("type") == "text")
-                print(full, end="", flush=True)
-                print()
+                if on_delta is not None:
+                    on_delta(full)
+                else:
+                    print(full, end="", flush=True)
+                    print()
                 return full
             full = ""
             for line in r.iter_lines():
@@ -428,17 +446,22 @@ class ModelClient:
                     text = delta.get("text", "") if isinstance(delta, dict) else ""
                     if text:
                         full += text
-                        print(text, end="", flush=True)
-            print()
+                        if on_delta is not None:
+                            on_delta(full)
+                        else:
+                            print(text, end="", flush=True)
+            if on_delta is None:
+                print()
             return full
 
-    def _stream_anthropic(self, system: str, messages: List[Dict]) -> str:
+    def _stream_anthropic(self, system: str, messages: List[Dict],
+                          on_delta: Optional[Callable] = None) -> str:
         """Anthropic Messages 调用：多格式变体自动降级，兼容不同服务商"""
         import requests
         last_err = ""
         for payload in self._anthropic_payload_variants(system, messages):
             try:
-                return self._post_anthropic(payload)
+                return self._post_anthropic(payload, on_delta)
             except requests.HTTPError as e:
                 body = ""
                 try:
@@ -495,21 +518,66 @@ class AgentCLI:
 
     # ---------- 对话循环 ----------
 
+    @staticmethod
+    def _make_display() -> Dict:
+        """智能展示回调：隐藏 <INTERNAL> 内部思考，◈ 状态行实时反馈过程
+
+        状态流转：思考中… → 正在调用工具… → 回复正文流式输出
+        用户只会看到 EXTERNAL 的最终内容，内部推理不泄漏。
+        """
+        st = {"state": "thinking", "reply_printed": 0}
+
+        def on_delta(full: str) -> None:
+            state = "thinking"
+            if "<EXTERNAL>" in full:
+                ext = full.split("<EXTERNAL>", 1)[1]
+                if "answer." in ext:
+                    after = ext.split("answer.", 1)[1]
+                    if after.lstrip().startswith("{"):
+                        state = "tool"
+                    else:
+                        state = "reply"
+                        visible = after.lstrip()
+                        if "</EXTERNAL>" in visible:
+                            visible = visible.split("</EXTERNAL>")[0]
+                        if len(visible) > st["reply_printed"]:
+                            if st["state"] != "reply":
+                                print()   # 状态行 → 正文换行
+                            delta = visible[st["reply_printed"]:]
+                            print(delta, end="", flush=True)
+                            st["reply_printed"] = len(visible)
+                        st["state"] = state
+                        return
+            if state in ("thinking", "tool"):
+                if st["state"] == "reply":
+                    print()   # 从回复正文切回状态行
+                label = "思考中…" if state == "thinking" else "正在调用工具…"
+                sys.stdout.write(f"\r◈ {label}   ")
+                sys.stdout.flush()
+            st["state"] = state
+
+        return {"state": st, "on_delta": on_delta}
+
     def converse(self, user_input: str) -> None:
         print(f"\n{c('magenta', '❯')} {user_input}")
         t0 = time.time()
         next_user = user_input
         for _round in range(1, MAX_ROUNDS + 1):
             msgs = self.messages + [{"role": "user", "content": next_user}]
+            disp = self._make_display()
             print(c("blue", "◈"), end=" ", flush=True)
             try:
-                output = self.client.stream_generate(SYSTEM_PROMPT, msgs)
+                output = self.client.stream_generate(SYSTEM_PROMPT, msgs,
+                                                     on_delta=disp["on_delta"])
             except KeyboardInterrupt:
                 print("\n已中断")
                 return
             except Exception as e:
                 print(c("red", f"\n✗ 模型调用失败: {e}"))
                 return
+            # 状态行/流式正文收尾换行
+            if disp["state"]["state"] in ("thinking", "tool") or disp["state"]["reply_printed"]:
+                print()
             self.messages = msgs + [{"role": "assistant", "content": output}]
 
             try:

@@ -377,6 +377,11 @@ with contextlib.redirect_stdout(buf):
     cli.converse("现在几点了")
 out_text = buf.getvalue()
 check("CLI mock 对话完成", "✓ 完成" in out_text, out_text[-200:])
+check("CLI 隐藏内部思考（不泄漏 INTERNAL）",
+      "[INTERNAL_THINKING]" not in out_text and "[PLAN] 演示" not in out_text, out_text[:300])
+check("CLI 显示思考/调用工具状态",
+      "思考中" in out_text and "调用工具" in out_text, out_text[:300])
+check("CLI 回复内容对用户可见", "当前时间是" in out_text, out_text[:600])
 
 # —— 斜杠补全 / 模型自定义 / 无感回滚 ——
 ai_code.CONFIG_PATH = mktemp() / "cfg.json"

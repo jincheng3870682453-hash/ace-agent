@@ -12,7 +12,7 @@
 ## 特性一览
 
 - 🏠 **登录页/首页**：AI-CLI 启动平台同款主菜单 —— ASCII logo + `❯` 光标，↑/↓ 选择 · 数字直选 · Enter 确认 · Esc/q 退出；首次使用引导配置向导
-- 💬 **聊天 REPL**：`/` 实时补全菜单（Claude Code 同款）、流式输出、工具耗时与"已自动快照"提示
+- 💬 **聊天 REPL**：`/` 实时补全菜单（Claude Code 同款）、流式输出、工具耗时与"已自动快照"提示；**◈ 状态行实时反馈"思考中…/正在调用工具…"，内部推理（INTERNAL）不泄漏给用户**
 - 🔀 **10 家提供商注册表**：`/provider` 一键切换（智谱 GLM-4.7-Flash / DeepSeek / Kimi / OpenAI / Claude / Qwen / 硅基 / OpenRouter / Ollama），`/config` 三步向导（选提供商 → 隐藏输入 key → 选模型）
 - 🔄 **mock 双向切换**：`/mock` 随时在离线演示与真实模型间切换
 - 🛡️ **无感安全**：写入前自动快照（上限自动清理）、`/undo` 一键回滚、快照 HMAC 签名、路径越界防护、SSRF 防护、`math_calc` 白名单
