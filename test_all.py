@@ -696,6 +696,20 @@ r = run_agent(el_h, "open_file", path="no_such_file_xyz.docx")
 check("open_file 不存在文件报 404", r["status"] == "404", r.get("message"))
 r = run_agent(el_h, "edit_file", path="no_such_file_xyz.py")
 check("edit_file 不存在文件报 404", r["status"] == "404", r.get("message"))
+r = run_agent(el_h, "open_file", path=str(FOLDER / "README.md"))
+check("open_file 默认给链接不弹窗（点击才打开）",
+      r["status"] == "SUCCESS" and r["data"]["opened"] is False
+      and r["data"]["link"].startswith("file:///"), r)
+
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    ai_code.AgentCLI._print_clickables(
+        {"tool": "open_file",
+         "data": {"path": "C:/x/报告.docx",
+                  "link": "file:///C:/x/%E6%8A%A5%E5%91%8A.docx", "opened": False}})
+out_text = buf.getvalue()
+check("CLI 可点击链接渲染（默认收起）",
+      "点击打开文件" in out_text and "file:///" in out_text, out_text[:200])
 
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")

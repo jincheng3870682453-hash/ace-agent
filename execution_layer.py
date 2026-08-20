@@ -1092,13 +1092,19 @@ class ToolExecutor:
         return p.resolve()
 
     def _exec_open_file(self, params: Dict) -> ExecutionResult:
-        """对话内打开文件：系统默认程序（Agent 可直接调用，如'帮我打开报告.docx'）"""
+        """对话内打开文件：默认返回可点击链接（用户点击后全屏查看）；
+        auto_open=true 时立即用系统默认程序打开"""
         path_str = str(params.get("path", "")).strip()
         if not path_str:
             return ExecutionResult(status="error", error_code="400", message="path 参数为空")
         p = self._resolve_read_path(path_str)
         if not p.exists():
             return ExecutionResult(status="error", error_code="404", message=f"文件不存在: {p}")
+        if not bool(params.get("auto_open", False)):
+            # 默认收起：只给链接，用户点击才打开
+            return ExecutionResult(status="success", data={
+                "path": str(p), "opened": False, "link": p.as_uri(),
+                "hint": "已生成可点击链接，用户点击后即可全屏查看"})
         import subprocess
         try:
             if os.name == "nt":

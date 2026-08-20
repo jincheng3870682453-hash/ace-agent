@@ -180,8 +180,9 @@ answer.
     支持：.doc .docx .wps .xls .xlsx .et .ppt .pptx .dps .pdf 及图片
 
 11. open_file
-    {"tool":"open_file","path":"报告.docx"}
-    在对话中直接打开文件（系统默认程序，如 Word/记事本/看图器）；
+    {"tool":"open_file","path":"报告.docx","auto_open":false}
+    默认返回可点击链接（不直接弹窗，用户点击链接后全屏查看）；
+    auto_open=true 时立即用系统默认程序打开；
     支持相对路径（相对于项目目录）与绝对路径
 
 12. edit_file

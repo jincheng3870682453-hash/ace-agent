@@ -516,6 +516,34 @@ class AgentCLI:
             },
         )
 
+    @staticmethod
+    def _clickable_uri(path: str) -> str:
+        """路径 → file:// URI（Windows Terminal 等现代终端支持点击）"""
+        return "file:///" + Path(path).as_posix()
+
+    @staticmethod
+    def _print_clickables(result: Dict) -> None:
+        """把文件/截图/图片结果渲染成可点击链接：默认收起，用户点击才全屏查看"""
+        data = result.get("data")
+        if not isinstance(data, dict):
+            return
+        tool = result.get("tool")
+        candidates = []
+        if tool == "open_file":
+            candidates.append(("点击打开文件", data.get("link") or data.get("path")))
+        elif tool in ("browser_screenshot", "image_generate"):
+            candidates.append(("点击查看图片", data.get("image_path")))
+        for label, val in candidates:
+            if not val:
+                continue
+            val = str(val)
+            uri = val if val.startswith("file:///") else AgentCLI._clickable_uri(val)
+            if USE_COLOR:
+                click = f"\x1b]8;;{uri}\x1b\\{val}\x1b]8;;\x1b\\"
+            else:
+                click = val
+            print(c("dim", f"  🔗 {label}: {click}"))
+
     # ---------- 对话循环 ----------
 
     @staticmethod
@@ -609,6 +637,8 @@ class AgentCLI:
                     if result.get("snapshot_id"):
                         line += c("dim", " · 已自动快照，/undo 一键回滚")
                 print(line)
+                if result["status"] == "SUCCESS":
+                    self._print_clickables(result)
                 if result.get("memory_injected"):
                     print(c("dim", f"  · 已自动注入 {len(result['memory_injected'])} 条相关记忆"))
                 if self.client.mock and result["status"] == "SUCCESS":
