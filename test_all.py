@@ -77,6 +77,12 @@ check("L2 技能推荐", "code_execute" in gw.route("帮我写代码")["skills"]
 gr = gw.guard.check('api_key = "abcdef1234567890"')
 check("L4 硬编码密钥拦截", (not gr.passed) and gr.failed_rule == "no_hardcoded_secrets", gr)
 
+gr_u = gw.guard.check("api_key=abcdef1234567890")
+check("L4 无引号密钥拦截（跨平台）", (not gr_u.passed) and gr_u.failed_rule == "no_hardcoded_secrets", gr_u)
+
+gr_p = gw.guard.check("api_key=12345678")
+check("L4 占位值放行", gr_p.passed, gr_p)
+
 gr2 = gw.guard.check("SELECT * FROM users WHERE name = 'x' + user_input")
 check("L4 SQL 拼接拦截", (not gr2.passed) and gr2.failed_rule == "no_sql_injection", gr2)
 
@@ -291,8 +297,8 @@ check("file_read 守门拦截", r["status"] == "GUARD_VIOLATION"
       and r["rule"] == "no_hardcoded_secrets", r)
 check("读工具违规不回滚历史写入", (el_w.project_root / "snap_test.txt").read_text(encoding="utf-8") == "version-two")
 
-# 写工具违规 → 回滚本轮快照（修复：不再回滚过期快照）
-r = run_agent(el_w, "terminal_exec", command='echo x > created.txt & echo api_key="abcdef1234567890"')
+# 写工具违规 → 回滚本轮快照（用 && 而非 &：POSIX sh 下 & 是后台执行会产生竞态）
+r = run_agent(el_w, "terminal_exec", command='echo x > created.txt && echo api_key="abcdef1234567890"')
 check("写工具违规触发守门", r["status"] == "GUARD_VIOLATION"
       and r["rule"] == "no_hardcoded_secrets", r)
 check("违规自动回滚（仅本轮快照）", not (el_w.project_root / "created.txt").exists())

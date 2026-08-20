@@ -197,7 +197,8 @@ class GuardViolation(Exception):
 
 SECRET_RE = re.compile(
     r"(?i)\b(api[_-]?key|secret|token|passw(or)?d|pwd|access[_-]?key|private[_-]?key)"
-    r"\s*[:=]\s*['\"][^'\"]{8,}['\"]"
+    r"\s*[:=]\s*"
+    r"(?:['\"]([^'\"]{8,})['\"]|([A-Za-z0-9_\-./]{8,}))"
 )
 SECRET_PLACEHOLDERS = {"xxx", "changeme", "your-secret", "your_token",
                        "your_secret", "your-api-key", "<your-api-key>", "sk-xxx",
