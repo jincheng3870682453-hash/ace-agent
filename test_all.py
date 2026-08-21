@@ -1054,6 +1054,37 @@ if os.name == "nt":
     check("跨盘符路径拦截", r["status"] == "403", r.get("message"))
 
 # ============================================================
+print("[11] i18n —— 国际化（JSON 字典 + @lang 联动界面）")
+# ============================================================
+import i18n as i18n_mod  # noqa: E402
+
+check("默认语言为中文", i18n_mod.current_lang() == "zh")
+check("zh 翻译命中",
+      i18n_mod.t("done", round=1, sec=2.5) == "  ✓ 完成（1 轮, 2.5s）",
+      i18n_mod.t("done", round=1, sec=2.5))
+i18n_mod.set_language("en")
+check("en 翻译命中", "Done" in i18n_mod.t("done", round=1, sec=2.5),
+      i18n_mod.t("done", round=1, sec=2.5))
+check("缺失键原样返回", i18n_mod.t("no_such_key_xyz") == "no_such_key_xyz",
+      i18n_mod.t("no_such_key_xyz"))
+
+cli_i18n = ai_code.AgentCLI({"project_root": str(mktemp()), "permission": "write",
+                             "bait": False, "base_url": "", "api_key": "", "model": "m1"},
+                            mock=True)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli_i18n._handle_at_command("@lang en")
+check("@lang en 界面同步英文",
+      "Reply language switched" in buf.getvalue(), buf.getvalue()[:100])
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli_i18n._handle_at_command("@")
+check("@ 菜单英文显示", "shortcuts" in buf.getvalue(), buf.getvalue()[:200])
+with contextlib.redirect_stdout(io.StringIO()):
+    cli_i18n._handle_at_command("@lang zh")
+check("切回中文后全局翻译复位", i18n_mod.current_lang() == "zh")
+
+# ============================================================
 print("=" * 60)
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")
 if FAILED:

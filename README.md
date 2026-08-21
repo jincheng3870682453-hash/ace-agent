@@ -115,7 +115,8 @@ flowchart TB
 | `universal_document_parser.py` | N 合一文档解析 + 懒加载 + 截断 + 50MB 防线 | ✅ |
 | `agent_system_prompt_v8.md` | Agent 系统提示词精简版（INTERNAL/EXTERNAL 协议） | ✅ |
 | `agent_system_prompt_tools.md` | 原生工具调用版提示词（`--tools` 模式） | ✅ |
-| `test_all.py` | 全模块端到端测试（242 项，纯 stdlib） | ✅ |
+| `test_all.py` | 全模块端到端测试（249 项，纯 stdlib） | ✅ |
+| `i18n.py` + `locales/` | 轻量国际化：zh/en/ja JSON 字典，`@lang` 同步切换界面语言 | ✅ |
 | `docs/ADR.md` | 架构决策记录（SimHash/诱饵频率/双层协议/零依赖/Plan Mode） | ✅ |
 | `CONTRIBUTING.md` | 贡献指南（环境/测试/风格/提交流程） | ✅ |
 | `Dockerfile` + `docker-compose.yml` | 容器化：ACE + Ollama 一键编排 | ✅ |
@@ -176,7 +177,7 @@ ace --install-ui                # 一键安装 / 实时补全依赖（多镜像�
 | `@refs` | 查看当前已引用的文件/文件夹 | `@refs` |
 | `@clear` | 清空全部引用 | `@clear` |
 
-支持的语言：`zh` 中文 · `en` English · `ja` 日本語。
+支持的语言：`zh` 中文 · `en` English · `ja` 日本語。`@lang` 会同时切换模型回复语言与 CLI 界面语言（横幅、菜单、帮助、状态行等；配置向导等长尾输出仍为中文，见 `locales/`）。
 
 支持的技能：
 

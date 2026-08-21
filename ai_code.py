@@ -58,6 +58,7 @@ from agent_runner import (ModelProvider, TOOLS, content_to_tool_protocol,  # noq
                           final_reply_protocol, load_system_prompt,
                           render_result, sanitize_plain_content,
                           tool_calls_to_protocol)
+from i18n import set_language, t  # noqa: E402
 
 CONFIG_PATH = Path.home() / ".ai_code.json"
 LEGACY_CONFIG_PATH = Path.home() / ".agent_cli.json"
@@ -229,12 +230,12 @@ AT_HELP = (
 )
 
 AT_COMPLETE_META = {
-    "lang": "切换回复语言（zh/en/ja）",
-    "skill": "切换技能（coding/writing/analysis/fiction/general）",
-    "file": "把文件内容加入上下文",
-    "folder": "把文件夹列表加入上下文",
-    "refs": "查看当前已引用内容",
-    "clear": "清空文件/文件夹引用",
+    "lang": "at_complete_lang",
+    "skill": "at_complete_skill",
+    "file": "at_complete_file",
+    "folder": "at_complete_folder",
+    "refs": "at_complete_refs",
+    "clear": "at_complete_clear",
 }
 
 
@@ -340,7 +341,7 @@ def _build_slash_completer(commands: Dict[str, str]):
                 for key in ("lang", "skill", "file", "folder", "refs", "clear"):
                     if key.startswith(prefix):
                         yield Completion("@" + key, start_position=-len(text),
-                                         display_meta=AT_COMPLETE_META.get(key, "快捷方式"))
+                                         display_meta=t(AT_COMPLETE_META.get(key, key)))
                 return
             if not text.startswith("/"):
                 return
@@ -763,6 +764,7 @@ class AgentCLI:
         self.client = ModelClient(cfg, mock=mock)
         self.max_history = int(cfg.get("max_history", 0) or 0)
         self.lang = str(cfg.get("lang", "zh"))
+        set_language(self.lang)  # 界面语言跟随配置/@lang
         self.skill = str(cfg.get("skill", "general"))
         self.context_refs: List[str] = []
         self.messages: List[Dict] = []
@@ -793,9 +795,9 @@ class AgentCLI:
         tool = result.get("tool")
         candidates = []
         if tool == "open_file":
-            candidates.append(("点击打开文件", data.get("link") or data.get("path")))
+            candidates.append((t("click_open"), data.get("link") or data.get("path")))
         elif tool in ("browser_screenshot", "image_generate"):
-            candidates.append(("点击查看图片", data.get("image_path")))
+            candidates.append((t("click_view"), data.get("image_path")))
         for label, val in candidates:
             if not val:
                 continue
@@ -843,83 +845,91 @@ class AgentCLI:
             self._at_refs()
         elif cmd == "@clear":
             self.context_refs = []
-            print(c("green", "  已清空文件/文件夹引用。"))
+            print(c("green", t("at_clear_done")))
         else:
-            print(AT_HELP.format(lang=LANG_NAMES.get(self.lang, self.lang)))
+            print(t("at_help", lang=LANG_NAMES.get(self.lang, self.lang)))
 
     def _at_lang(self, arg: str) -> None:
         if not arg:
-            print(f"  当前语言: {LANG_NAMES.get(self.lang, self.lang)}（{self.lang}）")
-            print(c("dim", "  用法: @lang zh | en | ja"))
+            print(t("at_current_lang",
+                    name=LANG_NAMES.get(self.lang, self.lang), code=self.lang))
+            print(c("dim", t("at_lang_usage")))
             return
         key = arg.lower()
         if key not in LANG_NAMES:
-            print(c("red", f"  不支持的语言: {arg}（可选: {', '.join(LANG_NAMES)}）"))
+            print(c("red", t("at_lang_unsupported", arg=arg,
+                             names=", ".join(LANG_NAMES))))
             return
         self.lang = key
-        print(c("green", f"  回复语言已切换为 {LANG_NAMES[key]}。"))
+        set_language(key)  # 界面语言同步切换
+        print(c("green", t("at_lang_switched", name=LANG_NAMES[key])))
 
     def _at_skill(self, arg: str) -> None:
         if not arg:
-            print("  可用技能：")
+            print(t("at_skills_title"))
             for key, info in SKILLS.items():
                 mark = " ✓" if self.skill == key else ""
-                print(f"    {c('magenta', key):<12} {info['name']} — {info['desc']}{mark}")
-            print(c("dim", "  用法: @skill coding | writing | analysis | fiction | general"))
+                name = t(f"skill_{key}")
+                desc = t(f"skill_{key}_desc")
+                print(f"    {c('magenta', key):<12} {name} — {desc}{mark}")
+            print(c("dim", t("at_skill_usage")))
             return
         key = arg.lower()
         if key not in SKILLS:
-            print(c("red", f"  未知技能: {key}（可选: {', '.join(SKILLS)}）"))
+            print(c("red", t("at_skill_unknown", key=key,
+                             names=", ".join(SKILLS))))
             return
         self.skill = key
-        print(c("green", f"  技能已切换为 {SKILLS[key]['name']}：{SKILLS[key]['desc']}"))
+        print(c("green", t("at_skill_switched",
+                           name=t(f"skill_{key}"),
+                           desc=t(f"skill_{key}_desc"))))
 
     def _at_file(self, arg: str) -> None:
         if not arg:
-            print(c("dim", "  用法: @file <路径>（相对项目目录或绝对路径，如 @file README.md）"))
+            print(c("dim", t("at_file_usage")))
             return
         p = self._resolve_local_path(arg)
         if not p or not p.exists():
-            print(c("red", f"  文件不存在: {arg}"))
+            print(c("red", t("at_file_not_found", arg=arg)))
             return
         if p.is_dir():
-            print(c("yellow", "  这是文件夹，请用 @folder 或指定具体文件。"))
+            print(c("yellow", t("at_file_is_dir")))
             return
         try:
             content = p.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
-            print(c("red", f"  读取失败: {e}"))
+            print(c("red", t("at_read_failed", err=e)))
             return
         if len(content) > 4000:
             content = content[:4000] + "\n…(已截断)"
         self.context_refs.append(f"📄 {p}\n{content}")
         self.context_refs = self.context_refs[-3:]
-        print(c("green", f"  已引用文件: {p}（{len(content)} 字符）"))
+        print(c("green", t("at_file_added", path=p, n=len(content))))
 
     def _at_folder(self, arg: str) -> None:
         if not arg:
-            print(c("dim", "  用法: @folder <路径>（列出文件夹内容加入上下文）"))
+            print(c("dim", t("at_folder_usage")))
             return
         p = self._resolve_local_path(arg)
         if not p or not p.exists() or not p.is_dir():
-            print(c("red", f"  文件夹不存在: {arg}"))
+            print(c("red", t("at_folder_not_found", arg=arg)))
             return
         try:
             items = sorted(os.listdir(p))
         except Exception as e:
-            print(c("red", f"  读取失败: {e}"))
+            print(c("red", t("at_read_failed", err=e)))
             return
         if len(items) > 30:
             items = items[:30] + ["…(更多)"]
         self.context_refs.append(f"📁 {p}\n" + "\n".join(items))
         self.context_refs = self.context_refs[-3:]
-        print(c("green", f"  已引用文件夹: {p}（{len(items)} 项）"))
+        print(c("green", t("at_folder_added", path=p, n=len(items))))
 
     def _at_refs(self) -> None:
         if not self.context_refs:
-            print("  当前无文件/文件夹引用（用 @file / @folder 添加）。")
+            print(t("at_refs_empty"))
             return
-        print(f"  当前引用 {len(self.context_refs)} 项：")
+        print(t("at_refs_count", n=len(self.context_refs)))
         for ref in self.context_refs:
             print(f"    {ref.splitlines()[0]}")
 
@@ -979,12 +989,13 @@ class AgentCLI:
                 st["state"] = state
                 return
             if state == "tool" and spinner is not None:
-                spinner.set_label("正在调用工具")
+                spinner.set_label(t("calling_tool"))
             if spinner is None:
                 # 无 spinner（如测试禁用）时退化为静态状态行
                 if st["state"] == "reply":
                     print()
-                label = "思考中…" if state == "thinking" else "正在调用工具…"
+                label = (t("thinking") + "…" if state == "thinking"
+                         else t("calling_tool") + "…")
                 sys.stdout.write(f"\r◈ {label}   ")
                 sys.stdout.flush()
             st["state"] = state
@@ -1003,7 +1014,7 @@ class AgentCLI:
         next_user = self.el.prepare_context(user_input)
         for _round in range(1, MAX_ROUNDS + 1):
             msgs = self.messages + [{"role": "user", "content": next_user}]
-            spinner = _Spinner("思考中")
+            spinner = _Spinner(t("thinking"))
             disp = self._make_display(tools_mode=bool(self.client.tools),
                                       spinner=spinner)
             spinner.start()
@@ -1014,11 +1025,11 @@ class AgentCLI:
                                                      on_delta=disp["on_delta"])
             except KeyboardInterrupt:
                 spinner.stop(newline=True)
-                print("\n已中断")
+                print("\n" + t("interrupted"))
                 return
             except Exception as e:
                 spinner.stop(newline=True)
-                print(c("red", f"\n✗ 模型调用失败: {e}"))
+                print(c("red", "\n" + t("model_call_failed", err=e)))
                 return
             # 状态行/流式正文收尾换行
             if disp["state"]["state"] in ("thinking", "tool"):
@@ -1033,7 +1044,7 @@ class AgentCLI:
                 self.max_history)
 
             # 工具执行阶段动画（仅当本轮确实是工具调用）
-            exec_spinner = (_Spinner("正在调用工具")
+            exec_spinner = (_Spinner(t("calling_tool"))
                             if disp["state"]["state"] == "tool" else None)
             if exec_spinner:
                 exec_spinner.start()
@@ -1042,12 +1053,12 @@ class AgentCLI:
             except KeyboardInterrupt:
                 if exec_spinner:
                     exec_spinner.stop(newline=True)
-                print("\n已中断")
+                print("\n" + t("interrupted"))
                 return
             except Exception as e:
                 if exec_spinner:
                     exec_spinner.stop(newline=True)
-                print(c("yellow", f"  ⚠ 执行层异常: {e}"))
+                print(c("yellow", t("exec_layer_error", err=e)))
                 next_user = f"执行层抛出异常: {e}\n请调整输出格式后重新输出。"
                 continue
             if exec_spinner:
@@ -1058,21 +1069,21 @@ class AgentCLI:
                 print(c("cyan", f"\n  {result.get('plan') or result.get('message', '')}"))
                 if sys.stdin.isatty():
                     try:
-                        answer = input(c("yellow", "  批准该计划并执行？[y/N]: ")).strip().lower()
+                        answer = input(c("yellow", t("plan_approve_q"))).strip().lower()
                     except (EOFError, KeyboardInterrupt):
                         print()
                         answer = "n"
                 else:
-                    print(c("dim", "  非交互模式：自动批准计划。"))
+                    print(c("dim", t("auto_approve_plan")))
                     answer = "y"
                 if answer in ("y", "yes"):
                     self.el.approve_plan()
-                    print(c("green", "  计划已批准，开始执行。"))
+                    print(c("green", t("plan_approved_msg")))
                     next_user = ("计划已批准，不要再调用 plan_propose。"
                                  "请直接按计划逐步执行，每步调用相应工具，最后给出总结。")
                 else:
                     self.el.reject_plan()
-                    print(c("yellow", "  计划已被拒绝。"))
+                    print(c("yellow", t("plan_rejected_msg")))
                     next_user = "用户拒绝了该计划，请调整方案或直接回答。"
                 continue
 
@@ -1082,25 +1093,26 @@ class AgentCLI:
                 continue
 
             if result["status"] == "PERMISSION_REQUEST":
-                print(c("yellow", f"\n  Agent 请求临时授权工具: {result.get('tool')}"))
+                print(c("yellow", "\n" + t("perm_request_title",
+                                           tool=result.get("tool"))))
                 if result.get("reason"):
-                    print(c("dim", f"  原因: {result['reason']}"))
+                    print(c("dim", t("perm_reason", reason=result["reason"])))
                 if sys.stdin.isatty():
                     try:
-                        answer = input(c("yellow", "  是否临时授权？[y/N]: ")).strip().lower()
+                        answer = input(c("yellow", t("perm_approve_q"))).strip().lower()
                     except (EOFError, KeyboardInterrupt):
                         print()
                         answer = "n"
                 else:
-                    print(c("dim", "  非交互模式：自动拒绝授权。"))
+                    print(c("dim", t("auto_deny_perm")))
                     answer = "n"
                 if answer in ("y", "yes"):
                     self.el.grant_pending_permission()
-                    print(c("green", "  已临时授权，Agent 继续。"))
+                    print(c("green", t("perm_granted_msg")))
                     next_user = "用户已授权，请重试刚才被拦截的工具。"
                 else:
                     self.el.reject_pending_permission()
-                    print(c("yellow", "  已拒绝授权。"))
+                    print(c("yellow", t("perm_denied_msg")))
                     next_user = "用户拒绝授权，请换一种不需要该工具的方式完成任务。"
                 continue
 
@@ -1109,59 +1121,63 @@ class AgentCLI:
                     # 兜底：流式展示未覆盖时补打完整回复
                     print()
                     print(result["message"], end="", flush=True)
-                print(c("green", f"  ✓ 完成（{_round} 轮, {time.time() - t0:.1f}s）"))
+                print(c("green", t("done", round=_round,
+                                   sec=time.time() - t0)))
                 return
 
             if result["status"] in ("FORMAT_ERROR", "GUARD_VIOLATION",
                                     "BAIT_TRIGGERED", "AST_FAILED", "403"):
                 self.session["violations"] += 1
-                print(c("red", f"  ✗ {result['status']}: {result.get('message', '')[:80]}"))
+                print(c("red", t("error_line", status=result["status"],
+                                 msg=result.get("message", "")[:80])))
                 next_user = (f"执行层返回了错误，请修正后继续：\n{render_result(result)}\n"
                              f"注意：必须严格按 <INTERNAL>/<EXTERNAL> 格式输出。")
             else:
                 self.session["tools"] += 1
                 status_mark = c("green", "✓") if result["status"] == "SUCCESS" else c("yellow", "⚠")
-                line = f"  ↳ 工具 {result.get('tool')} {status_mark} [{result['status']}]"
+                line = t("tool_line", tool=result.get("tool"),
+                         mark=status_mark, status=result["status"])
                 if result["status"] == "SUCCESS":
                     elapsed = result.get("elapsed")
                     if isinstance(elapsed, (int, float)):
-                        line += c("dim", f" · {elapsed:.2f}s")
+                        line += c("dim", t("elapsed", sec=elapsed))
                     if result.get("snapshot_id"):
-                        line += c("dim", " · 已自动快照，/undo 一键回滚")
+                        line += c("dim", t("snapshotted"))
                 print(line)
                 if result["status"] == "SUCCESS":
                     self._print_clickables(result)
                 if result.get("memory_injected"):
-                    print(c("dim", f"  · 已自动注入 {len(result['memory_injected'])} 条相关记忆"))
+                    print(c("dim", t("memory_injected",
+                                     n=len(result["memory_injected"]))))
                 if self.client.mock and result["status"] == "SUCCESS":
                     data = result.get("data") or {}
                     self.client._mock_provider.mock_tool_result = (
                         data.get("datetime") or json.dumps(data, ensure_ascii=False))
                 next_user = (f"工具执行结果：\n{render_result(result)}\n"
                              f"请根据结果继续（输出下一条工具调用，或最终回复）。")
-        print(c("yellow", "⚠ 达到最大轮数，Agent 未给出最终回复。"))
+        print(c("yellow", t("max_rounds")))
 
     # ---------- 斜杠命令 ----------
 
     COMMANDS = {
-        "/help": "显示帮助（输入 / 或任意前缀也会自动提示）",
-        "/clear": "清空会话历史",
-        "/status": "会话与执行层状态",
-        "/stats": "执行层统计（模块/违规/诱饵）",
-        "/memory": "查看记忆存档",
-        "/snapshots": "列出快照",
-        "/undo": "一键回滚到最近一次自动快照（无需记 id）",
-        "/rollback": "回滚到指定快照（用法: /rollback <快照id>）",
-        "/report": "生成 POC 报告（Nuwa）",
-        "/permission": "查看/切换权限（用法: /permission [readonly|write|full]）",
-        "/mock": "切换离线演示 / 真实模型模式（可来回切换）",
-        "/model": "查看/自定义模型（用法: /model <名> | base-url <url> | api-key <key>）",
-        "/provider": "查看/切换 AI 提供商（智谱/DeepSeek/Kimi/OpenAI/Qwen/本地…，用法: /provider [编号|id] [api-key]）",
-        "/config": "交互式配置模型（向导）",
-        "/open": "用系统默认程序打开文件（用法: /open <路径>）",
-        "/edit": "用 VS Code（或默认编辑器）打开文件（用法: /edit <路径>）",
-        "/search": "联网搜索（DuckDuckGo/Bing，用法: /search <关键词>）",
-        "/exit": "退出",
+        "/help": "cmd_help",
+        "/clear": "cmd_clear",
+        "/status": "cmd_status",
+        "/stats": "cmd_stats",
+        "/memory": "cmd_memory",
+        "/snapshots": "cmd_snapshots",
+        "/undo": "cmd_undo",
+        "/rollback": "cmd_rollback",
+        "/report": "cmd_report",
+        "/permission": "cmd_permission",
+        "/mock": "cmd_mock",
+        "/model": "cmd_model",
+        "/provider": "cmd_provider",
+        "/config": "cmd_config",
+        "/open": "cmd_open",
+        "/edit": "cmd_edit",
+        "/search": "cmd_search",
+        "/exit": "cmd_exit",
     }
 
     def run_command(self, cmd: str) -> bool:
@@ -1190,25 +1206,24 @@ class AgentCLI:
                 name = matches[0]
             else:
                 if matches:
-                    print(c("dim", f"  你输入的是 {cmd or '/'}，可用的命令："))
+                    print(c("dim", t("you_typed", cmd=cmd or "/")))
                     for k in matches:
-                        print(f"    {c('magenta', k):<26} {self.COMMANDS[k]}")
+                        print(f"    {c('magenta', k):<26} {t(self.COMMANDS[k])}")
                 else:
-                    print(f"  没有以 '{name}' 开头的命令（输入 / 查看全部）")
+                    print(t("unknown_prefix", name=name))
                 return True
 
         if name == "/help":
-            print(c("bold", "\n可用命令:"))
+            print(c("bold", "\n" + t("help_title")))
             for k, v in self.COMMANDS.items():
-                print(f"  {c('magenta', k):<22} {v}")
-            print(c("dim", "\n提示: 输入 @ 打开快捷方式"
-                           "（@lang 切换语言 / @skill 切换技能 / @file 引用文件 / @folder 引用文件夹）"))
+                print(f"  {c('magenta', k):<22} {t(v)}")
+            print(c("dim", t("help_hint")))
         elif name == "/clear":
             self.messages.clear()
             self.context_refs = []
             self._init_execution_layer()
             self.session.update(rounds=0, tools=0, violations=0, start=time.time())
-            print(c("green", "会话已清空，执行层已重置。"))
+            print(c("green", t("clear_done")))
         elif name == "/status":
             self._show_status()
         elif name == "/stats":
@@ -1218,7 +1233,7 @@ class AgentCLI:
         elif name == "/snapshots":
             snaps = self.el.guardian.list_snapshots() if self.el.guardian else []
             if not snaps:
-                print("暂无快照")
+                print(t("snap_none"))
             for s in snaps:
                 print(f"  {s['id']}  {s.get('created_iso')}  {s.get('tag')}  ({s.get('file_count')} 文件)")
         elif name == "/undo":
@@ -1233,16 +1248,17 @@ class AgentCLI:
                     answer = input(f"确认回滚到 {parts[1]}？这会覆盖当前文件状态 [y/N]: ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     print()
-                    print("已取消")
+                    print(t("cancelled"))
                     return True
                 if answer == "y":
                     try:
                         ok = self.el.guardian.rollback(parts[1])
-                        print(c("green", "回滚成功") if ok else c("red", "回滚不完整，备份已保留"))
+                        print(c("green", t("undo_rollback_ok"))
+                              if ok else c("red", t("rollback_partial")))
                     except Exception as e:
-                        print(c("red", f"回滚失败: {e}"))
+                        print(c("red", t("rollback_fail", err=e)))
                 else:
-                    print("已取消")
+                    print(t("cancelled"))
         elif name == "/report":
             path = self.el.generate_poc_report("Agent CLI 会话报告")
             print(c("green", f"报告已生成: {path}") if path else c("red", "Nuwa 未启用"))
@@ -1270,22 +1286,24 @@ class AgentCLI:
         elif name in ("/exit", "/quit", "exit", "quit"):
             return False
         else:
-            print(f"未知命令: {name}（输入 / 查看全部命令）")
+            print(t("unknown_cmd", name=name))
         return True
 
     # ---------- 联网搜索（人可用的 /search，与 Agent 的 search 工具同源） ----------
 
     def _search_web(self, query: str) -> None:
         if not query:
-            print("用法: /search <关键词>")
+            print(t("search_usage"))
             return
-        print(c("dim", f"  正在搜索「{query}」..."))
+        print(c("dim", t("search_running", q=query)))
         res = self.el.executor.execute({"tool": "search", "query": query, "top_k": 5})
         if res.status != "success":
-            print(c("red", f"  搜索失败: {res.message}"))
+            print(c("red", t("search_failed", err=res.message)))
             return
         data = res.data
-        print(c("dim", f"  引擎: {data.get('engine', '?')} · 网络: {data.get('network_status', '?')}"))
+        print(c("dim", t("search_engine",
+                         engine=data.get("engine", "?"),
+                         network=data.get("network_status", "?"))))
         for i, item in enumerate(data.get("results", []), 1):
             print(f"  {i}. {item.get('title', '')}")
             print(f"     {c('dim', item.get('url', ''))}")
@@ -1468,13 +1486,13 @@ class AgentCLI:
     # ---------- 登录页 / 首页（参考 AI-CLI 启动平台主菜单） ----------
 
     LANDING_ITEMS = [
-        ("进入聊天", "开始与 Agent 对话", "chat"),
-        ("配置向导", "提供商 → API Key → 模型", "wizard"),
-        ("切换提供商 / 模型", "一键换 AI 提供商", "provider"),
-        ("离线演示", "mock 模式，无需密钥", "mock"),
-        ("状态与统计", "会话 / 快照 / 模块状态", "status"),
-        ("帮助", "斜杠命令速查", "help"),
-        ("退出", "再见", "exit"),
+        ("landing_enter", "landing_enter_desc", "chat"),
+        ("landing_config", "landing_config_desc", "wizard"),
+        ("landing_provider", "landing_provider_desc", "provider"),
+        ("landing_mock", "landing_mock_desc", "mock"),
+        ("landing_status", "landing_status_desc", "status"),
+        ("landing_help", "landing_help_desc", "help"),
+        ("landing_exit", "landing_exit_desc", "exit"),
     ]
 
     @staticmethod
@@ -1528,25 +1546,26 @@ class AgentCLI:
         self._clear_screen()
         for line in ACE_LOGO.split("\n"):
             print(c("magenta", " " + line))
-        print(c("bold", " ACE v1.0 · AI Code Engine"))
+        print(c("bold", t("banner_title")))
         print()
-        print(f"  {c('dim', '模型:')} {self.client.describe()}")
-        print(f"  {c('dim', '权限:')} {self.cfg.get('permission', 'write')}   "
-              f"{c('dim', '目录:')} {self.cfg.get('project_root', '.')}")
+        print(t("banner_model", desc=self.client.describe()))
+        print(t("banner_permission",
+                perm=self.cfg.get("permission", "write"),
+                root=self.cfg.get("project_root", ".")))
         if not self.cfg.get("api_key") and not self.client.mock:
-            print(c("yellow", "  ⚠ 尚未配置 API Key —— 选择 2 配置向导完成首次登录"))
+            print(c("yellow", t("banner_missing_key")))
         print()
-        for i, (label, desc, _action) in enumerate(self.LANDING_ITEMS, 1):
-            if _action == "mock":
+        for i, (label_key, desc_key, action) in enumerate(self.LANDING_ITEMS, 1):
+            label = t(label_key)
+            desc = t(desc_key)
+            if action == "mock":
                 # 根据当前模式动态显示：可来回切换
                 if self.client.mock:
-                    label, desc = "切换回真实模型", "回到真实 API 模式"
-                else:
-                    label, desc = "离线演示", "mock 模式，无需密钥"
+                    label, desc = t("landing_back_real"), t("landing_back_real_desc")
             mark = c("magenta", "❯") if i - 1 == sel else " "
             print(f"  {mark} {i}. {label}   {c('dim', desc)}")
         print()
-        print(c("dim", "  ↑/↓ 选择 · 数字直选 · Enter 确认 · Esc/q 退出"))
+        print(c("dim", t("banner_nav")))
 
     def _toggle_mock(self) -> None:
         """切换离线演示 / 真实模型模式（可来回切换）"""
@@ -1563,7 +1582,7 @@ class AgentCLI:
         """执行首页菜单动作；返回 True 表示整体退出"""
         if action == "exit":
             self._clear_screen()
-            print(c("dim", "  再见，ACE 已退出。"))
+            print(c("dim", t("bye")))
             return True
         if action == "chat":
             self.repl(return_to_landing=True)
@@ -1572,7 +1591,7 @@ class AgentCLI:
             try:
                 self._config_wizard()
             except CommandCancelled:
-                print(c("yellow", "已取消。"))
+                print(c("yellow", t("cancelled") + "。"))
             return False
         if action == "provider":
             self._handle_provider(["/provider"])
@@ -1611,7 +1630,7 @@ class AgentCLI:
                     return
             elif key == "esc" or key == "q":
                 self._clear_screen()
-                print(c("dim", "  再见，ACE 已退出。"))
+                print(c("dim", t("bye")))
                 return
             elif key.isdigit() and 1 <= int(key) <= len(self.LANDING_ITEMS):
                 if self._run_landing_action(self.LANDING_ITEMS[int(key) - 1][2]):
@@ -1622,47 +1641,50 @@ class AgentCLI:
     def _undo_last(self) -> None:
         """一键回滚到最近一次自动快照（无需记 id，写入操作前都会自动快照）"""
         if not self.el.guardian:
-            print(c("red", "快照模块未启用"))
+            print(c("red", t("snap_disabled")))
             return
         snaps = self.el.guardian.list_snapshots()
         if not snaps:
-            print("暂无快照可回滚（每次写入操作前都会自动创建快照）")
+            print(t("undo_none"))
             return
         latest = snaps[-1]
         try:
             ok = self.el.guardian.rollback(latest["id"])
             if ok:
-                print(c("green", f"已回滚到最近快照 {latest['id']} "
+                print(c("green", t("undo_done", id=latest["id"]) +
                                  f"（{latest.get('created_iso')}，{latest.get('file_count')} 个文件）"))
             else:
-                print(c("red", "回滚不完整，备份已保留"))
+                print(c("red", t("rollback_partial")))
         except Exception as e:
-            print(c("red", f"回滚失败: {e}"))
+            print(c("red", t("rollback_fail", err=e)))
 
     def _show_status(self) -> None:
         stats = self.el.get_stats()
         elapsed = time.time() - self.session["start"]
-        print(f"  会话: {self.session['rounds']} 轮 | 工具执行 {self.session['tools']} 次 | "
-              f"违规 {self.session['violations']} 次 | 已运行 {elapsed:.0f}s")
-        print(f"  语言: {LANG_NAMES.get(self.lang, self.lang)} | "
-              f"技能: {SKILLS.get(self.skill, {}).get('name', self.skill)} | "
-              f"引用: {len(self.context_refs)} 项")
-        print(f"  权限: {stats['permission']['current_level']} | "
-              f"违规累计 {stats['violation_count']} | 执行累计 {stats['execution_count']}")
+        print(t("status_session", rounds=self.session["rounds"],
+                tools=self.session["tools"], violations=self.session["violations"],
+                sec=elapsed))
+        print(t("status_lang_skill",
+                lang=LANG_NAMES.get(self.lang, self.lang),
+                skill=t(f"skill_{self.skill}") if self.skill in SKILLS else self.skill,
+                refs=len(self.context_refs)))
+        print(t("status_permission", level=stats["permission"]["current_level"],
+                viol=stats["violation_count"], exec=stats["execution_count"]))
         if self.el.guardian:
             snaps = self.el.guardian.list_snapshots()
             limit = getattr(self.el.guardian, "max_snapshots", 20)
-            print(f"  快照: {len(snaps)} 个（自动清理上限 {limit}，/undo 一键回滚最近）")
-        print(f"  模块: v2={stats['v2_gateway']} v1={stats['v1_modules']} parser={stats['parser']}")
+            print(t("status_snapshots", n=len(snaps), limit=limit))
+        print(t("status_modules", v2=stats["v2_gateway"],
+                v1=stats["v1_modules"], parser=stats["parser"]))
 
     def _show_memory(self) -> None:
         if not self.el.archive:
-            print("记忆引擎未启用")
+            print(t("memory_disabled"))
             return
         print(f"  {json.dumps(self.el.archive.stats(), ensure_ascii=False)}")
         mem = self.el.archive.get_memory(top_k=5)
         if not mem:
-            print("  暂无记忆")
+            print(t("memory_empty"))
         for m in mem:
             mark = "⚡" if m["urgent"] else "·"
             print(f"  {mark} {m['text'][:60]}  (sim={m['similarity']}, w={m['weight']})")
@@ -1673,14 +1695,15 @@ class AgentCLI:
         """聊天 REPL；return_to_landing=True 时退出聊天回到主界面，否则结束程序"""
         # 进入聊天前清屏，避免登录页的 logo/菜单残留在屏幕上造成双头部
         self._clear_screen()
-        print(c("bold", "ACE") + c("dim", " v1.0 · AI Code Engine"))
-        print(f"  模型: {self.client.describe()}")
-        print(f"  权限: {self.cfg['permission']} | 目录: {self.cfg['project_root']}")
+        print(c("bold", "ACE") + c("dim", t("banner_sub")))
+        print(t("banner_model", desc=self.client.describe()))
+        print(t("banner_permission",
+                perm=self.cfg["permission"], root=self.cfg["project_root"]))
         if self.cfg["permission"] != "readonly":
-            print(c("yellow", "  ⚠ 当前为写权限：terminal_exec 可执行任意 shell 命令。"
-                               "生产环境建议 readonly 起步，按需用 /permission 切换。"))
-        print(f"  输入 {c('magenta', '/help')} 查看命令，{c('magenta', '@')} 打开快捷方式，"
-              f"{c('magenta', '/exit')} 退出")
+            print(c("yellow", t("banner_warn_write")))
+        print(t("banner_hint",
+                help=c("magenta", "/help"), at=c("magenta", "@"),
+                exit=c("magenta", "/exit")))
 
         # 启动自检：配置防蠢提示
         for hint in _config_sanity_hints(self.cfg):
@@ -1744,20 +1767,20 @@ class AgentCLI:
                     if not self.run_command(line):
                         break
                 except CommandCancelled:
-                    print(c("yellow", "已取消。"))
+                    print(c("yellow", t("cancelled") + "。"))
                 except KeyboardInterrupt:
-                    print("\n已取消。")
+                    print("\n" + t("cancelled") + "。")
                 except Exception as e:
-                    print(c("red", f"命令执行失败: {e}"))
+                    print(c("red", t("command_failed", err=e)))
                 continue
             try:
                 self.converse(line, echo_input=False)
             except KeyboardInterrupt:
-                print("\n已中断")
+                print("\n" + t("interrupted"))
             except Exception as e:
-                print(c("red", f"对话异常: {e}"))
-        print(c("dim", "  已返回主界面。") if return_to_landing
-              else c("dim", "  再见，ACE 已退出。"))
+                print(c("red", t("chat_error", err=e)))
+        print(c("dim", t("back_landing")) if return_to_landing
+              else c("dim", t("bye")))
 
 
 def main() -> None:
