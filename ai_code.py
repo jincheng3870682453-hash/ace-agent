@@ -1190,6 +1190,37 @@ class AgentCLI:
             return False
         return answer in ("y", "yes")
 
+    def _build_status_bar(self):
+        """底部状态栏（Claude Code 同款常驻，每次按键实时刷新）"""
+        from prompt_toolkit.formatted_text import FormattedText
+        model = str(self.cfg.get("model", "?"))
+        perm = str(self.cfg.get("permission", "write"))
+        mode = "mock" if self.client.mock else "在线"
+        snaps = 0
+        if self.el.guardian:
+            try:
+                snaps = len(self.el.guardian.list_snapshots())
+            except Exception:
+                snaps = 0
+        base = "class:status-bar"
+        perm_cls = f"status-bar.perm-{perm}" if perm in ("readonly", "write", "full") else base
+        seg = [
+            (base, f" 模型: {model}"),
+            (base, "│"),
+            (perm_cls, f" 权限: {perm}"),
+            (base, "│"),
+            (base, f" 模式: {mode}"),
+            (base, "│"),
+            (base, f" 会话: {self.session['rounds']}轮/{self.session['tools']}工具"),
+            (base, "│"),
+            (base, f" 快照: {snaps}"),
+            (base, "│"),
+            (base, f" 违规: {self.el.violation_count}"),
+            (base, "│"),
+            (base, " /help 帮助"),
+        ]
+        return FormattedText(seg)
+
     # ---------- 斜杠命令 ----------
 
     COMMANDS = {
@@ -1791,11 +1822,17 @@ class AgentCLI:
                     completer=_build_slash_completer(self.COMMANDS),
                     complete_while_typing=True,
                     key_bindings=merged,
+                    bottom_toolbar=lambda: self._build_status_bar(),
                     style=Style.from_dict({
                         "prompt": "ansimagenta bold",
                         "completion-menu.completion": "bg:#2b2b3c #ffffff",
                         "completion-menu.completion.current": "bg:#5f3dc4 #ffffff",
                         "completion-menu.completion.meta": "bg:#1e1e2e #aaaaaa",
+                        # 底部状态栏样式（Claude Code 同款常驻）
+                        "status-bar": "bg:#1e1e2e #c8c8c8",
+                        "status-bar.perm-readonly": "bg:#1e1e2e #16a34a",
+                        "status-bar.perm-write": "bg:#1e1e2e #d97706",
+                        "status-bar.perm-full": "bg:#1e1e2e #dc2626",
                     }),
                 )
             except ImportError:

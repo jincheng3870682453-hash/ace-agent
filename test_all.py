@@ -995,8 +995,16 @@ try:
     check("补全器: @file 路径补全不崩溃且 start_position<=0",
           len(items2) >= 0 and all(it.start_position <= 0 for it in items2),
           [it.start_position for it in items2[:3]])
+
+    # —— 底部状态栏（Claude Code 同款） ——
+    bar = cli_cmd._build_status_bar()
+    from prompt_toolkit.formatted_text import to_formatted_text, fragment_list_to_text
+    bar_text = fragment_list_to_text(to_formatted_text(bar))
+    check("状态栏: 含模型/权限/会话/快照",
+          "模型" in bar_text and "权限" in bar_text
+          and "会话" in bar_text and "快照" in bar_text, bar_text[:200])
 except ImportError:
-    pass  # 无 prompt_toolkit 环境跳过（补全器本身也不启用）
+    pass  # 无 prompt_toolkit 环境跳过（补全器/状态栏本身也不启用）
 
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")
