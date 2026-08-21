@@ -30,9 +30,34 @@ class FileTools:
 
         try:
             if tool_name == "file_read":
+                if self.confine_files:
+                    confined = self._confined(path)
+                    if confined is not None:
+                        path = confined
+                    elif path.is_dir():
+                        # 越界目录：仍允许只读列出（与 terminal_view ls 口径一致），
+                        # 防止"帮我看看桌面/主目录"这类问题因工具选择而失败
+                        pass
+                    else:
+                        return ExecutionResult(status="error", error_code="403",
+                                               message="路径越界：文件操作仅允许在项目目录内"
+                                                       "（目录可用 file_read 列出）")
                 if not path.exists():
                     return ExecutionResult(status="error", error_code="404",
-                                           message=f"文件不存在: {path}")
+                                           message=f"文件不存在: {path}"
+                                                   f"（若目标是目录，file_read 会直接返回目录列表）")
+                if path.is_dir():
+                    try:
+                        items = sorted(os.listdir(path))
+                    except Exception as e:
+                        return ExecutionResult(status="error", error_code="500",
+                                               message=f"目录读取失败: {e}")
+                    return ExecutionResult(status="success", data={
+                        "content": "\n".join(items),
+                        "path": str(path),
+                        "is_dir": True,
+                        "listing": items,
+                    })
                 content = self._read_text_any(path)
                 return ExecutionResult(status="success", data={"content": content, "path": str(path)})
             elif tool_name == "file_write":

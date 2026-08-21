@@ -986,9 +986,20 @@ _sp = cli_cmd._build_system_prompt()
 check("系统提示词含用户桌面目录",
       "用户桌面目录" in _sp and "Desktop" in _sp and "工作目录" in _sp, _sp[:300])
 
-# —— 残缺 </EXTERNAL 标签清理 ——
-_clean = ai_code._sanitize_display_text("你好！\n</EXTERNAL")
-check("残缺 </EXTERNAL 标签被清理", "</EXTERNAL" not in _clean, repr(_clean))
+# —— 残缺 </EXTERNAL / 裸 </ 标签清理 ——
+_clean = ai_code._sanitize_display_text("你好！\n</")
+check("裸 </ 残标签被清理", "</" not in _clean, repr(_clean))
+_clean2 = ai_code._sanitize_display_text("你好！\n</EXTERNAL")
+check("残缺 </EXTERNAL 标签被清理", "</EXTERNAL" not in _clean2, repr(_clean2))
+
+# —— file_read 目录返回列表（"桌面有什么"不再 404 误判） ——
+r = run_agent(el_h, "file_read", path=".")
+check("file_read 项目内目录返回列表", r["status"] == "SUCCESS"
+      and r["data"].get("is_dir") is True, r.get("message"))
+r = run_agent(el_h, "file_read", path=str(FOLDER.parent))
+check("file_read 越界目录仍可列出（桌面场景）", r["status"] == "SUCCESS"
+      and r["data"].get("is_dir") is True and len(r["data"].get("listing", [])) >= 1,
+      r.get("message"))
 
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")

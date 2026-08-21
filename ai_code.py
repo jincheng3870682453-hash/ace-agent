@@ -751,6 +751,7 @@ def _sanitize_display_text(text: str) -> str:
     t = re.sub(r"</?INTERNAL\s*>?", "", t, flags=re.IGNORECASE)
     t = re.sub(r"</?EXTERNAL\s*>?", "", t, flags=re.IGNORECASE)
     t = re.sub(r"</?EXTERNAL\s*$", "", t, flags=re.IGNORECASE)   # 残缺结尾标签
+    t = re.sub(r"</?[A-Za-z]*$", "", t)                          # 裸结尾残标签（</、</E、< 等）
     t = re.sub(r"^\s*answer\.\s*", "", t)
     return t.strip()
 
@@ -973,11 +974,12 @@ class AgentCLI:
                         if spinner is not None:
                             spinner.stop()
                         visible = after.lstrip()
-                        # 清理结尾 </EXTERNAL>（含残缺的 </EXTERNAL 无 > 变体）
+                        # 清理结尾 </EXTERNAL>（含残缺的 </EXTERNAL 无 > 变体）与裸 </ 残标签
                         for _tag in ("</EXTERNAL>", "</EXTERNAL"):
                             if _tag in visible:
                                 visible = visible.split(_tag)[0]
                                 break
+                        visible = re.sub(r"</?[A-Za-z]*$", "", visible)
                         if len(visible) > st["reply_printed"]:
                             if st["state"] != "reply":
                                 print()   # 状态行 → 正文换行
