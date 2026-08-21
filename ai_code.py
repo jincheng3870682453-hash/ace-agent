@@ -1785,11 +1785,15 @@ class AgentCLI:
                         "completion-menu.completion.meta": "bg:#1e1e2e #aaaaaa",
                     }),
                 )
+                print(c("dim", "  ✓ 实时补全已启用（输入 / 或 @ 弹出菜单）"))
             except ImportError:
                 print(c("dim", "  💡 提示: 运行 ace --install-ui 一键安装实时补全依赖（Claude Code 同款 / 弹窗菜单）"))
-            except Exception:
-                # 管道/重定向等无真实控制台环境：降级为普通 input()
+            except Exception as e:
+                # 构造失败（终端/版本兼容等）：降级为普通 input()，但明示原因便于排查
+                print(c("yellow", f"  ⚠ 补全菜单未启用（{type(e).__name__}: {e}），已降级为普通输入"))
                 session = None
+        else:
+            print(c("dim", "  ⚠ 非交互终端（stdin/stdout 非 TTY），实时补全菜单不可用"))
 
         while True:
             try:
