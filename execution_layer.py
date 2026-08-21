@@ -394,6 +394,10 @@ class ExecutionLayer:
         self.plan_approved = False
         # 权限申请：Agent 请求临时授权，用户批准后放行一次
         self.pending_permission: Optional[Dict] = None
+        # 重复失败熔断：同工具同错误连续 N 次 → 禁止再调用，防小模型死循环
+        self.repeat_fail: Dict[str, int] = {}
+        self.banned_tools: set = set()
+        self.repeat_fail_threshold = 3
         # L1/L2 路由结果缓存（五层网关）
         self.last_route: Optional[Dict] = None
         self.last_route_input: Optional[str] = None
@@ -500,6 +504,15 @@ class ExecutionLayer:
             }
         tool_name = tool_call.get("tool", "")
 
+        # 4.4 控制类工具熔断：plan_propose / request_permission 连续失败同样禁止
+        if tool_name in ("plan_propose", "request_permission") and tool_name in self.banned_tools:
+            return {
+                "status": "TOOL_BANNED",
+                "message": f"工具 '{tool_name}' 已因连续失败被熔断，本次对话禁止再调用",
+                "instruction": "请直接执行任务或回复用户，不要再调用被熔断的工具",
+                **route_meta,
+            }
+
         # 4.5 控制类工具：计划提议 / 权限申请（先于权限裁决，任何权限等级都可用）
         if tool_name == "plan_propose":
             return self._handle_plan_propose(tool_call, user_input, parsed, route_meta)
@@ -513,6 +526,16 @@ class ExecutionLayer:
                 "message": "当前有未批准的计划，请等待用户批准后再执行工具",
                 "plan": self._render_plan(),
                 "instruction": "请先等待 PLAN_PROPOSED 的批准结果",
+                **route_meta,
+            }
+
+        # 4.7 重复失败熔断闸门：连续失败的工具直接拒绝，防死循环
+        if tool_name in self.banned_tools:
+            return {
+                "status": "TOOL_BANNED",
+                "message": f"工具 '{tool_name}' 已因连续失败被熔断，本次对话禁止再调用",
+                "instruction": "请改用其他工具完成目标，或直接向用户说明无法完成的原因，"
+                               "不要再次调用被熔断的工具",
                 **route_meta,
             }
 
@@ -581,6 +604,8 @@ class ExecutionLayer:
         # 12. 构建返回（本轮快照引用用完后立即清空，防止后续轮次误回滚）
         self.current_snapshot_id = None
         if result.status == "success":
+            # 成功推进：清空失败计数（模型已恢复正常）
+            self.repeat_fail.clear()
             return {
                 "status": "SUCCESS",
                 "tool": tool_name,
@@ -604,6 +629,10 @@ class ExecutionLayer:
             elif result.error_code == "400" and tool_name in TOOL_EXAMPLES:
                 # 参数缺失/格式错误：直接给模型一个可抄的示例
                 extra_instruction = f"参数格式示例: {TOOL_EXAMPLES[tool_name]}"
+            # 重复失败熔断：同工具同错误连续失败达阈值 → 禁止再调用
+            fail_hint = self._note_tool_failure(tool_name, result.error_code)
+            if fail_hint:
+                extra_instruction = (extra_instruction or "") + fail_hint
             return {
                 "status": result.error_code or "ERROR",
                 "message": result.message,
@@ -613,6 +642,25 @@ class ExecutionLayer:
                 "instruction": extra_instruction,
                 **route_meta,
             }
+
+    def _note_tool_failure(self, tool_name: str, error_code: str) -> Optional[str]:
+        """记录工具连续失败，返回附加 instruction；达阈值后熔断该工具。
+        防止小模型对同一错误重复调用死循环（如缺参数的 request_permission）。
+        403 安全拦截（沙盒/白名单/路径越界）是执行层主动防御，不视为模型失败，不计数。"""
+        if error_code == "403":
+            return None
+        fail_key = f"{tool_name}:{error_code or 'ERROR'}"
+        self.repeat_fail[fail_key] = self.repeat_fail.get(fail_key, 0) + 1
+        count = self.repeat_fail[fail_key]
+        if count >= self.repeat_fail_threshold:
+            self.banned_tools.add(tool_name)
+            return (f" ⚠ 工具 {tool_name} 已连续失败 {count} 次，已被熔断："
+                    "本次对话禁止再次调用它。请换用其他工具完成目标，"
+                    "或直接向用户说明无法完成的原因。")
+        if count >= 2:
+            return (f"（注意：{tool_name} 已连续失败 {count} 次，"
+                    "再失败一次将被熔断，请换用其他工具或直接回复用户）")
+        return None
 
     # ---------- Plan Mode（计划提议与批准） ----------
 
@@ -662,7 +710,10 @@ class ExecutionLayer:
             "steps": steps,
             "plan": self._render_plan(),
             "message": "已生成任务计划，等待用户批准",
-            "instruction": "等待用户批准：批准后按计划逐步执行；拒绝则调整方案",
+            "instruction": "等待用户批准：批准后按计划逐步执行；拒绝则调整方案。"
+                           "若计划涉及写入桌面/主目录等用户明确指出的位置，"
+                           "请用 file_write 的绝对路径（如 C:\\Users\\<用户名>\\Desktop\\文件.py），"
+                           "相对路径只会写进项目目录",
             **route_meta,
         }
 
@@ -687,10 +738,24 @@ class ExecutionLayer:
         target = str(tool_call.get("target", "")).strip()
         reason = str(tool_call.get("reason", "")).strip()
         if not target:
+            hint = self._note_tool_failure("request_permission", "FORMAT_ERROR")
             return {
                 "status": "FORMAT_ERROR",
                 "message": "request_permission 需要 target 参数",
-                "instruction": '示例: {"tool": "request_permission", "target": "terminal_exec", "reason": "..."}',
+                "instruction": '示例: {"tool": "request_permission", "target": "terminal_exec", "reason": "..."}'
+                               + (hint or ""),
+                **route_meta,
+            }
+        # 当前权限已允许该工具：直接掐断，防止模型盲目申请权限死循环
+        allowed_tools = self.permission.PERMISSION_LEVELS.get(
+            self.permission.level, {}).get("tools", set())
+        if target in allowed_tools:
+            return {
+                "status": "SUCCESS",
+                "tool": "request_permission",
+                "message": (f"当前权限（{self.permission.get_status()['description']}）"
+                            f"已允许工具 '{target}'，无需申请权限"),
+                "instruction": f"直接调用 {target} 执行，不要再调用 request_permission",
                 **route_meta,
             }
         self.pending_permission = {"tool": target, "reason": reason}

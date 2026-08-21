@@ -1150,7 +1150,8 @@ class AgentCLI:
                 return
 
             if result["status"] in ("FORMAT_ERROR", "GUARD_VIOLATION",
-                                    "BAIT_TRIGGERED", "AST_FAILED", "403"):
+                                    "BAIT_TRIGGERED", "AST_FAILED", "403",
+                                    "TOOL_BANNED"):
                 self.session["violations"] += 1
                 print(c("red", t("error_line", status=result["status"],
                                  msg=result.get("message", "")[:80])))

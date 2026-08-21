@@ -890,6 +890,42 @@ r = run_agent(el_h, "math_calc", expression="__import__('os')")
 check("math_calc 代码执行拦截", r["status"] == "403", r.get("message"))
 r = run_agent(el_h, "api_get", url="file:///etc/passwd")
 check("api_get 协议校验拦截", r["status"] == "400", r.get("message"))
+
+# —— 重复失败熔断（防小模型死循环） ——
+el_f = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                      config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+_bad_perm = ("<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] p\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+             "<EXTERNAL>\nanswer.\n{\"tool\": \"request_permission\"}\n</EXTERNAL>")
+_s1 = el_f.process_agent_output(_bad_perm, "熔断测试")
+_s2 = el_f.process_agent_output(_bad_perm, "熔断测试")
+_s3 = el_f.process_agent_output(_bad_perm, "熔断测试")
+check("request_permission 连续失败触发熔断",
+      "request_permission" in el_f.banned_tools
+      and "熔断" in ((_s3.get("instruction") or "") + (_s3.get("message") or "")), _s3)
+_s4 = el_f.process_agent_output(_bad_perm, "熔断测试")
+check("熔断后 request_permission 直接拒绝", _s4["status"] == "TOOL_BANNED", _s4)
+_good_perm = ("<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] p\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+              "<EXTERNAL>\nanswer.\n{\"tool\": \"request_permission\", "
+              "\"target\": \"file_write\"}\n</EXTERNAL>")
+el_f2 = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                       config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+_rp = el_f2.process_agent_output(_good_perm, "熔断测试")
+check("write 权限下申请已允许工具 → 短路无需授权",
+      _rp["status"] == "SUCCESS" and "无需申请" in _rp["message"], _rp)
+_rd = ("<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] r\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+       "<EXTERNAL>\nanswer.\n{\"tool\": \"file_read\", \"path\": \"nope.txt\"}\n</EXTERNAL>")
+for _i in range(3):
+    _rf = el_f.process_agent_output(_rd, "熔断测试")
+check("file_read 404 连续 3 次触发熔断", "file_read" in el_f.banned_tools, _rf)
+_rf4 = el_f.process_agent_output(_rd, "熔断测试")
+check("熔断后 file_read 直接拒绝", _rf4["status"] == "TOOL_BANNED", _rf4)
+# 成功执行后计数重置
+el_f.repeat_fail.clear()
+el_f.banned_tools.discard("file_read")
+_ok = ("<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] m\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+       "<EXTERNAL>\nanswer.\n{\"tool\": \"math_calc\", \"expression\": \"1+1\"}\n</EXTERNAL>")
+el_f.process_agent_output(_ok, "熔断测试")
+check("工具成功后失败计数清空", el_f.repeat_fail == {}, el_f.repeat_fail)
 r = el_h.process_agent_output(
     "<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] x\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
     "<EXTERNAL>\nanswer.\n[1,2,3]\n</EXTERNAL>", "测试")
