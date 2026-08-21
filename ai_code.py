@@ -381,7 +381,7 @@ def _build_slash_completer(commands: Dict[str, str]):
             for name, desc in self.commands.items():
                 if name.startswith("/" + prefix):
                     yield Completion(name, start_position=-len(text),
-                                     display_meta=desc)
+                                     display_meta=t(desc))
 
     return SlashCompleter()
 

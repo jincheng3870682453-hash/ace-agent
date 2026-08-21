@@ -1268,6 +1268,13 @@ with contextlib.redirect_stdout(io.StringIO()):
     cli_i18n._handle_at_command("@lang zh")
 check("切回中文后全局翻译复位", i18n_mod.current_lang() == "zh")
 
+# —— COMMANDS 描述键必须全部有翻译（防止补全菜单泄漏键名 cmd_xxx） ——
+_zh_pack = json.loads(
+    (Path(__file__).resolve().parent / "locales" / "zh.json").read_text(encoding="utf-8"))
+_missing_keys = [v for v in ai_code.AgentCLI.COMMANDS.values() if v not in _zh_pack]
+check("COMMANDS 全部描述键在 zh.json 有翻译（补全菜单不泄漏键名）",
+      not _missing_keys, _missing_keys)
+
 # ============================================================
 print("=" * 60)
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")
