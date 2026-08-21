@@ -65,6 +65,11 @@ LEGACY_CONFIG_PATH = Path.home() / ".agent_cli.json"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 MAX_ROUNDS = 20
 STALL_ABORT_ROUNDS = 6  # 连续失败轮数阈值：达到即中止会话（防死循环烧轮数）
+
+# Windows 无默认打开程序时，这些文本类扩展名回退记事本打开
+_TEXT_EXTENSIONS = {".py", ".txt", ".md", ".json", ".log", ".csv", ".ini", ".cfg",
+                    ".yaml", ".yml", ".toml", ".xml", ".html", ".css", ".js",
+                    ".ts", ".bat", ".cmd", ".ps1", ".sql", ".env"}
 SYSTEM_PROMPT = load_system_prompt()
 
 logger = logging.getLogger("ace")
@@ -1398,7 +1403,7 @@ class AgentCLI:
         return p
 
     def _open_file(self, path_str: str, prefer_editor: bool = False) -> None:
-        """在系统默认程序（或 VS Code）中打开文件"""
+        """在系统默认程序（或 VS Code）中打开文件；Windows 无关联程序时文本文件回退记事本"""
         if not path_str.strip():
             print(f"用法: {'/edit' if prefer_editor else '/open'} <文件路径>")
             return
@@ -1412,12 +1417,27 @@ class AgentCLI:
                     subprocess.Popen([code, str(p)])
                     print(c("green", f"已在 VS Code 中打开: {p}"))
                     return
-            if os.name == "nt":
-                os.startfile(str(p))
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(p)])
-            else:
-                subprocess.Popen(["xdg-open", str(p)])
+            try:
+                if os.name == "nt":
+                    os.startfile(str(p))
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(p)])
+                else:
+                    subprocess.Popen(["xdg-open", str(p)])
+            except Exception as e:
+                # Windows 上 .py 等常无关联默认程序（找不到应用程序）：
+                # 文本类文件回退记事本打开
+                if os.name == "nt" and p.suffix.lower() in _TEXT_EXTENSIONS:
+                    try:
+                        subprocess.Popen(["notepad.exe", str(p)])
+                        print(c("green",
+                                f"该类型无默认打开程序，已用记事本打开: {p}"))
+                        return
+                    except Exception as e2:
+                        print(c("red", f"打开失败（记事本回退也失败）: {e2}"))
+                        return
+                print(c("red", f"打开失败: {e}"))
+                return
             print(c("green", f"已打开: {p}"))
         except Exception as e:
             print(c("red", f"打开失败: {e}"))

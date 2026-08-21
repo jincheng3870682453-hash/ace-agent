@@ -15,6 +15,11 @@ from tools.base import (GIT_READONLY_SUBCOMMANDS, MAX_COMMAND_LENGTH,
                         VERSION_ONLY_COMMANDS, VERSION_SUBCOMMANDS)
 from tools.result import ExecutionResult
 
+# Windows 无默认打开程序时，文本类扩展名回退记事本打开（.py 常无关联程序）
+_TEXT_EXTENSIONS = {".py", ".txt", ".md", ".json", ".log", ".csv", ".ini", ".cfg",
+                    ".yaml", ".yml", ".toml", ".xml", ".html", ".css", ".js",
+                    ".ts", ".bat", ".cmd", ".ps1", ".sql", ".env"}
+
 
 class FileTools:
     def _exec_file_ops(self, tool_name: str, params: Dict) -> ExecutionResult:
@@ -288,6 +293,16 @@ class FileTools:
             else:
                 subprocess.Popen(["xdg-open", str(p)])
         except Exception as e:
+            # Windows 上 .py 等常无关联默认程序：文本类文件回退记事本
+            if os.name == "nt" and p.suffix.lower() in _TEXT_EXTENSIONS:
+                try:
+                    subprocess.Popen(["notepad.exe", str(p)])
+                    return ExecutionResult(status="success", data={
+                        "path": str(p), "opened": True, "editor": "notepad",
+                        "hint": "该类型无默认打开程序，已用记事本打开"})
+                except Exception as e2:
+                    return ExecutionResult(status="error", error_code="500",
+                                           message=f"打开失败（记事本回退也失败）: {e2}")
             return ExecutionResult(status="error", error_code="500", message=f"打开失败: {e}")
         return ExecutionResult(status="success", data={"path": str(p), "opened": True})
 
@@ -332,6 +347,16 @@ class FileTools:
             else:
                 subprocess.Popen(["xdg-open", str(p)])
         except Exception as e:
+            # Windows 上 .py 等常无关联默认程序：文本类文件回退记事本
+            if os.name == "nt" and p.suffix.lower() in _TEXT_EXTENSIONS:
+                try:
+                    subprocess.Popen(["notepad.exe", str(p)])
+                    return ExecutionResult(status="success", data={
+                        "path": str(p), "editor": "notepad",
+                        "hint": "该类型无默认打开程序，已用记事本打开"})
+                except Exception as e2:
+                    return ExecutionResult(status="error", error_code="500",
+                                           message=f"打开失败（记事本回退也失败）: {e2}")
             return ExecutionResult(status="error", error_code="500", message=f"打开失败: {e}")
         return ExecutionResult(status="success", data={"path": str(p), "editor": "system_default"})
 

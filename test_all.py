@@ -1155,6 +1155,25 @@ _out3 = _buf3.getvalue()
 check("tools 模式'正文+json'混合输出隐藏 json",
       '"name"' not in _out3 and "plan_propose" not in _out3, _out3[:200])
 
+# —— Windows 无默认程序打开 .py → 记事本回退 ——
+if hasattr(os, "startfile"):
+    import unittest.mock as _mock
+    import shutil as _shutil
+    _pyf = el_h.project_root / "open_me.py"
+    _pyf.write_text("print(1)", encoding="utf-8")
+    with _mock.patch.object(_shutil, "which", return_value=None), \
+         _mock.patch.object(os, "startfile", side_effect=OSError("no app")), \
+         _mock.patch("subprocess.Popen") as _pop:
+        r = run_agent(el_h, "edit_file", path=str(_pyf))
+        check("edit_file 无默认程序 → 记事本回退",
+              r["status"] == "SUCCESS" and r["data"].get("editor") == "notepad", r)
+    with _mock.patch.object(_shutil, "which", return_value=None), \
+         _mock.patch.object(os, "startfile", side_effect=OSError("no app")), \
+         _mock.patch("subprocess.Popen") as _pop2:
+        r2 = run_agent(el_h, "open_file", path=str(_pyf), auto_open=True)
+        check("open_file auto_open 无默认程序 → 记事本回退",
+              r2["status"] == "SUCCESS" and r2["data"].get("editor") == "notepad", r2)
+
 # —— 嵌套 ``` 围栏的 JSON 仍能识别（模型把代码围栏嵌进 plan 步骤） ——
 from agent_runner import content_to_tool_protocol as _cttp2  # noqa: E402
 _nested = ('好的，请稍等。\n```json\n{"name": "plan_propose", "arguments": '
