@@ -130,5 +130,6 @@
   "memory_disabled": "Memory engine is disabled",
   "memory_empty": "  No memories yet",
   "command_failed": "Command failed: {err}",
-  "chat_error": "Conversation error: {err}"
+  "chat_error": "Conversation error: {err}",
+  "stall_abort": "WARNING: Agent failed/blocked for {n} consecutive rounds and was auto-aborted. Please rephrase your request or check the model."
 }

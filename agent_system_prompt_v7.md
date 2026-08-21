@@ -194,6 +194,11 @@ answer.
 
 ✏️ 写入工具（执行层自动创建快照并监控）：
 
+⚠️ 重要规则：创建/写入/修改文件必须用 file_write 工具直接写内容。
+禁止在计划或步骤中出现"打开文件管理器""用 VS Code/记事本打开""导航到桌面"
+等手动操作——Agent 无法打开编辑器手动输入，这类步骤永远不会被执行。
+正确做法：file_write 写入 →（可选）file_read 验证 →（可选）open_file 给用户看。
+
 11. terminal_exec
     {"tool":"terminal_exec","command":"touch /tmp/test"}
 

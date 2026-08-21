@@ -64,6 +64,7 @@ CONFIG_PATH = Path.home() / ".ai_code.json"
 LEGACY_CONFIG_PATH = Path.home() / ".agent_cli.json"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 MAX_ROUNDS = 20
+STALL_ABORT_ROUNDS = 6  # 连续失败轮数阈值：达到即中止会话（防死循环烧轮数）
 SYSTEM_PROMPT = load_system_prompt()
 
 logger = logging.getLogger("ace")
@@ -1037,6 +1038,7 @@ class AgentCLI:
         t0 = time.time()
         # 记忆预注入：模型生成前把相关历史记忆放进 prompt（无记忆时原样返回）
         next_user = self.el.prepare_context(user_input)
+        fail_streak = 0
         for _round in range(1, MAX_ROUNDS + 1):
             msgs = self.messages + [{"role": "user", "content": next_user}]
             spinner = _Spinner(t("thinking"))
@@ -1089,6 +1091,27 @@ class AgentCLI:
             if exec_spinner:
                 exec_spinner.stop(newline=True)
             self.session["rounds"] += 1
+
+            # 连续失败/无进展熔断：工具反复失败说明模型已死循环，不再浪费轮数。
+            # 查看类工具（terminal_view/file_read/search/browser_screenshot）成功不算进展，
+            # 防止模型靠反复 ls 假装干活、绕过熔断。
+            _status = result["status"]
+            _VIEW_TOOLS = {"terminal_view", "file_read", "search", "browser_screenshot"}
+            if _status == "FINAL_REPLY":
+                fail_streak = 0
+            elif _status == "SUCCESS":
+                if result.get("tool") in _VIEW_TOOLS:
+                    pass  # 查看类成功不重置（不视为实质进展）
+                else:
+                    fail_streak = 0
+            elif _status in ("PLAN_PROPOSED", "PLAN_ALREADY_APPROVED",
+                             "PERMISSION_REQUEST", "PLAN_PENDING"):
+                pass  # 计划/权限交互是正常流程，不计数也不重置
+            else:
+                fail_streak += 1
+                if fail_streak >= STALL_ABORT_ROUNDS:
+                    print(c("red", "\n" + t("stall_abort", n=fail_streak)))
+                    return
 
             if result["status"] == "PLAN_PROPOSED":
                 print(c("cyan", f"\n  {result.get('plan') or result.get('message', '')}"))

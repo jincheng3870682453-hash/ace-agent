@@ -72,6 +72,7 @@ answer.
 14. request_permission {"tool":"request_permission","target":"terminal_exec","reason":"..."}  申请临时授权
 
 写入工具（执行层自动快照并监控）：
+⚠️ 创建/写入文件必须用 file_write 直接写内容；禁止计划"打开编辑器/文件管理器手动操作"（Agent 无法手动输入）。
 15. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
 16. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  绝对路径=用户明确意图（放桌面/主目录）
 17. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}

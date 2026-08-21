@@ -948,6 +948,25 @@ r = run_agent(el_h, "file_write", path=".", content="x")
 check("file_write 目录 path 报 400", r["status"] == "400", r.get("message"))
 r = run_agent(el_h, "file_move", source="ok.txt")
 check("file_move 缺 dest 报 400", r["status"] == "400", r.get("message"))
+
+# —— 计划含手动操作步骤（文件管理器/编辑器）→ 提示改用工具 ——
+el_plan = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                         config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+_pm = ("<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] p\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+       "<EXTERNAL>\nanswer.\n{\"tool\": \"plan_propose\", \"title\": \"t\", "
+       "\"steps\": [\"打开文件管理器导航到桌面目录\", \"创建文件\"]}\n</EXTERNAL>")
+_r_plan = el_plan.process_agent_output(_pm, "计划测试")
+check("计划含手动操作 → instruction 提示改用 file_write",
+      _r_plan["status"] == "PLAN_PROPOSED"
+      and "手动操作" in _r_plan.get("instruction", "")
+      and "file_write" in _r_plan.get("instruction", ""), _r_plan.get("instruction"))
+_pm2 = ("<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] p\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+        "<EXTERNAL>\nanswer.\n{\"tool\": \"plan_propose\", \"title\": \"t\", "
+        "\"steps\": [\"用 file_write 写入 example.py\", \"用 file_read 验证\"]}\n</EXTERNAL>")
+_r_plan2 = el_plan.process_agent_output(_pm2, "计划测试")
+check("正常计划（工具步骤）不误报",
+      _r_plan2["status"] == "PLAN_PROPOSED"
+      and "手动操作" not in _r_plan2.get("instruction", ""), _r_plan2.get("instruction"))
 r = el_h.process_agent_output(
     "<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] x\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
     "<EXTERNAL>\nanswer.\n[1,2,3]\n</EXTERNAL>", "测试")

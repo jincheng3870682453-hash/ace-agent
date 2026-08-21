@@ -130,5 +130,6 @@
   "memory_disabled": "メモリエンジンは無効です",
   "memory_empty": "  メモリはまだありません",
   "command_failed": "コマンド実行失敗: {err}",
-  "chat_error": "対話エラー: {err}"
+  "chat_error": "対話エラー: {err}",
+  "stall_abort": "警告: Agent が{n}ラウンド連続で失敗/ブロックされ、自動中止しました。リクエストを言い直すか、モデルを確認してください。"
 }

@@ -701,6 +701,17 @@ class ExecutionLayer:
                 "message": "plan_propose 的 steps 列表为空",
                 **route_meta,
             }
+        # 检测计划里的"手动操作"步骤（Agent 无法打开编辑器/文件管理器手动输入），
+        # 提示模型改用工具完成，改善 Qwen 等小模型的计划质量
+        _MANUAL_OPS = ("文件管理器", "资源管理器", "VS Code", "vscode", "编辑器",
+                       "导航到", "手动", "记事本", "notepad", "打开桌面目录")
+        _manual_hint = ""
+        if any(kw in s for kw in _MANUAL_OPS for s in steps):
+            _manual_hint = (" ⚠ 计划中包含编辑器/文件管理器等手动操作步骤："
+                            "Agent 无法打开编辑器手动输入内容。创建/写入文件请用 "
+                            "file_write 工具（相对路径写项目内，绝对路径写桌面等指定位置）；"
+                            "查看目录用 terminal_view ls 或 file_read；"
+                            "打开文件给用户看用 open_file。请修正计划中的手动操作步骤。")
         self.pending_plan = {
             "title": title, "steps": steps, "user_input": user_input,
             "internal": parsed.get("internal", ""),
@@ -715,7 +726,8 @@ class ExecutionLayer:
             "instruction": "等待用户批准：批准后按计划逐步执行；拒绝则调整方案。"
                            "若计划涉及写入桌面/主目录等用户明确指出的位置，"
                            "请用 file_write 的绝对路径（如 C:\\Users\\<用户名>\\Desktop\\文件.py），"
-                           "相对路径只会写进项目目录",
+                           "相对路径只会写进项目目录"
+                           + _manual_hint,
             **route_meta,
         }
 

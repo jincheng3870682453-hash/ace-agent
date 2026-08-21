@@ -45,6 +45,7 @@
   "snapshotted": " · 已自动快照，/undo 一键回滚",
   "memory_injected": "  · 已自动注入 {n} 条相关记忆",
   "max_rounds": "⚠ 达到最大轮数，Agent 未给出最终回复。",
+  "stall_abort": "⚠ Agent 已连续 {n} 轮工具调用失败/被拦截，判定陷入死循环，自动中止。可重新描述需求，或检查模型/提示词。",
   "help_title": "可用命令:",
   "help_hint": "\n提示: 输入 @ 打开快捷方式（@lang 切换语言 / @skill 切换技能 / @file 引用文件 / @folder 引用文件夹）",
   "unknown_prefix": "  没有以 '{name}' 开头的命令（输入 / 查看全部）",
