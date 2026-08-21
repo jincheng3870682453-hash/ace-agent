@@ -1746,20 +1746,36 @@ class AgentCLI:
             try:
                 from prompt_toolkit import PromptSession
                 from prompt_toolkit.styles import Style
-                from prompt_toolkit.key_binding import KeyBindings
+                from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+                from prompt_toolkit.key_binding.bindings.basic import load_basic_bindings
+                from prompt_toolkit.key_binding.defaults import load_key_bindings
 
                 kb = KeyBindings()
 
                 @kb.add("escape")
                 def _exit_on_escape(event):
-                    # 空输入时按 ESC 直接退出（菜单打开时 ESC 优先关闭菜单）
-                    if not event.current_buffer.text.strip():
-                        raise EOFError
+                    buf = event.current_buffer
+                    if buf.complete_state is not None:
+                        buf.cancel_completion()   # 菜单打开：先关菜单
+                        return
+                    if not buf.text.strip():
+                        raise EOFError            # 空输入：退出
+                    buf.reset()                   # 有内容：清空当前输入行
+
+                # 合并默认绑定：恢复「菜单回车=确认补全」等标准行为，自定义 ESC 追加在后
+                try:
+                    merged = merge_key_bindings([
+                        load_basic_bindings(),
+                        load_key_bindings(),
+                        kb,
+                    ])
+                except Exception:
+                    merged = kb
 
                 session = PromptSession(
                     completer=_build_slash_completer(self.COMMANDS),
                     complete_while_typing=True,
-                    key_bindings=kb,
+                    key_bindings=merged,
                     style=Style.from_dict({
                         "prompt": "ansimagenta bold",
                         "completion-menu.completion": "bg:#2b2b3c #ffffff",
