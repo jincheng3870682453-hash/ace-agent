@@ -257,6 +257,12 @@ r = el.process_agent_output(
     "帮我写代码")
 check("模式 B 正常回复放行", r["status"] == "FINAL_REPLY" and r["message"] == "任务已完成", r)
 
+r = el.process_agent_output(
+    "<INTERNAL>\n[INTERNAL_THINKING]\n[PLAN] x\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+    "<EXTERNAL>\nanswer.\n{\"name\": \"datetime_now\", \"arguments\": {\"format\": \"%Y\"}}\n</EXTERNAL>",
+    "测试输入")
+check("无 tool 键的 JSON 文本按最终回复处理", r["status"] == "FINAL_REPLY", r)
+
 # —— code_execute 诱饵验证循环 ——
 el_full = ExecutionLayer(project_root=str(sandbox_root), permission_level="write",
                          config={"bait": {"enabled": True, "frequency": 0},
@@ -269,9 +275,18 @@ check("修复诱饵后执行成功", r2["status"] == "SUCCESS" and "3" in r2["da
 r3 = run_agent(el_full, "code_execute", language="python", code=code, user="写个加法函数")
 check("同一会话不再注入诱饵", r3["status"] == "SUCCESS", r3)
 
-# —— AST 熔断 ——
-r4 = run_agent(el_full, "code_execute", language="python", code="def f(x):\n    return x + 1\n", user="无注解函数")
-check("AST 类型注解熔断", r4["status"] == "AST_FAILED" and "type_hints" in r4["report"], r4)
+# —— AST 门禁分层：风格规则降级为警告，安全规则仍熔断 ——
+el_style = ExecutionLayer(project_root=str(sandbox_root), permission_level="write",
+                          config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+r4 = run_agent(el_style, "code_execute", language="python",
+               code="def f(x):\n    return x + 1\n", user="无注解函数")
+check("风格问题不再熔断（type_hints 降级为警告）",
+      r4["status"] == "SUCCESS" and "type_hints" in (r4.get("ast_warnings") or {}), r4)
+
+r4b = run_agent(el_style, "code_execute", language="python",
+                code="api_key = 'abcdef1234567890'\nprint(api_key)", user="硬编码密钥")
+check("安全规则仍熔断（hardcoded_secrets）",
+      r4b["status"] == "AST_FAILED" and "hardcoded_secrets" in r4b["report"], r4b)
 
 # —— 沙箱拦截（独立关闭诱饵的实例，避免诱饵弹回干扰断言） ——
 el_sbx = ExecutionLayer(project_root=str(sandbox_root), permission_level="write",
@@ -322,6 +337,20 @@ r = run_agent(el_m, "datetime_now", user="把销售数据报表导出的进度�
 check("主题回切时注入相关记忆", r.get("memory_injected") is not None
       and len(r["memory_injected"]) >= 1, r)
 
+# —— 生成前记忆预注入（prepare_context） ——
+el_pc = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly")
+p1 = el_pc.prepare_context("帮我写一个 Python 爬虫抓取新闻")
+check("prepare_context 首条输入原样返回", p1 == "帮我写一个 Python 爬虫抓取新闻", p1)
+p2 = el_pc.prepare_context("帮我写一个 Python 爬虫抓取新闻")
+check("prepare_context 主题稳定不注入记忆", p2 == "帮我写一个 Python 爬虫抓取新闻", p2)
+p3 = el_pc.prepare_context("给我写一篇关于夏天的旅行游记")
+check("主题切换时 prepare_context 注入记忆前缀", "[记忆注入]" in p3, p3)
+r_pc = run_agent(el_pc, "datetime_now", user="给我写一篇关于夏天的旅行游记")
+check("prepare_context 后 process 复用缓存注入",
+      r_pc.get("memory_injected") is not None and len(r_pc["memory_injected"]) >= 1, r_pc)
+dup = [e for e in el_pc.archive.entries if "旅行游记" in e.text]
+check("prepare_context 不重复写入 Archive", len(dup) == 1, len(dup))
+
 # —— 模块状态 ——
 st = el_full.get_stats()
 check("V2 网关已启用", st["v2_gateway"] is True, st)
@@ -329,10 +358,143 @@ check("V1 模块全部启用", all(st["v1_modules"].values()), st["v1_modules"])
 check("文档解析器已启用", st["parser"] is True, st)
 check("诱饵状态统计", "bait" in st, st)
 
+# —— Plan Mode：计划提议 → 未批准拦截 → 批准后放行 ——
+el_plan = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                         config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+r = run_agent(el_plan, "plan_propose", title="写一个爬虫",
+              steps=["分析需求", "编写代码", "运行测试"], user="帮我写个爬虫")
+check("plan_propose 生成计划",
+      r["status"] == "PLAN_PROPOSED" and "写一个爬虫" in r["plan"]
+      and len(r["steps"]) == 3, r)
+r2 = run_agent(el_plan, "datetime_now", user="帮我写个爬虫")
+check("计划未批准时拦截其他工具", r2["status"] == "PLAN_PENDING", r2)
+check("批准计划", el_plan.approve_plan() is True)
+r4 = run_agent(el_plan, "plan_propose", title="写一个爬虫",
+               steps=["分析需求", "编写代码", "运行测试"], user="帮我写个爬虫")
+check("批准后重复提议不再走批准流程", r4["status"] == "PLAN_ALREADY_APPROVED", r4)
+r3 = run_agent(el_plan, "datetime_now", user="帮我写个爬虫")
+check("批准后工具放行", r3["status"] == "SUCCESS", r3)
+
+el_plan2 = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                          config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+run_agent(el_plan2, "plan_propose", title="t", steps=["a"], user="u1")
+check("拒绝计划后清空", el_plan2.reject_plan() is True and el_plan2.pending_plan is None)
+
+# —— 权限申请：403 → request_permission → 批准后临时放行一次 ——
+el_perm = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
+                         config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+r = run_agent(el_perm, "terminal_exec", command="echo ok", user="测试")
+check("readonly 下 terminal_exec 被拒", r["status"] == "403", r)
+r = el_perm.process_agent_output(
+    "<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] x\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+    "<EXTERNAL>\nanswer.\n{\"tool\": \"request_permission\", \"target\": \"terminal_exec\", "
+    "\"reason\": \"需要执行命令\"}\n</EXTERNAL>",
+    "测试")
+check("request_permission 生成授权请求",
+      r["status"] == "PERMISSION_REQUEST" and r["tool"] == "terminal_exec", r)
+check("批准权限申请", el_perm.grant_pending_permission() is True)
+r = run_agent(el_perm, "terminal_exec", command="echo ok", user="测试")
+check("批准后临时放行一次", r["status"] == "SUCCESS", r)
+r = run_agent(el_perm, "terminal_exec", command="echo ok", user="测试")
+check("临时授权仅一次有效", r["status"] == "403", r)
+
+# —— 五层网关 L1/L2 接入执行循环 ——
+el_route = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
+                          config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+r = run_agent(el_route, "datetime_now", user="帮我写一个 Python 爬虫抓取新闻")
+check("L1 意图识别接入结果", r.get("intent") == "coding", r)
+check("L2 技能推荐接入结果",
+      isinstance(r.get("skills"), list) and len(r["skills"]) >= 1, r)
+
 # ============================================================
 print("[8] agent_runner —— 交互循环（mock 模型离线验证）")
 # ============================================================
-from agent_runner import ModelProvider  # noqa: E402
+from agent_runner import (ModelProvider, TOOLS, content_to_tool_protocol,  # noqa: E402
+                          final_reply_protocol, load_system_prompt,
+                          sanitize_plain_content, tool_calls_to_protocol)
+
+# —— 原生工具调用转换 ——
+proto = tool_calls_to_protocol([
+    {"function": {"name": "math_calc", "arguments": '{"expression": "1+1"}'}}])
+check("原生工具调用转协议文本",
+      '"tool": "math_calc"' in proto and '"expression": "1+1"' in proto, proto)
+ollama_json = content_to_tool_protocol(
+    '{"name": "datetime_now", "arguments": {"format": "%Y-%m-%d"}}')
+check("兼容 Ollama 文本 JSON 工具调用",
+      '"tool": "datetime_now"' in ollama_json and "%Y-%m-%d" in ollama_json, ollama_json)
+self_json = content_to_tool_protocol('{"tool": "math_calc", "expression": "2+2"}')
+check("兼容项目自有文本协议",
+      '"tool": "math_calc"' in self_json and '"expression": "2+2"' in self_json, self_json)
+check("兼容 ```json 围栏包裹的工具调用",
+      content_to_tool_protocol('```json\n{"name": "math_calc", "arguments": {"expression": "3*3"}}\n```')
+      .startswith("<INTERNAL>"),
+      content_to_tool_protocol('```json\n{"name": "math_calc", "arguments": {"expression": "3*3"}}\n```'))
+check("非工具 JSON 文本返回空串", content_to_tool_protocol('{"a": 1}') == "",
+      content_to_tool_protocol('{"a": 1}'))
+check("未注册工具名的 JSON 不误转", content_to_tool_protocol(
+      '{"name": "some_unknown_tool", "arguments": {}}') == "",
+      content_to_tool_protocol('{"name": "some_unknown_tool", "arguments": {}}'))
+check("讲解文本夹杂 JSON 工具调用也能提取",
+      content_to_tool_protocol('代码如下：\n```json\n{"name": "math_calc", "arguments": {"expression": "2+2"}}\n```')
+      .startswith("<INTERNAL>"),
+      content_to_tool_protocol('代码如下：\n```json\n{"name": "math_calc", "arguments": {"expression": "2+2"}}\n```'))
+check("清洗完整协议残留",
+      sanitize_plain_content("<INTERNAL>[INTERNAL_THINKING]x[/INTERNAL_THINKING]</INTERNAL>\n"
+                             "<EXTERNAL>\nanswer.\n你好\n</EXTERNAL>") == "你好",
+      sanitize_plain_content("<INTERNAL>[INTERNAL_THINKING]x[/INTERNAL_THINKING]</INTERNAL>\n"
+                             "<EXTERNAL>\nanswer.\n你好\n</EXTERNAL>"))
+check("清洗残缺协议标签", sanitize_plain_content("你在问什么？</EXTERNAL") == "你在问什么？",
+      sanitize_plain_content("你在问什么？</EXTERNAL"))
+check("普通纯文本原样保留", sanitize_plain_content("你好，在的") == "你好，在的",
+      sanitize_plain_content("你好，在的"))
+check("思考块被删除（保留后续工具 JSON）",
+      sanitize_plain_content("[INTERNAL_THINKING]获取信息[/INTERNAL_THINKING] "
+                             '{"name": "search", "arguments": {}}').startswith("{"),
+      sanitize_plain_content("[INTERNAL_THINKING]获取信息[/INTERNAL_THINKING] "
+                             '{"name": "search", "arguments": {}}'))
+check("整段都是思考块时取其内容作为回复",
+      sanitize_plain_content("[INTERNAL_THINKING]用户稍后重试[/INTERNAL_THINKING]")
+      == "用户稍后重试",
+      sanitize_plain_content("[INTERNAL_THINKING]用户稍后重试[/INTERNAL_THINKING]"))
+check("缺失闭合括号的思考标签也被清洗",
+      sanitize_plain_content("[INTERNAL_THINKING获取信息[/INTERNAL_THINKING]") == "获取信息",
+      sanitize_plain_content("[INTERNAL_THINKING获取信息[/INTERNAL_THINKING]"))
+check("状态标签 [PLAN]/[REASON] 被清洗",
+      sanitize_plain_content("[PLAN]做个计划\n[REASON]选工具\n你好") == "做个计划\n选工具\n你好",
+      sanitize_plain_content("[PLAN]做个计划\n[REASON]选工具\n你好"))
+rep = final_reply_protocol("完成")
+check("原生纯文本包装为最终回复",
+      rep.startswith("<INTERNAL>") and "answer.\n完成" in rep, rep)
+check("TOOLS 注册 ≥ 20 个工具", len(TOOLS) >= 20, len(TOOLS))
+check("tools 模式加载精简提示词", "工具" in load_system_prompt(tools_mode=True),
+      load_system_prompt(tools_mode=True)[:40])
+check("默认加载 v8 文本协议提示词", "<INTERNAL>" in load_system_prompt(),
+      load_system_prompt()[:40])
+
+# —— 历史裁剪 ——
+class _ArgsTrim:
+    mock = True
+    base_url = None
+    api_key = None
+    model = None
+    tools = False
+    max_history = 2
+
+
+pt = ModelProvider(_ArgsTrim())
+for i in range(6):
+    pt.history.append({"role": "user", "content": f"u{i}"})
+    pt.history.append({"role": "assistant", "content": f"a{i}"})
+pt._trim_history()
+check("历史裁剪保留最近 N 轮",
+      len(pt.history) == 4 and pt.history[0]["content"] == "u4", pt.history)
+
+
+class _Args:
+    mock = True
+    base_url = None
+    api_key = None
+    model = None
 
 
 class _Args:
@@ -400,11 +562,31 @@ with contextlib.redirect_stdout(buf):
 out_text = buf.getvalue()
 check("裸 / 列出全部命令", "可用的命令" in out_text and "/undo" in out_text, out_text[:200])
 
+check("裸 exit 直接退出", cli_cmd.run_command("exit") is False)
+
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     cli_cmd.run_command("/zzz")
 out_text = buf.getvalue()
 check("未知前缀给出提示", "没有以" in out_text, out_text[:200])
+
+check("无空格斜杠参数解析 /search",
+      ai_code._parse_slash_command("/search今天天气怎么样") == ("/search", "今天天气怎么样"),
+      ai_code._parse_slash_command("/search今天天气怎么样"))
+check("带空格命令不误解析为内联参数",
+      ai_code._parse_slash_command("/provider 3 sk-x") == ("/provider", ""),
+      ai_code._parse_slash_command("/provider 3 sk-x"))
+check("普通命令原样解析",
+      ai_code._parse_slash_command("/status") == ("/status", ""),
+      ai_code._parse_slash_command("/status"))
+
+_search_calls = []
+_orig_search_web = cli_cmd._search_web
+cli_cmd._search_web = lambda q: _search_calls.append(q)
+with contextlib.redirect_stdout(io.StringIO()):
+    cli_cmd.run_command("/search今天天气怎么样")
+cli_cmd._search_web = _orig_search_web
+check("无空格 /search 参数正确传递", _search_calls == ["今天天气怎么样"], _search_calls)
 
 with contextlib.redirect_stdout(io.StringIO()):
     cli_cmd.run_command("/model test-model-2")
@@ -468,6 +650,52 @@ with contextlib.redirect_stdout(buf):
     cli_cmd.run_command("/open no_such_file_xyz.txt")
 out_text = buf.getvalue()
 check("/open 不存在文件报错", "文件不存在" in out_text, out_text[:200])
+
+# —— @ 快捷方式：语言 / 技能 / 文件与文件夹引用 ——
+proj_at = mktemp()
+(proj_at / "sample.py").write_text("print('hello')\n" * 10, encoding="utf-8")
+cli_at = ai_code.AgentCLI({"project_root": str(proj_at), "permission": "write",
+                           "bait": False, "base_url": "", "api_key": "", "model": "m1"},
+                          mock=True)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli_at._handle_at_command("@lang en")
+check("@lang en 切换英文",
+      cli_at.lang == "en" and "English" in cli_at._build_system_prompt(),
+      buf.getvalue()[:100])
+with contextlib.redirect_stdout(io.StringIO()):
+    cli_at._handle_at_command("@lang zh")
+check("@lang zh 切回中文", cli_at.lang == "zh", cli_at.lang)
+with contextlib.redirect_stdout(io.StringIO()):
+    cli_at._handle_at_command("@skill coding")
+check("@skill coding 切换技能",
+      cli_at.skill == "coding" and "编程开发" in cli_at._build_system_prompt(),
+      cli_at.skill)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli_at._handle_at_command("@file sample.py")
+check("@file 引用文件入上下文",
+      len(cli_at.context_refs) == 1 and "print('hello')" in cli_at.context_refs[0],
+      buf.getvalue()[:100])
+check("引用注入系统提示词", "已引用上下文" in cli_at._build_system_prompt())
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli_at._handle_at_command("@folder .")
+check("@folder 引用文件夹列表",
+      len(cli_at.context_refs) == 2 and "sample.py" in cli_at.context_refs[-1],
+      buf.getvalue()[:100])
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli_at._handle_at_command("@refs")
+check("@refs 列出引用", "2 项" in buf.getvalue(), buf.getvalue()[:100])
+with contextlib.redirect_stdout(io.StringIO()):
+    cli_at._handle_at_command("@clear")
+check("@clear 清空引用", len(cli_at.context_refs) == 0)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli_at._handle_at_command("@")
+check("裸 @ 显示快捷方式菜单",
+      "@lang" in buf.getvalue() and "@file" in buf.getvalue(), buf.getvalue()[:200])
 
 # —— 防蠢检测（防把 cmd 命令误打进 REPL） ——
 check("防蠢: 识别 ace --install-ui", ai_code._looks_like_cli_command("ace --install-ui"))
@@ -549,9 +777,22 @@ r = run_agent(el_h, "file_write", path="../escape.txt", content="x")
 check("file_write 路径越界拦截", r["status"] == "403", r.get("message"))
 r = run_agent(el_h, "file_read", path=str(FOLDER.parent / "README.md"))
 check("file_read 绝对路径越界拦截", r["status"] == "403", r.get("message"))
+r = run_agent(el_h, "file_read", path=str(FOLDER.parent / "README.md"))
+check("路径越界 403 附带路径限制提示（不引导申请权限）",
+      "路径越界" in r.get("instruction", ""), r.get("instruction"))
 # —— terminal_view 路径健壮性（~ 展开 / -la 参数 / Windows 反斜杠） ——
 r = run_agent(el_h, "terminal_view", command="ls -la")
 check("terminal_view ls -la 忽略参数", r["status"] == "SUCCESS", r.get("message"))
+r = run_agent(el_h, "terminal_view")
+check("terminal_view 缺省列出项目目录",
+      r["status"] == "SUCCESS" and isinstance(r["data"]["stdout"], str), r.get("message"))
+(el_h.project_root / "a.py").write_text("x = 1\n", encoding="utf-8")
+r = run_agent(el_h, "terminal_view", command="ls *.py")
+check("terminal_view 支持通配符 ls *.py",
+      r["status"] == "SUCCESS" and "a.py" in r["data"]["stdout"], r.get("message"))
+r = run_agent(el_h, "terminal_view", command="dir /b *.py")
+check("terminal_view 支持 Windows dir /b *.py",
+      r["status"] == "SUCCESS" and "a.py" in r["data"]["stdout"], r.get("message"))
 r = run_agent(el_h, "terminal_view", command="ls ~")
 check("terminal_view ls ~ 展开主目录", r["status"] == "SUCCESS", r.get("message"))
 r = run_agent(el_h, "terminal_view", command='cat "' + str(FOLDER / "README.md") + '"')
@@ -664,6 +905,8 @@ r = run_agent(el_h, "notify_send", channel="file", to="测试", content="这是�
 check("notify_send 文件渠道落盘", r["status"] == "SUCCESS"
       and (el_h.project_root / "notifications.log").exists()
       and "测试通知" in (el_h.project_root / "notifications.log").read_text(encoding="utf-8"), r)
+r = run_agent(el_h, "notify_send", channel="email", to="x@example.com", content="hi")
+check("email 无 SMTP 配置返回 501", r["status"] == "501", r)
 
 r = run_agent(el_h, "browser_open", url="file:///etc/passwd")
 check("browser_open 协议校验", r["status"] == "400", r.get("message"))

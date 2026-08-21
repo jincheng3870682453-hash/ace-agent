@@ -5,7 +5,7 @@
 
 | 状态 | 版本 | 测试 |
 |---|---|---|
-| ✅ 可运行 | v1.0 | **151 项端到端测试全绿**（`test_all.py`，纯 stdlib） |
+| ✅ 可运行 | v1.1 | **199 项端到端测试全绿**（`test_all.py`，纯 stdlib） |
 
 ---
 
@@ -16,7 +16,9 @@
 - 🔀 **10 家提供商注册表**：`/provider` 一键切换（智谱 GLM-4.7-Flash / DeepSeek / Kimi / OpenAI / Claude / Qwen / 硅基 / OpenRouter / Ollama），`/config` 三步向导（选提供商 → 隐藏输入 key → 选模型）
 - 🔄 **mock 双向切换**：`/mock` 随时在离线演示与真实模型间切换
 - 🛡️ **无感安全**：写入前自动快照（上限自动清理）、`/undo` 一键回滚、快照 HMAC 签名、路径越界防护、SSRF 防护、`math_calc` 白名单
-- 🧠 **记忆与报告**：SimHash 主题切换记忆注入（多会话隔离）、Nuwa POC 报告（HTML+JSON）
+- 📋 **Plan Mode 计划执行**：复杂任务先提议分步计划（`plan_propose`），用户批准后才放行执行，杜绝"边想边干"
+- 🔑 **权限申请**：工具被 403 拦截时模型可申请临时授权（`request_permission`），用户一键批准/拒绝，授权仅一次有效
+- 🧠 **记忆与报告**：SimHash 主题切换记忆预注入（模型生成前注入，多会话隔离）、Nuwa POC 报告（HTML+JSON）
 - 🔍 **真实联网能力**：`search` 工具真实搜索（DuckDuckGo → Bing 双引擎兜底，无需 API Key）；CLI `/search <关键词>` 直接验证；`api_get` 抓取网页正文
 - 🗄️ **真实工具全家桶**：SQLite 数据库（db_query 只读/db_write 受控写入）、真实打开浏览器（browser_open）、屏幕截图（browser_screenshot，可选 pillow）、通知（notify_send：console/file/toast）、免费图像生成（image_generate，pollinations.ai）
 - 📄 **文档解析**：N 合一（Word/Excel/PPT/PDF/OCR/纯文本）+ 50MB 大文件防线
@@ -110,8 +112,9 @@ flowchart TB
 | `Archive.py` | SimHash 记忆引擎：主题切换、短输入保护、催促加权、会话隔离 | ✅ |
 | `Nuwa.py` | POC 报告：通过率/平均响应/回滚计数，HTML + JSON | ✅ |
 | `universal_document_parser.py` | N 合一文档解析 + 懒加载 + 截断 + 50MB 防线 | ✅ |
-| `agent_system_prompt_v7.md` | Agent 系统提示词（INTERNAL/EXTERNAL 协议） | ✅ |
-| `test_all.py` | 全模块端到端测试（167 项，纯 stdlib） | ✅ |
+| `agent_system_prompt_v8.md` | Agent 系统提示词精简版（INTERNAL/EXTERNAL 协议） | ✅ |
+| `agent_system_prompt_tools.md` | 原生工具调用版提示词（`--tools` 模式） | ✅ |
+| `test_all.py` | 全模块端到端测试（199 项，纯 stdlib） | ✅ |
 
 ---
 
@@ -121,10 +124,14 @@ flowchart TB
 # 跑全部测试
 python test_all.py
 
-# ACE 命令行（cmd 里已注册 ace 全局命令，默认进入登录页）
+# ACE 命令行（项目目录内已提供 ace.cmd；加入 PATH 后可在任意目录直接 ace）
 ace                             # 首页菜单：1 进入聊天 · 2 配置向导 · 4 离线演示 ...
 ace --mock                      # 直接进聊天（离线演示，无需密钥）
 ace --input "现在几点了"         # 单次对话
+ace --tools                     # 原生工具调用（OpenAI 兼容 function calling，不支持时自动降级）
+ace --max-history 12            # 只保留最近 12 轮对话，防止本地小模型上下文溢出
+python agent_runner.py --base-url http://localhost:11434/v1 --api-key ollama \
+      --model Qwen2.5-coder:7b --tools   # 接入本地 Ollama，Qwen 支持原生工具调用
 ace --install-ui                # 一键安装 / 实时补全依赖（多镜像自动回退）
 ```
 
@@ -137,6 +144,7 @@ ace --install-ui                # 一键安装 / 实时补全依赖（多镜像�
 - **首页**：↑/↓ 选择 · 数字直选 · Enter 确认 · Esc/q 退出
 - **聊天**：输入 `/` 实时弹出命令菜单（需 `prompt_toolkit`，未装自动降级）
 - **斜杠命令**：`/help` `/clear` `/status` `/stats` `/memory` `/snapshots` `/undo` `/rollback <id>` `/report` `/permission [level]` `/mock` `/model` `/provider` `/config` `/open <路径>` `/edit <路径>` `/search <关键词>` `/exit`
+- **@ 快捷方式**：`@lang en` 切换回复语言（zh/en/ja）· `@skill coding` 切换技能（coding/writing/analysis/fiction/general）· `@file <路径>` / `@folder <路径>` 把文件/文件夹内容加入上下文 · 输入 `@` 查看全部
 - **退出**：聊天内 `exit` → 回首页；首页 `7`/`Esc`/`q` → 退出 ACE
 
 **切换提供商 / 模型**：
@@ -150,6 +158,35 @@ ace --install-ui                # 一键安装 / 实时补全依赖（多镜像�
 ```
 
 **内置提供商**：智谱 GLM（Anthropic/OpenAI 双端点，含免费开源的 **glm-4.7-flash**）、DeepSeek、Kimi/Moonshot、OpenAI、Anthropic Claude、通义 Qwen、硅基流动、OpenRouter、Ollama 本地。
+
+## @ 快捷方式（语言 / 技能 / 文件引用）
+
+聊天输入框里输入 `@` 弹出快捷方式菜单（装了 `prompt_toolkit` 时实时补全：`@la` → `@lang`，`@file ` 后可直接补全路径）：
+
+| 命令 | 作用 | 示例 |
+|------|------|------|
+| `@lang` | 切换回复语言，指令注入每轮提示词 | `@lang en` |
+| `@skill` | 切换技能，描述与推荐工具注入提示词 | `@skill coding` |
+| `@file` | 把文件内容加入上下文（≤4000 字符自动截断） | `@file README.md` |
+| `@folder` | 把文件夹文件列表加入上下文（≤30 项） | `@folder src` |
+| `@refs` | 查看当前已引用的文件/文件夹 | `@refs` |
+| `@clear` | 清空全部引用 | `@clear` |
+
+支持的语言：`zh` 中文 · `en` English · `ja` 日本語。
+
+支持的技能：
+
+| 技能 | 说明 | 推荐工具 |
+|------|------|----------|
+| `coding` | 编程开发：写码/改码/调试 | `code_execute` `file_write` `terminal_exec` `search` |
+| `writing` | 文案写作：写作/润色/报告 | `file_write` `search` `notify_send` `parse_document` |
+| `analysis` | 数据分析：统计/报表 | `db_query` `math_calc` `parse_document` `search` |
+| `fiction` | 小说创作：故事/角色/剧情 | `file_write` `search` `file_read` |
+| `general` | 通用助手（默认） | `search` `file_read` `datetime_now` |
+
+说明：
+- 引用最多保留 3 项，`/clear` 与 `@clear` 都会清空；`/status` 可查看当前语言、技能与引用数。
+- `@file`/`@folder` 支持相对项目目录或绝对路径，引用内容随每轮对话注入模型上下文。
 
 **在对话里打开文件（点击才展开：默认给可点击链接，不抢焦点不弹窗）**：
 ```
@@ -194,6 +231,9 @@ config = {
     "bait": {"enabled": True, "frequency": 0}, # 诱饵验证（0 = 每任务一次）
     "guard": {"rules": {"no_hardcoded_secrets": False}},  # 关闭某条守门规则
     "model_callback": fn,   # L3 接入你自己的 LLM（或 base_url + api_key）
+    "email_smtp": {"host": "smtp.qq.com", "port": 587,
+                   "user": "you@qq.com", "password": "授权码",
+                   "use_tls": True},   # notify_send email 渠道（缺省时返回 501）
 }
 ```
 

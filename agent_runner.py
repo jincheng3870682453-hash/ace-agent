@@ -18,13 +18,17 @@ agent_runner.py —— Agent 交互循环（把 LLM 和执行层接起来）
     python agent_runner.py --base-url https://api.deepseek.com/v1 \
         --api-key sk-xxx --model deepseek-chat              # 接真实模型
     python agent_runner.py --base-url http://localhost:11434/v1 \
-        --api-key ollama --model qwen2.5                    # 本地 Ollama
+        --api-key ollama --model Qwen2.5-coder:7b --tools   # 本地 Ollama（原生工具调用）
+    python agent_runner.py --mock --max-history 12          # 离线演示 + 历史裁剪
 """
 
 import argparse
 import json
 import os
+import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -42,13 +46,242 @@ sys.path.insert(0, str(FOLDER))
 from execution_layer import ExecutionLayer  # noqa: E402
 
 SYSTEM_PROMPT_PATH = FOLDER / "agent_system_prompt_v7.md"
+SYSTEM_PROMPT_V8_PATH = FOLDER / "agent_system_prompt_v8.md"
+SYSTEM_PROMPT_TOOLS_PATH = FOLDER / "agent_system_prompt_tools.md"
 MAX_ROUNDS = 20
 
 
-def load_system_prompt() -> str:
-    if SYSTEM_PROMPT_PATH.exists():
-        return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+def load_system_prompt(tools_mode: bool = False) -> str:
+    """加载系统提示词；tools_mode=True 用原生工具调用精简版，否则用文本协议版（v8 优先，v7 兜底）"""
+    candidates = [SYSTEM_PROMPT_TOOLS_PATH if tools_mode else SYSTEM_PROMPT_V8_PATH,
+                  SYSTEM_PROMPT_PATH]
+    for p in candidates:
+        if p.exists():
+            return p.read_text(encoding="utf-8")
     return "你是一个沙盒 AI Agent，按 <INTERNAL>/<EXTERNAL> 格式输出。"
+
+
+class ToolsUnsupported(Exception):
+    """模型端点不支持原生工具调用，触发自动降级到文本协议"""
+
+
+def _post_chat(base_url: str, api_key: str, model: str, messages: List[Dict],
+               tools: Optional[List[Dict]] = None, timeout: int = 120) -> Dict:
+    """OpenAI 兼容 /chat/completions（纯标准库 urllib，无 requests 依赖）"""
+    payload = {"model": model, "messages": messages, "temperature": 0.2}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}",
+                 "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+# ============================================================
+# 原生工具调用（OpenAI 兼容 function calling，Ollama/Qwen 等均支持）
+# ============================================================
+
+TOOLS = [
+    {"type": "function", "function": {"name": "terminal_view",
+     "description": "只读查看目录/文件/进程状态（白名单命令，无 shell 副作用）",
+     "parameters": {"type": "object", "properties": {"command": {"type": "string",
+     "description": "只读命令，如 ls -la / pwd / cat file.py"}}, "required": ["command"]}}},
+    {"type": "function", "function": {"name": "file_read",
+     "description": "读取文件内容", "parameters": {"type": "object",
+     "properties": {"path": {"type": "string", "description": "文件路径"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "file_write",
+     "description": "写入/覆盖文件（执行层自动快照）", "parameters": {"type": "object",
+     "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+     "required": ["path", "content"]}}},
+    {"type": "function", "function": {"name": "file_delete",
+     "description": "删除文件（执行层自动快照）", "parameters": {"type": "object",
+     "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "file_move",
+     "description": "移动/重命名文件", "parameters": {"type": "object",
+     "properties": {"source": {"type": "string"}, "dest": {"type": "string"}},
+     "required": ["source", "dest"]}}},
+    {"type": "function", "function": {"name": "terminal_exec",
+     "description": "执行修改性 shell 命令（写入权限，自动快照）", "parameters": {"type": "object",
+     "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
+    {"type": "function", "function": {"name": "code_execute",
+     "description": "在受限沙盒中执行 Python 代码（禁止 os/subprocess/socket 等危险调用）",
+     "parameters": {"type": "object", "properties": {"language": {"type": "string"},
+     "code": {"type": "string"}}, "required": ["language", "code"]}}},
+    {"type": "function", "function": {"name": "search",
+     "description": "联网搜索（DuckDuckGo/Bing，无需 API Key）", "parameters": {"type": "object",
+     "properties": {"query": {"type": "string"}, "top_k": {"type": "integer"}},
+     "required": ["query"]}}},
+    {"type": "function", "function": {"name": "math_calc",
+     "description": "纯算术表达式求值（白名单 AST，无副作用）", "parameters": {"type": "object",
+     "properties": {"expression": {"type": "string"}}, "required": ["expression"]}}},
+    {"type": "function", "function": {"name": "datetime_now",
+     "description": "获取当前时间", "parameters": {"type": "object",
+     "properties": {"format": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "api_get",
+     "description": "GET 请求获取数据（自动拦截内网/SSRF）", "parameters": {"type": "object",
+     "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
+    {"type": "function", "function": {"name": "api_post",
+     "description": "POST 请求提交数据", "parameters": {"type": "object",
+     "properties": {"url": {"type": "string"}, "data": {"type": "object"}},
+     "required": ["url"]}}},
+    {"type": "function", "function": {"name": "db_query",
+     "description": "SQLite 只读查询（仅 SELECT/WITH，最多 100 行）", "parameters": {"type": "object",
+     "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "db_write",
+     "description": "SQLite 写入（INSERT/UPDATE/DELETE/CREATE/ALTER，拒绝 DROP 等）",
+     "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
+     "required": ["query"]}}},
+    {"type": "function", "function": {"name": "browser_open",
+     "description": "用系统默认浏览器打开 http/https 链接", "parameters": {"type": "object",
+     "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
+    {"type": "function", "function": {"name": "browser_screenshot",
+     "description": "截取屏幕画面保存到 .ace_shots/（需 pillow，Windows 可免依赖）",
+     "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "notify_send",
+     "description": "发送通知（console/file/toast）", "parameters": {"type": "object",
+     "properties": {"channel": {"type": "string"}, "to": {"type": "string"},
+     "content": {"type": "string"}}, "required": ["channel", "content"]}}},
+    {"type": "function", "function": {"name": "image_generate",
+     "description": "生成图片保存到 .ace_images/（pollinations.ai 免费）", "parameters": {"type": "object",
+     "properties": {"prompt": {"type": "string"}, "size": {"type": "string"}},
+     "required": ["prompt"]}}},
+    {"type": "function", "function": {"name": "parse_document",
+     "description": "解析 Word/Excel/PPT/PDF/图片/文本并提取内容", "parameters": {"type": "object",
+     "properties": {"path": {"type": "string"}, "force_ocr": {"type": "boolean"}},
+     "required": ["path"]}}},
+    {"type": "function", "function": {"name": "open_file",
+     "description": "生成可点击文件链接（用户点击后打开）", "parameters": {"type": "object",
+     "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "edit_file",
+     "description": "用 VS Code 或系统默认编辑器打开文件", "parameters": {"type": "object",
+     "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "plan_propose",
+     "description": "复杂任务先输出分步计划，等待用户批准后再执行",
+     "parameters": {"type": "object", "properties": {"title": {"type": "string"},
+     "steps": {"type": "array", "items": {"type": "string"}}},
+     "required": ["steps"]}}},
+    {"type": "function", "function": {"name": "request_permission",
+     "description": "请求用户临时授权某个工具（如被 403 拦截的写入/高权限操作）",
+     "parameters": {"type": "object", "properties": {"target": {"type": "string"},
+     "reason": {"type": "string"}},
+     "required": ["target"]}}},
+]
+
+TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
+
+
+def tool_calls_to_protocol(tool_calls: List[Dict]) -> str:
+    """把原生工具调用转换为 <INTERNAL>/<EXTERNAL> 协议文本，复用执行层同一代码路径"""
+    if not tool_calls:
+        return ""
+    tc = tool_calls[0]
+    fn = tc.get("function") or {}
+    name = fn.get("name", "")
+    raw_args = fn.get("arguments")
+    if isinstance(raw_args, dict):
+        args = raw_args
+    else:
+        try:
+            args = json.loads(raw_args or "{}")
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+    # 兼容部分端点直接把 name/arguments 放在顶层
+    if not name:
+        name = tc.get("name", "")
+    if not args and isinstance(tc.get("arguments"), dict):
+        args = tc["arguments"]
+    if not isinstance(args, dict):
+        args = {}
+    body = json.dumps({"tool": name, **args}, ensure_ascii=False)
+    return (f"<INTERNAL>\n[INTERNAL_THINKING]\n"
+            f"[ACT] 原生工具调用: {name}\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+            f"<EXTERNAL>\nanswer.\n{body}\n</EXTERNAL>")
+
+
+def final_reply_protocol(content: str) -> str:
+    """把模型无工具调用的纯文本回答包装为协议模式 B（最终回复）"""
+    return (f"<INTERNAL>\n[INTERNAL_THINKING]\n"
+            f"[REASON] 信息已足够，输出最终回复\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+            f"<EXTERNAL>\nanswer.\n{content.strip()}\n</EXTERNAL>")
+
+
+def sanitize_plain_content(content: str) -> str:
+    """tools 模式下模型偶尔输出思考标签/协议残片，清洗成纯文本。
+    完整协议则提取 EXTERNAL 正文；思考块包裹正文时删除整块；
+    若整段输出都是思考块（小模型把回答写进思考块），则取其内容作为回复。"""
+    text = (content or "")
+    m = re.search(r"<EXTERNAL>\s*(?:answer\.)?(.*?)</EXTERNAL>",
+                  text, re.DOTALL | re.IGNORECASE)
+    if m:
+        text = m.group(1)
+    # 捕获思考块正文（兼容缺失闭合括号，如 [INTERNAL_THINKING 无 ]）
+    thinking_m = re.search(
+        r"\[/?\s*INTERNAL_THINKING\s*\]?\s*(.*?)\s*\[/?\s*INTERNAL_THINKING\s*\]?",
+        text, re.DOTALL | re.IGNORECASE)
+    # 删除思考块（含内容）
+    text = re.sub(
+        r"\[/?\s*INTERNAL_THINKING\s*\]?.*?\[/?\s*INTERNAL_THINKING\s*\]?",
+        "", text, flags=re.DOTALL | re.IGNORECASE)
+    # 删除残留标签与状态标签
+    text = re.sub(r"\[?/?\s*INTERNAL_THINKING\s*\]?", "", text, flags=re.IGNORECASE)
+    for label in ("PLAN", "REASON", "ACT", "OBSERVE", "REPLAN", "CHECK",
+                  "EXPLORE", "DESIGN", "REVIEW", "FINALIZE", "EXECUTE"):
+        text = re.sub(rf"\[{label}\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?INTERNAL\s*>?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?EXTERNAL\s*>?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\s*answer\.\s*", "", text)
+    cleaned = text.strip()
+    if not cleaned and thinking_m and thinking_m.group(1).strip():
+        cleaned = thinking_m.group(1).strip()
+    return cleaned
+
+
+def content_to_tool_protocol(content: str) -> str:
+    """部分本地模型（如 Ollama 上的 Qwen）把工具调用写成 JSON 文本而非结构化 tool_calls。
+    识别两种文本 schema：项目自有 {"tool": ...} 与 Ollama 原生 {"name", "arguments"}；
+    从 ``` 围栏块中提取并逐个尝试；只转换已注册的工具名，防止误伤正常 JSON 回答。"""
+
+    def _convert(obj: dict) -> str:
+        if not isinstance(obj, dict):
+            return ""
+        if isinstance(obj.get("tool"), str) and obj["tool"].strip() in TOOL_NAMES:
+            extra = {k: v for k, v in obj.items() if k != "tool"}
+            return tool_calls_to_protocol([
+                {"function": {"name": obj["tool"],
+                              "arguments": json.dumps(extra, ensure_ascii=False)}}])
+        name = obj.get("name")
+        args = obj.get("arguments")
+        if (isinstance(name, str) and name.strip() in TOOL_NAMES
+                and isinstance(args, dict)):
+            return tool_calls_to_protocol([
+                {"function": {"name": name,
+                              "arguments": json.dumps(args, ensure_ascii=False)}}])
+        return ""
+
+    text = (content or "").strip()
+    candidates = []
+    if "```" in text:
+        for m in re.finditer(r"```[a-zA-Z0-9_+-]*\s*(.*?)```", text, re.DOTALL):
+            candidates.append(m.group(1).strip())
+    else:
+        candidates.append(text)
+    for cand in candidates:
+        if not cand.startswith("{"):
+            continue
+        try:
+            obj = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        converted = _convert(obj)
+        if converted:
+            return converted
+    return ""
 
 
 class ModelProvider:
@@ -59,6 +292,13 @@ class ModelProvider:
         self.base_url = args.base_url or os.environ.get("AGENT_BASE_URL")
         self.api_key = args.api_key or os.environ.get("AGENT_API_KEY")
         self.model = args.model or os.environ.get("AGENT_MODEL") or "default"
+        self.tools = bool(getattr(args, "tools", False))             # 原生工具调用开关
+        self.max_history = int(getattr(args, "max_history", 0) or 0)  # 0 = 不裁剪
+        self.tools_ok = self.tools                                   # 端点不支持时自动降级
+        # 把真实工作目录注入系统提示词，防止小模型臆造路径
+        project_root = str(getattr(args, "project_root", "."))
+        self.system_suffix = (f"\n\n【工作目录】{os.path.abspath(project_root)}\n"
+                              f"文件操作请使用该目录下的相对路径或该绝对路径，不要臆造路径。")
         self.history: List[Dict[str, str]] = []
         self.mock_step = 0
         self.mock_tool_result: Optional[str] = None
@@ -95,26 +335,68 @@ class ModelProvider:
             raise RuntimeError(
                 "未配置模型：请使用 --mock 离线演示，或提供 --base-url/--api-key"
                 "（或环境变量 AGENT_BASE_URL / AGENT_API_KEY / AGENT_MODEL）")
-        try:
-            import requests
-        except ImportError as e:
-            raise RuntimeError("HTTP 调用需要 requests 库：pip install requests") from e
-        messages = ([{"role": "system", "content": load_system_prompt()}]
+        if self.tools_ok:
+            try:
+                return self._generate_tools(prompt)
+            except ToolsUnsupported:
+                # 端点不支持原生工具调用 → 本次自动降级，并永久关闭 tools 避免反复失败
+                self.tools_ok = False
+        return self._generate_text(prompt)
+
+    def _generate_tools(self, prompt: str) -> str:
+        """原生工具调用：模型返回结构化 tool_calls，由执行层统一裁决执行"""
+        messages = ([{"role": "system",
+                      "content": load_system_prompt(tools_mode=True) + self.system_suffix}]
                     + self.history + [{"role": "user", "content": prompt}])
-        resp = requests.post(
-            f"{self.base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={"model": self.model, "messages": messages, "temperature": 0.2},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        try:
+            data = _post_chat(self.base_url, self.api_key, self.model,
+                              messages, tools=TOOLS)
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="ignore").lower()
+            except Exception:
+                pass
+            if e.code in (400, 404) and "tool" in body:
+                raise ToolsUnsupported(f"端点不支持 tools 参数: HTTP {e.code}") from e
+            raise
+        message = data["choices"][0]["message"]
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            return tool_calls_to_protocol(tool_calls)
+        content = message.get("content") or ""
+        if content.strip():
+            # 清洗模型残留的协议标签残片（如 </EXTERNAL>），避免污染解析
+            content = sanitize_plain_content(content)
+        converted = content_to_tool_protocol(content)
+        if converted:
+            return converted
+        if not content.strip():
+            raise RuntimeError("模型返回空内容")
+        return final_reply_protocol(content)
+
+    def _generate_text(self, prompt: str) -> str:
+        """文本协议回退：模型按 <INTERNAL>/<EXTERNAL> 格式输出"""
+        messages = ([{"role": "system",
+                      "content": load_system_prompt() + self.system_suffix}]
+                    + self.history + [{"role": "user", "content": prompt}])
+        data = _post_chat(self.base_url, self.api_key, self.model, messages)
+        return data["choices"][0]["message"]["content"]
+
+    def _trim_history(self) -> None:
+        """限制对话历史长度，防止本地小模型上下文溢出（保留最近 N 轮）"""
+        if self.max_history <= 0:
+            return
+        max_msgs = self.max_history * 2
+        if len(self.history) > max_msgs:
+            self.history = self.history[-max_msgs:]
 
 
 def render_result(r: Dict) -> str:
     """把执行层返回压缩成给模型看的文本（default=str 兜底 Path 等非 JSON 类型）"""
     keys = ("status", "message", "data", "tool", "instruction", "report",
-            "bait_type", "baited_code", "rule", "memory_injected")
+            "bait_type", "baited_code", "rule", "memory_injected",
+            "intent", "skills", "plan", "steps", "title", "reason")
     d = {k: r[k] for k in keys if k in r}
     return json.dumps(d, ensure_ascii=False, default=str)
 
@@ -125,7 +407,8 @@ def run_conversation(provider: ModelProvider, el: ExecutionLayer,
     # 每次会话重置 mock 状态，防止跨会话串号
     provider.mock_step = 0
     provider.mock_tool_result = None
-    next_prompt = user_input
+    # 记忆预注入：在模型生成之前把相关历史记忆放进 prompt（无记忆时原样返回）
+    next_prompt = el.prepare_context(user_input)
     for round_no in range(1, MAX_ROUNDS + 1):
         try:
             output = provider.generate(next_prompt)
@@ -145,8 +428,55 @@ def run_conversation(provider: ModelProvider, el: ExecutionLayer,
             continue
         provider.history.append({"role": "user", "content": next_prompt})
         provider.history.append({"role": "assistant", "content": output})
+        provider._trim_history()
         if verbose:
             print(f"\n--- 执行层返回 ---\n{json.dumps(result, ensure_ascii=False, indent=2)}")
+
+        if result["status"] == "PLAN_PROPOSED":
+            print(f"\n📋 {result.get('plan') or result.get('message', '')}")
+            if sys.stdin.isatty():
+                try:
+                    answer = input("  批准该计划并执行？[y/N]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    answer = "n"
+            else:
+                print("  非交互模式：自动批准计划。")
+                answer = "y"
+            if answer in ("y", "yes"):
+                el.approve_plan()
+                next_prompt = ("计划已批准，不要再调用 plan_propose。"
+                               "请直接按计划逐步执行，每步调用相应工具，最后给出总结。")
+            else:
+                el.reject_plan()
+                next_prompt = "用户拒绝了该计划，请调整方案或直接回答。"
+            continue
+
+        if result["status"] == "PLAN_ALREADY_APPROVED":
+            next_prompt = ("计划已批准，不要再调用 plan_propose。"
+                           "请直接按计划逐步执行，每步调用相应工具，最后给出总结。")
+            continue
+
+        if result["status"] == "PERMISSION_REQUEST":
+            print(f"\n🔑 Agent 请求临时授权工具: {result.get('tool')}")
+            if result.get("reason"):
+                print(f"   原因: {result['reason']}")
+            if sys.stdin.isatty():
+                try:
+                    answer = input("  是否临时授权？[y/N]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    answer = "n"
+            else:
+                print("  非交互模式：自动拒绝授权。")
+                answer = "n"
+            if answer in ("y", "yes"):
+                el.grant_pending_permission()
+                next_prompt = "用户已授权，请重试刚才被拦截的工具。"
+            else:
+                el.reject_pending_permission()
+                next_prompt = "用户拒绝授权，请换一种不需要该工具的方式完成任务。"
+            continue
 
         if result["status"] == "FINAL_REPLY":
             print(f"\n🤖 Agent: {result['message']}")
@@ -179,6 +509,10 @@ def main() -> None:
     parser.add_argument("--permission", default="write", choices=["readonly", "write", "full"])
     parser.add_argument("--no-bait", action="store_true", help="关闭诱饵验证")
     parser.add_argument("--verbose", action="store_true", help="打印每轮原始输出")
+    parser.add_argument("--tools", action="store_true",
+                        help="使用原生工具调用（OpenAI 兼容 function calling，端点不支持时自动降级）")
+    parser.add_argument("--max-history", type=int, default=0,
+                        help="保留最近 N 轮对话历史（0 = 不裁剪）")
     parser.add_argument("--input", help="直接传入一条用户消息（非交互模式）")
     args = parser.parse_args()
 
@@ -189,7 +523,8 @@ def main() -> None:
         config={"bait": {"enabled": not args.no_bait, "frequency": 0},
                 "sandbox_base": str(Path(args.project_root).resolve() / ".sandbox_tmp")},
     )
-    print(f"Agent 已启动 | 模型: {provider.mode} | 权限: {args.permission} | 工作目录: {args.project_root}")
+    print(f"Agent 已启动 | 模型: {provider.mode} | 权限: {args.permission} | "
+          f"工作目录: {args.project_root} | 原生工具: {'开' if provider.tools else '关'}")
     if args.permission != "readonly":
         print("⚠ 当前为写权限：terminal_exec 可执行任意 shell 命令。生产环境建议 readonly 起步。")
     stats = el.get_stats()

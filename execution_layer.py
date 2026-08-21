@@ -121,11 +121,54 @@ WRITE_TOOLS = {
 READ_TOOLS = {
     "terminal_view", "file_read", "api_get", "db_query", "search",
     "browser_screenshot", "math_calc", "datetime_now", "browser_open",
-    "parse_document", "open_file", "edit_file"
+    "parse_document", "open_file", "edit_file",
+    "plan_propose", "request_permission",
 }
 
 HIGH_RISK_TOOLS = {
     "terminal_dangerous", "db_drop"
+}
+
+# 控制类工具：由执行层直接处理（计划提议 / 权限申请），不走真实工具执行
+CONTROL_TOOLS = {"plan_propose", "request_permission"}
+
+# AST 门禁分层：安全规则熔断；风格规则仅警告（不阻塞正常开发）
+AST_SAFETY_RULES = {"hardcoded_secrets", "sql_injection",
+                    "infinite_recursion", "circular_ref"}
+AST_STYLE_RULES = {"unused_import", "type_hints"}
+AST_RULE_DESCRIPTIONS = {
+    "unused_import": "未用导入",
+    "type_hints": "函数缺少类型注解",
+    "infinite_recursion": "无限递归",
+    "circular_ref": "循环引用",
+    "hardcoded_secrets": "硬编码密钥",
+    "sql_injection": "SQL 注入风险",
+}
+
+# 参数报错时给模型的具体示例（小模型常漏参数，示例能显著提升修正成功率）
+TOOL_EXAMPLES = {
+    "terminal_view": '{"tool":"terminal_view","command":"ls -la"}',
+    "terminal_exec": '{"tool":"terminal_exec","command":"mkdir test"}',
+    "file_read": '{"tool":"file_read","path":"README.md"}',
+    "file_write": '{"tool":"file_write","path":"out.txt","content":"hello"}',
+    "file_delete": '{"tool":"file_delete","path":"old.txt"}',
+    "file_move": '{"tool":"file_move","source":"a.txt","dest":"b.txt"}',
+    "code_execute": '{"tool":"code_execute","language":"python","code":"print(1)"}',
+    "search": '{"tool":"search","query":"Python 教程","top_k":5}',
+    "math_calc": '{"tool":"math_calc","expression":"2+2*10"}',
+    "datetime_now": '{"tool":"datetime_now","format":"YYYY-MM-DD HH:mm:ss"}',
+    "api_get": '{"tool":"api_get","url":"https://example.com"}',
+    "api_post": '{"tool":"api_post","url":"https://example.com","data":{"key":"value"}}',
+    "db_query": '{"tool":"db_query","query":"SELECT * FROM t"}',
+    "db_write": '{"tool":"db_write","query":"INSERT INTO t (name) VALUES (\'x\')"}',
+    "browser_open": '{"tool":"browser_open","url":"https://example.com"}',
+    "notify_send": '{"tool":"notify_send","channel":"console","content":"hello"}',
+    "image_generate": '{"tool":"image_generate","prompt":"a cat","size":"512x512"}',
+    "parse_document": '{"tool":"parse_document","path":"报告.docx"}',
+    "open_file": '{"tool":"open_file","path":"README.md"}',
+    "edit_file": '{"tool":"edit_file","path":"main.py"}',
+    "plan_propose": '{"tool":"plan_propose","title":"任务","steps":["步骤1","步骤2"]}',
+    "request_permission": '{"tool":"request_permission","target":"terminal_exec","reason":"原因"}',
 }
 
 # terminal_view 只读白名单（修复：只读工具绝不允许 shell=True 执行任意命令）
@@ -242,6 +285,11 @@ class AgentOutputParser:
                 if not isinstance(tool_call, dict):
                     result["error"] = "工具调用必须是 JSON 对象（如 {\"tool\": \"...\"}）"
                     return result
+                if "tool" not in tool_call:
+                    # 模型用 JSON 文本作答（引用配置/代码片段等），不是工具调用 → 按最终回复处理
+                    result["final_reply"] = content_after_answer
+                    result["valid"] = True
+                    return result
                 result["tool_call"] = tool_call
                 result["valid"] = True
 
@@ -318,10 +366,11 @@ class ToolExecutor:
     """实际执行工具调用"""
 
     def __init__(self, project_root: str = ".", sandbox_base: Optional[str] = None,
-                 confine_files: bool = True):
+                 confine_files: bool = True, email_smtp: Optional[Dict] = None):
         self.project_root = Path(project_root).resolve()
         self.sandbox_base = sandbox_base  # code_execute 沙箱临时目录基路径（None = 系统临时目录）
         self.confine_files = confine_files  # 文件工具是否强制限制在项目目录内
+        self.email_smtp = email_smtp or {}  # {"host","port","user","password","use_tls"}
         self.execution_log: List[Dict] = []
 
     def _confined(self, path: Path) -> Optional[Path]:
@@ -508,7 +557,8 @@ class ToolExecutor:
         """只读终端查看：白名单命令 + 无 shell 执行（修复：readonly 不再能执行任意命令）"""
         cmd = (params.get("command") or "").strip()
         if not cmd:
-            return ExecutionResult(status="error", error_code="400", message="command 参数为空")
+            # 小模型常漏 command 参数：缺省列出项目目录，避免 400 死循环
+            cmd = "ls -la"
         if len(cmd) > MAX_COMMAND_LENGTH:
             return ExecutionResult(status="error", error_code="400", message="命令过长")
         if SHELL_META_RE.search(cmd):
@@ -529,10 +579,29 @@ class ToolExecutor:
 
         # —— 原生实现的只读内建命令（完全不经过 shell）——
         if base in ("ls", "dir"):
-            # 忽略常见列表参数（-l/-a/-la/--all），支持 ~ 展开
-            target_args = [p for p in parts[1:] if not p.startswith("-")]
+            # 忽略常见列表参数（-l/-a/-la/--all、Windows 的 /b 等），支持 ~ 展开
+            target_args = [p for p in parts[1:]
+                           if not p.startswith("-") and not p.startswith("/")]
             target = target_args[0] if target_args else "."
             target = os.path.expanduser(target)
+            # 支持通配符：ls *.py / dir /b *.py
+            if any(ch in target for ch in "*?"):
+                import glob
+                pattern = target if os.path.isabs(target) else str(self.project_root / target)
+                try:
+                    matches = sorted(glob.glob(pattern))
+                except Exception as e:
+                    return ExecutionResult(status="error", error_code="500", message=str(e))
+                lower_parts = [p.lower() for p in parts[1:]]
+                bare = "/b" in lower_parts or "-1" in lower_parts
+                if bare:
+                    items = [os.path.basename(m) for m in matches]
+                else:
+                    items = [os.path.relpath(m, self.project_root)
+                             if not os.path.isabs(target) else m
+                             for m in matches]
+                return ExecutionResult(status="success", data={
+                    "stdout": "\n".join(items), "stderr": "", "returncode": 0})
             p = Path(target)
             if not p.is_absolute():
                 p = self.project_root / p
@@ -1184,8 +1253,36 @@ class ToolExecutor:
                 return ExecutionResult(status="error", error_code="500", message=f"toast 失败: {e}")
             return ExecutionResult(status="success", data={"channel": "toast", "delivered": True})
         if channel == "email":
-            return ExecutionResult(status="error", error_code="501",
-                                   message="email 通知需要 SMTP 配置，暂未接入（可用 console/file/toast）")
+            smtp = self.email_smtp or {}
+            host = smtp.get("host", "")
+            user = smtp.get("user", "")
+            if not host or not user:
+                return ExecutionResult(
+                    status="error", error_code="501",
+                    message="email 通知需要 SMTP 配置（config: email_smtp={host,port,user,password,use_tls}）")
+            try:
+                import smtplib
+                from email.mime.text import MIMEText
+            except ImportError:
+                return ExecutionResult(status="error", error_code="500",
+                                       message="email 通知需要 smtplib（标准库）")
+            msg = MIMEText(content, "plain", "utf-8")
+            msg["Subject"] = to or "ACE 通知"
+            msg["From"] = user
+            msg["To"] = to
+            try:
+                port = int(smtp.get("port", 587))
+                with smtplib.SMTP(host, port, timeout=15) as server:
+                    if smtp.get("use_tls", True):
+                        server.starttls()
+                    if smtp.get("password"):
+                        server.login(user, smtp["password"])
+                    server.send_message(msg)
+            except Exception as e:
+                return ExecutionResult(status="error", error_code="500",
+                                       message=f"email 发送失败: {e}")
+            return ExecutionResult(status="success", data={
+                "channel": "email", "to": to, "delivered": True, "host": host})
         return ExecutionResult(status="error", error_code="400",
                                message=f"未知通知渠道: {channel}（支持 console/file/toast）")
 
@@ -1241,6 +1338,7 @@ class ExecutionLayer:
             project_root,
             sandbox_base=(config or {}).get("sandbox_base"),
             confine_files=bool((config or {}).get("confine_files", True)),
+            email_smtp=(config or {}).get("email_smtp"),
         )
         self.parser = AgentOutputParser()
 
@@ -1283,6 +1381,43 @@ class ExecutionLayer:
         self.violation_count = 0
         self.ast_fail_count = 0
         self.last_user_input = ""
+        # 记忆预注入缓存：prepare_context 记录后，process_agent_output 不再重复写入
+        self._last_memory_input: Optional[str] = None
+        self._last_memory_shift = "stable"
+        self._last_memory_list: List[Dict] = []
+        # 计划模式（Plan Mode）：复杂任务先提议计划，用户批准后才执行
+        self.pending_plan: Optional[Dict] = None
+        self.plan_approved = False
+        # 权限申请：Agent 请求临时授权，用户批准后放行一次
+        self.pending_permission: Optional[Dict] = None
+        # L1/L2 路由结果缓存（五层网关）
+        self.last_route: Optional[Dict] = None
+        self.last_route_input: Optional[str] = None
+
+    # ---------- 记忆预注入（在模型生成前调用） ----------
+
+    def prepare_context(self, user_input: str) -> str:
+        """在模型生成前调用：记录用户输入到记忆库、检测主题切换，并返回可注入上下文的 prompt。
+
+        返回值为加了记忆前缀的 user_input；无相关记忆时原样返回。
+        同一 user_input 重复调用不会重复写入 Archive（process_agent_output 会复用本缓存）。
+        """
+        if not self.archive:
+            return user_input
+        self.archive.add(user_input)
+        shift = self.archive.detect_topic_shift(user_input)
+        self._last_memory_input = user_input
+        self._last_memory_shift = shift
+        self._last_memory_list = (
+            self.archive.get_memory(top_k=3, exclude_last=True) if shift == "shifted" else []
+        )
+        if not self._last_memory_list:
+            return user_input
+        lines = ["[记忆注入] 以下是相关的历史对话记忆："]
+        for m in self._last_memory_list:
+            mark = "⚑" if m.get("urgent") else "·"
+            lines.append(f"{mark} {m['text']}")
+        return "\n".join(lines) + "\n\n" + user_input
 
     def process_agent_output(self, agent_output: str, user_input: str) -> Dict[str, Any]:
         """
@@ -1299,6 +1434,22 @@ class ExecutionLayer:
             self.ast_fail_count = 0
             self.bait_armed = True
             self.last_user_input = user_input
+            self.pending_plan = None
+            self.plan_approved = False
+            self.pending_permission = None
+        # 0.5 L1 意图识别 + L2 技能推荐（五层网关，仅新输入时计算一次）
+        if self.gateway and user_input != self.last_route_input:
+            try:
+                self.last_route = self.gateway.route(user_input)
+            except Exception:
+                self.last_route = None
+            self.last_route_input = user_input
+        route_meta = {}
+        if self.last_route:
+            route_meta = {
+                "intent": (self.last_route.get("intent") or {}).get("intent"),
+                "skills": self.last_route.get("skills") or [],
+            }
 
         # 1. 解析 Agent 输出
         parsed = self.parser.parse(agent_output)
@@ -1309,13 +1460,18 @@ class ExecutionLayer:
                 "instruction": "请严格按照 <INTERNAL>...</INTERNAL><EXTERNAL>answer...</EXTERNAL> 格式输出"
             }
 
-        # 2. 记录到 Archive（SimHash 记忆）
+        # 2. 记录到 Archive（SimHash 记忆；若已由 prepare_context 预注入，则复用缓存避免重复写入）
         if self.archive:
-            self.archive.add(user_input)
-            shift = self.archive.detect_topic_shift(user_input)
-            if shift == "shifted":
-                # 主题切换：注入相关记忆到上下文（排除刚写入的当前消息）
-                injected_memory = self.archive.get_memory(top_k=3, exclude_last=True)
+            if user_input != self._last_memory_input:
+                # 直接库调用/测试未走 prepare_context：此处补齐记录，记忆功能依然可用
+                self.archive.add(user_input)
+                shift = self.archive.detect_topic_shift(user_input)
+                injected_memory = (
+                    self.archive.get_memory(top_k=3, exclude_last=True)
+                    if shift == "shifted" else []
+                )
+            else:
+                injected_memory = self._last_memory_list
 
         # 3. 模式 B：最终回复（过 L4 守门，文本规则；回复为叙述性内容，不套用代码风格规则）
         if parsed["final_reply"]:
@@ -1340,20 +1496,39 @@ class ExecutionLayer:
             }
         tool_name = tool_call.get("tool", "")
 
+        # 4.5 控制类工具：计划提议 / 权限申请（先于权限裁决，任何权限等级都可用）
+        if tool_name == "plan_propose":
+            return self._handle_plan_propose(tool_call, user_input, parsed, route_meta)
+        if tool_name == "request_permission":
+            return self._handle_permission_request(tool_call, parsed, route_meta)
+
+        # 4.6 计划未批准前禁止执行其他工具（Plan Mode 门禁）
+        if self.pending_plan and not self.plan_approved:
+            return {
+                "status": "PLAN_PENDING",
+                "message": "当前有未批准的计划，请等待用户批准后再执行工具",
+                "plan": self._render_plan(),
+                "instruction": "请先等待 PLAN_PROPOSED 的批准结果",
+                **route_meta,
+            }
+
         # 5. 权限裁决（执行层说了算）
         if not self.permission.can_execute(tool_name):
             return {
                 "status": "403",
                 "message": f"权限不足: 工具 '{tool_name}' 需要更高权限",
                 "current_permission": self.permission.get_status(),
-                "instruction": "请在 <EXTERNAL> 中以模式 B 输出权限申请"
+                "instruction": "请调用 request_permission 向用户申请该工具的临时授权",
+                **route_meta,
             }
 
         # 6. code_execute 专属安全闸门：诱饵验证 + AST 检测（work.py）
+        gate_warnings: Optional[Dict] = None
         if tool_name == "code_execute":
             gate = self._gate_code_execute(tool_call)
             if not gate["ok"]:
                 return gate["result"]
+            gate_warnings = gate.get("warnings")
 
         # 7. 写入操作前创建快照（guardian.py）；本轮快照用完即清，防止回滚到过期快照
         round_snapshot_id: Optional[str] = None
@@ -1409,16 +1584,135 @@ class ExecutionLayer:
                 "elapsed": result.metadata.get("elapsed", 0),
                 "internal": parsed["internal"],
                 "snapshot_id": round_snapshot_id,
-                "memory_injected": injected_memory or None
+                "memory_injected": injected_memory or None,
+                "ast_warnings": gate_warnings,
+                **route_meta,
             }
         else:
+            extra_instruction = None
+            if result.error_code == "403":
+                if ("越界" in result.message or "白名单" in result.message
+                        or "拦截" in result.message or "仅允许" in result.message
+                        or "沙盒" in result.message):
+                    extra_instruction = (
+                        "这是执行层安全限制（路径越界/白名单/沙盒拦截），不是权限问题。"
+                        "请改用项目目录内的合法路径或换用其他工具，不要调用 request_permission。")
+            elif result.error_code == "400" and tool_name in TOOL_EXAMPLES:
+                # 参数缺失/格式错误：直接给模型一个可抄的示例
+                extra_instruction = f"参数格式示例: {TOOL_EXAMPLES[tool_name]}"
             return {
                 "status": result.error_code or "ERROR",
                 "message": result.message,
                 "tool": tool_name,
                 "internal": parsed["internal"],
-                "memory_injected": injected_memory or None
+                "memory_injected": injected_memory or None,
+                "instruction": extra_instruction,
+                **route_meta,
             }
+
+    # ---------- Plan Mode（计划提议与批准） ----------
+
+    def _render_plan(self) -> str:
+        if not self.pending_plan:
+            return ""
+        title = self.pending_plan.get("title") or "任务计划"
+        steps = self.pending_plan.get("steps") or []
+        body = "\n".join(f"  {i + 1}. {s}" for i, s in enumerate(steps))
+        return f"【任务计划】{title}\n{body}"
+
+    def _handle_plan_propose(self, tool_call: Dict, user_input: str,
+                             parsed: Dict, route_meta: Dict) -> Dict:
+        if self.pending_plan and self.plan_approved:
+            # 计划已批准：模型重复提议 → 提示直接执行，不再重复走批准流程
+            return {
+                "status": "PLAN_ALREADY_APPROVED",
+                "plan": self._render_plan(),
+                "message": "计划已批准，请直接按计划执行，不要再提议新计划",
+                "instruction": "按已批准的计划逐步调用工具执行",
+                **route_meta,
+            }
+        title = str(tool_call.get("title", "")).strip() or "任务计划"
+        steps = tool_call.get("steps")
+        if not isinstance(steps, list) or not steps:
+            return {
+                "status": "FORMAT_ERROR",
+                "message": "plan_propose 需要非空的 steps 列表",
+                "instruction": '示例: {"tool": "plan_propose", "title": "...", "steps": ["步骤1", "步骤2"]}',
+                **route_meta,
+            }
+        steps = [str(s).strip() for s in steps if str(s).strip()]
+        if not steps:
+            return {
+                "status": "FORMAT_ERROR",
+                "message": "plan_propose 的 steps 列表为空",
+                **route_meta,
+            }
+        self.pending_plan = {
+            "title": title, "steps": steps, "user_input": user_input,
+            "internal": parsed.get("internal", ""),
+        }
+        self.plan_approved = False
+        return {
+            "status": "PLAN_PROPOSED",
+            "title": title,
+            "steps": steps,
+            "plan": self._render_plan(),
+            "message": "已生成任务计划，等待用户批准",
+            "instruction": "等待用户批准：批准后按计划逐步执行；拒绝则调整方案",
+            **route_meta,
+        }
+
+    def approve_plan(self) -> bool:
+        """用户批准计划：解除 Plan Mode 门禁"""
+        if not self.pending_plan:
+            return False
+        self.plan_approved = True
+        return True
+
+    def reject_plan(self) -> bool:
+        """用户拒绝计划：清空待批计划"""
+        had = self.pending_plan is not None
+        self.pending_plan = None
+        self.plan_approved = False
+        return had
+
+    # ---------- 权限申请与临时授权 ----------
+
+    def _handle_permission_request(self, tool_call: Dict, parsed: Dict,
+                                   route_meta: Dict) -> Dict:
+        target = str(tool_call.get("target", "")).strip()
+        reason = str(tool_call.get("reason", "")).strip()
+        if not target:
+            return {
+                "status": "FORMAT_ERROR",
+                "message": "request_permission 需要 target 参数",
+                "instruction": '示例: {"tool": "request_permission", "target": "terminal_exec", "reason": "..."}',
+                **route_meta,
+            }
+        self.pending_permission = {"tool": target, "reason": reason}
+        return {
+            "status": "PERMISSION_REQUEST",
+            "tool": target,
+            "reason": reason,
+            "message": f"Agent 请求临时授权使用工具: {target}",
+            "instruction": "等待用户批准：批准后重试该工具；拒绝则换其他方式",
+            **route_meta,
+        }
+
+    def grant_pending_permission(self) -> bool:
+        """用户批准权限申请：授予目标工具一次临时权限"""
+        if not self.pending_permission:
+            return False
+        target = self.pending_permission.get("tool", "")
+        if target:
+            self.permission.grant_temp(target)
+        self.pending_permission = None
+        return True
+
+    def reject_pending_permission(self) -> bool:
+        had = self.pending_permission is not None
+        self.pending_permission = None
+        return had
 
     # ---------- 安全闸门与守门辅助 ----------
 
@@ -1479,19 +1773,27 @@ class ExecutionLayer:
             self.pending_bait = None
             self.bait_fail_count = 0
 
-        # b. AST 行为检测（未用导入/类型注解/递归/密钥/SQL）
+        # b. AST 行为检测：安全规则熔断，风格规则只警告（不阻塞正常开发）
         if self.ast_detector:
             report = self.ast_detector.check_all(code)
-            if not all(report.values()):
+            failed = [k for k, v in report.items() if not v]
+            safety_failed = [k for k in failed if k in AST_SAFETY_RULES]
+            style_failed = [k for k in failed if k in AST_STYLE_RULES]
+            if safety_failed:
                 self.ast_fail_count += 1
-                failed = [k for k, v in report.items() if not v]
                 return {"ok": False, "result": {
                     "status": "AST_FAILED",
-                    "message": f"AST 检测失败: {failed}",
+                    "message": f"AST 安全检测失败: {safety_failed}",
                     "report": report,
                     "attempt": self.ast_fail_count,
                     "stop_retry": self.ast_fail_count >= 3,
-                    "instruction": "请修正代码中的结构性问题后重新调用 code_execute（同一问题最多重试 3 次）"
+                    "instruction": "请修正代码中的安全隐患后重新调用 code_execute（同一问题最多重试 3 次）"
+                }}
+            if style_failed:
+                # 风格问题（如缺类型注解/未用导入）不熔断，仅随结果返回警告
+                self.ast_fail_count = 0
+                return {"ok": True, "warnings": {
+                    k: AST_RULE_DESCRIPTIONS.get(k, k) for k in style_failed
                 }}
             self.ast_fail_count = 0
 

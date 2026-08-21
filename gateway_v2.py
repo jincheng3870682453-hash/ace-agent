@@ -218,6 +218,10 @@ FENCE_RE = re.compile(r"```")
 class InstinctGuard:
     """L4 本能守门：8 条规则自动检测输出合规性"""
 
+    # v1_ast_check 桥接时只要求安全规则通过；风格规则（类型注解/未用导入）不阻塞
+    AST_SAFETY_RULES = {"hardcoded_secrets", "sql_injection",
+                        "infinite_recursion", "circular_ref"}
+
     RULE_NAMES = (
         "type_hints",            # 函数必须有类型注解
         "try_except",            # IO 操作必须包异常处理
@@ -346,7 +350,7 @@ class InstinctGuard:
         if self._ast_detector is None:
             return True
         report = self._ast_detector.check_all(t)
-        return all(report.values())
+        return all(v for k, v in report.items() if k in self.AST_SAFETY_RULES)
 
 
 # ============================================================
