@@ -1275,6 +1275,25 @@ _missing_keys = [v for v in ai_code.AgentCLI.COMMANDS.values() if v not in _zh_p
 check("COMMANDS 全部描述键在 zh.json 有翻译（补全菜单不泄漏键名）",
       not _missing_keys, _missing_keys)
 
+# —— 补全器崩溃回归（/edit 按空格、@file 按空格：start_position 必须 ≤ 0） ——
+try:
+    from prompt_toolkit.completion import CompleteEvent as _PTEvent
+    from prompt_toolkit.document import Document as _PTDoc
+    _PT_AVAILABLE = True
+except ImportError:
+    _PT_AVAILABLE = False
+if _PT_AVAILABLE:
+    _comp = ai_code._build_slash_completer(ai_code.AgentCLI.COMMANDS)
+    for _probe in ("/", "/edit ", "/edit C:/", "@", "@file ", "@folder C:/"):
+        try:
+            _outs = list(_comp.get_completions(_PTDoc(_probe), _PTEvent()))
+        except Exception as _e:
+            _outs = None
+            _probe_err = f"{_probe} 崩溃: {_e}"
+        check(f"补全器 '{_probe}' 不崩溃且 start_position≤0",
+              _outs is not None and all(c.start_position <= 0 for c in _outs),
+              _probe_err if _outs is None else f"positions={[c.start_position for c in _outs]}")
+
 # ============================================================
 print("=" * 60)
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")

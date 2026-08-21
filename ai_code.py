@@ -335,11 +335,13 @@ def _build_slash_completer(commands: Dict[str, str]):
                 m = re.match(r"^@(file|folder)\s+(.*)$", text)
                 if m:
                     sub = PTDocument(m.group(2), cursor_position=len(m.group(2)))
-                    offset = len(text) - len(m.group(2))
+                    # 子 document 光标与全局光标位置一致，start_position 直接透传；
+                    # 加 offset 会在路径为空（输入 @file 后按空格）时算出正数，触发
+                    # prompt_toolkit 的 assert start_position <= 0 崩溃
                     for comp in self._path.get_completions(sub, complete_event):
                         yield Completion(
                             comp.text,
-                            start_position=comp.start_position + offset,
+                            start_position=comp.start_position,
                             display=comp.display,
                             display_meta=comp.display_meta,
                         )
@@ -367,11 +369,11 @@ def _build_slash_completer(commands: Dict[str, str]):
             m = re.match(r"^/(open|edit)\s+(.*)$", text)
             if m:
                 sub = PTDocument(m.group(2), cursor_position=len(m.group(2)))
-                offset = len(text) - len(m.group(2))
+                # 同 @file：start_position 直接透传，避免空格后算出正数触发断言崩溃
                 for comp in self._path.get_completions(sub, complete_event):
                     yield Completion(
                         comp.text,
-                        start_position=comp.start_position + offset,
+                        start_position=comp.start_position,
                         display=comp.display,
                         display_meta=comp.display_meta,
                     )
