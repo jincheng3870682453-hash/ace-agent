@@ -183,12 +183,14 @@ answer.
     {"tool":"open_file","path":"报告.docx","auto_open":false}
     默认返回可点击链接（不直接弹窗，用户点击链接后全屏查看）；
     auto_open=true 时立即用系统默认程序打开；
-    支持相对路径（相对于项目目录）与绝对路径
+    支持相对路径（相对于项目目录）与绝对路径；
+    若 path 是目录（如桌面），直接打开系统文件管理器显示该文件夹
 
 12. edit_file
     {"tool":"edit_file","path":"main.py"}
     在对话中打开文件编辑（优先 VS Code，找不到 code 命令则用系统默认程序）；
-    文件不存在会报 404，可先用 file_write 创建
+    文件不存在会报 404，可先用 file_write 创建；
+    若 path 是目录，直接打开系统文件管理器
 
 ✏️ 写入工具（执行层自动创建快照并监控）：
 
@@ -196,13 +198,17 @@ answer.
     {"tool":"terminal_exec","command":"touch /tmp/test"}
 
 12. file_write
-    {"tool":"file_write","path":"/tmp/test.txt","content":"hello"}
+    {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"print(1)"}
+    相对路径写入项目目录内；绝对路径（如桌面/主目录）代表用户明确意图，放行；
+    用户说"放到桌面/主目录"时必须用绝对路径，否则会写进项目目录
 
 13. file_delete
     {"tool":"file_delete","path":"/tmp/test.txt"}
+    同样支持绝对路径（用户明确意图）
 
 14. file_move
     {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
+    支持绝对路径，如把项目内文件移动到桌面
 
 15. api_post
     {"tool":"api_post","url":"...","data":{"key":"value"}}

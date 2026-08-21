@@ -66,14 +66,14 @@ answer.
 8. datetime_now     {"tool":"datetime_now","format":"YYYY-MM-DD HH:mm:ss"}
 9. browser_open     {"tool":"browser_open","url":"https://..."}   系统默认浏览器打开
 10. parse_document  {"tool":"parse_document","path":"报告.docx","force_ocr":false}   Word/Excel/PPT/PDF/图片/文本
-11. open_file       {"tool":"open_file","path":"报告.docx","auto_open":false}  生成可点击链接
-12. edit_file       {"tool":"edit_file","path":"main.py"}         用 VS Code/系统编辑器打开
+11. open_file       {"tool":"open_file","path":"报告.docx","auto_open":false}  生成可点击链接；目录→打开文件管理器
+12. edit_file       {"tool":"edit_file","path":"main.py"}         用 VS Code/系统编辑器打开；目录→打开文件管理器
 13. plan_propose    {"tool":"plan_propose","title":"...","steps":["步骤1","步骤2"]}  提议任务计划，等用户批准
 14. request_permission {"tool":"request_permission","target":"terminal_exec","reason":"..."}  申请临时授权
 
 写入工具（执行层自动快照并监控）：
 15. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
-16. file_write      {"tool":"file_write","path":"/tmp/test.txt","content":"hello"}
+16. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  绝对路径=用户明确意图（放桌面/主目录）
 17. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}
 18. file_move       {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
 19. api_post        {"tool":"api_post","url":"...","data":{"key":"value"}}

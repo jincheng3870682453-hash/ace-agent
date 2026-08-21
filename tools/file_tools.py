@@ -18,8 +18,8 @@ from tools.result import ExecutionResult
 
 class FileTools:
     def _exec_file_ops(self, tool_name: str, params: Dict) -> ExecutionResult:
-        """文件操作（默认限制在项目目录内，防路径穿越）"""
-        path = Path(params.get("path", ""))
+        """文件操作（相对路径限制在项目目录内；绝对路径 = 用户明确意图，防路径穿越）"""
+        path = Path(os.path.expanduser(str(params.get("path", ""))))
         if self.confine_files:
             confined = self._confined(path)
             if confined is not None:
@@ -28,10 +28,16 @@ class FileTools:
                 # 只读目录列表允许越界（与 terminal_view ls 口径一致），
                 # 防止"帮我看看桌面/主目录"这类问题因工具选择而失败
                 pass
+            elif path.is_absolute() and tool_name in ("file_write", "file_delete"):
+                # 绝对路径（含 ~ 展开后） = 用户明确意图（如"放到桌面/主目录"），写工具放行；
+                # 相对路径仍严格限项目内，防止穿越。读文件仍限项目内。
+                path = path.resolve()
             else:
                 return ExecutionResult(status="error", error_code="403",
-                                       message="路径越界：文件操作仅允许在项目目录内"
-                                               "（目录可用 file_read 列出）")
+                                       message="路径越界：相对路径仅允许在项目目录内；"
+                                               "写文件（file_write/file_delete）可传绝对路径"
+                                               "（如 C:\\Users\\<用户名>\\Desktop\\文件名，"
+                                               "或 ~/Desktop/文件名）")
         elif not path.is_absolute():
             path = self.project_root / path
 
@@ -64,14 +70,15 @@ class FileTools:
                     path.unlink()
                 return ExecutionResult(status="success", data={"deleted": str(path)})
             elif tool_name == "file_move":
-                src = Path(params.get("source", ""))
-                dest = Path(params.get("dest", ""))
+                src = Path(os.path.expanduser(str(params.get("source", ""))))
+                dest = Path(os.path.expanduser(str(params.get("dest", ""))))
                 if self.confine_files:
-                    src = self._confined(src)
-                    dest = self._confined(dest)
+                    src = self._confined(src) or (src.resolve() if src.is_absolute() else None)
+                    dest = self._confined(dest) or (dest.resolve() if dest.is_absolute() else None)
                     if src is None or dest is None:
                         return ExecutionResult(status="error", error_code="403",
-                                               message="路径越界：文件操作仅允许在项目目录内")
+                                               message="路径越界：file_move 仅允许项目内相对路径"
+                                                       "或绝对路径（绝对路径 = 明确意图）")
                 else:
                     if not src.is_absolute():
                         src = self.project_root / src
@@ -232,6 +239,21 @@ class FileTools:
         p = self._resolve_read_path(path_str)
         if not p.exists():
             return ExecutionResult(status="error", error_code="404", message=f"文件不存在: {p}")
+        if p.is_dir():
+            # 目录：立即在系统文件管理器中打开（如"打开桌面文件夹"）
+            try:
+                if os.name == "nt":
+                    os.startfile(str(p))
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(p)])
+                else:
+                    subprocess.Popen(["xdg-open", str(p)])
+            except Exception as e:
+                return ExecutionResult(status="error", error_code="500",
+                                       message=f"打开文件夹失败: {e}")
+            return ExecutionResult(status="success", data={
+                "path": str(p), "opened": True, "is_dir": True,
+                "hint": "已在系统文件管理器中打开该文件夹"})
         if not bool(params.get("auto_open", False)):
             # 默认收起：只给链接，用户点击才打开
             return ExecutionResult(status="success", data={
@@ -258,6 +280,21 @@ class FileTools:
         if not p.exists():
             return ExecutionResult(status="error", error_code="404",
                                    message=f"文件不存在: {p}（可先用 file_write 创建）")
+        if p.is_dir():
+            # 目录：在系统文件管理器中打开
+            try:
+                if os.name == "nt":
+                    os.startfile(str(p))
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(p)])
+                else:
+                    subprocess.Popen(["xdg-open", str(p)])
+            except Exception as e:
+                return ExecutionResult(status="error", error_code="500",
+                                       message=f"打开文件夹失败: {e}")
+            return ExecutionResult(status="success", data={
+                "path": str(p), "opened": True, "is_dir": True,
+                "hint": "已在系统文件管理器中打开该文件夹"})
         import subprocess
         code = shutil.which("code")
         if code:

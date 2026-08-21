@@ -829,6 +829,35 @@ if os.name == "nt":
     check("terminal_view Windows 反斜杠路径", r["status"] == "SUCCESS", r.get("message"))
 r = run_agent(el_h, "file_write", path="ok.txt", content="in-project")
 check("项目内写入正常", r["status"] == "SUCCESS", r)
+
+# —— 写桌面/绝对路径放行（用户明确意图），读文件仍不放行 ——
+abs_dir = Path(mktemp())
+r = run_agent(el_h, "file_write", path=str(abs_dir / "out.txt"), content="abs-write")
+check("file_write 绝对路径放行（用户明确意图）",
+      r["status"] == "SUCCESS" and (abs_dir / "out.txt").exists(), r)
+r = run_agent(el_h, "file_read", path=str(abs_dir / "out.txt"))
+check("file_read 项目外文件仍拦截", r["status"] == "403", r.get("message"))
+_orig_profile = os.environ.get("USERPROFILE")
+os.environ["USERPROFILE"] = str(abs_dir)
+os.environ["HOME"] = str(abs_dir)
+try:
+    r = run_agent(el_h, "file_write", path="~/Desktop/tilde.txt", content="tilde")
+finally:
+    if _orig_profile is None:
+        os.environ.pop("USERPROFILE", None)
+    else:
+        os.environ["USERPROFILE"] = _orig_profile
+check("file_write ~/Desktop 展开到主目录",
+      r["status"] == "SUCCESS" and (abs_dir / "Desktop" / "tilde.txt").exists(), r)
+r = run_agent(el_h, "file_move", source="ok.txt", dest=str(abs_dir / "moved.txt"))
+check("file_move 绝对目标放行", r["status"] == "SUCCESS"
+      and (abs_dir / "moved.txt").exists(), r)
+if hasattr(os, "startfile"):
+    import unittest.mock as _mock
+    with _mock.patch.object(os, "startfile") as _sf:
+        r = run_agent(el_h, "open_file", path=str(abs_dir))
+        check("open_file 目录 → 打开系统文件管理器",
+              r["status"] == "SUCCESS" and _sf.called and r["data"].get("is_dir"), r)
 r = run_agent(el_h, "math_calc", expression="2+2*10")
 check("math_calc 正常计算", r["status"] == "SUCCESS" and r["data"]["result"] == 22, r)
 r = run_agent(el_h, "math_calc", expression="9**9**9")
