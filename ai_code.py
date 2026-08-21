@@ -170,6 +170,23 @@ def _looks_like_cli_command(line: str) -> bool:
                 or re.match(r"^pip(3)?\s", s))
 
 
+def _model_error_hint(e: Exception) -> str:
+    """根据 HTTP 错误码返回中文排查指引（401 等常见错误不再只甩英文）"""
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    if code == 401:
+        return ("API Key 无效或已过期。请用 /config 重新配置完整密钥（注意智谱新版 key 以 "
+                "id. 开头、不要带空格换行），或到服务商控制台重新生成")
+    if code == 403:
+        return "密钥无权限访问该模型：请检查账户权限/额度，或更换模型名"
+    if code == 404:
+        return "接口或模型不存在：请检查 base_url 与模型名（如 glm-4-flash / deepseek-chat）"
+    if code == 429:
+        return "请求过于频繁或额度用尽：请稍后重试，或到控制台检查余额"
+    if code and 500 <= code < 600:
+        return "服务端错误：请稍后重试"
+    return ""
+
+
 # 支持"无空格参数"的斜杠命令：/search关键词 → /search 关键词
 ARG_COMMANDS = {"/search", "/open", "/edit", "/model", "/provider",
                 "/rollback", "/permission"}
@@ -1056,7 +1073,9 @@ class AgentCLI:
                 return
             except Exception as e:
                 spinner.stop(newline=True)
-                print(c("red", "\n" + t("model_call_failed", err=e)))
+                hint = _model_error_hint(e)
+                print(c("red", "\n" + t("model_call_failed", err=e)
+                        + (f"\n  💡 {hint}" if hint else "")))
                 return
             # 状态行/流式正文收尾换行
             if disp["state"]["state"] in ("thinking", "tool"):
