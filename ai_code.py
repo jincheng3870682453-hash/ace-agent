@@ -827,6 +827,34 @@ class AgentCLI:
                 click = val
             print(c("dim", f"  🔗 {label}: {click}"))
 
+    def _prewarm_ollama(self) -> None:
+        """启动时预热本地 Ollama 模型：把冷加载挪到开局，对话中不再长时间无响应"""
+        base = str(self.cfg.get("base_url", ""))
+        if "11434" not in base:
+            return
+        model = str(self.cfg.get("model", "")).strip()
+        if not model:
+            return
+        try:
+            import json as _json
+            import urllib.request
+            with urllib.request.urlopen("http://localhost:11434/api/ps", timeout=5) as r:
+                data = _json.loads(r.read().decode("utf-8", "ignore"))
+            if any(m.get("model") == model for m in data.get("models", [])):
+                return  # 已在内存，无需预热
+            print(c("dim", "  ⏳ 正在预热本地模型（首次加载到内存可能需要数十秒）…"))
+            req = urllib.request.Request(
+                "http://localhost:11434/api/chat",
+                data=_json.dumps({"model": model,
+                                  "messages": [{"role": "user", "content": "hi"}],
+                                  "stream": False}).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=180) as r:
+                r.read()
+            print(c("dim", "  ✅ 模型已预热，可以开聊了"))
+        except Exception:
+            pass  # 预热失败不阻塞启动
+
     # ---------- 对话循环 ----------
 
     def _build_system_prompt(self) -> str:
@@ -1029,7 +1057,10 @@ class AgentCLI:
             print()
         t0 = time.time()
         # 记忆预注入：模型生成前把相关历史记忆放进 prompt（无记忆时原样返回）
+        _log = logging.getLogger("ace.converse")
+        _log.debug("converse 开始: user=%r", user_input)
         next_user = self.el.prepare_context(user_input)
+        _log.debug("prepare_context 完成")
         for _round in range(1, MAX_ROUNDS + 1):
             msgs = self.messages + [{"role": "user", "content": next_user}]
             # 本地 Ollama：等待超过 15s 提示冷加载（4.7GB 模型首次调用需载入内存）
@@ -1040,17 +1071,23 @@ class AgentCLI:
             disp = self._make_display(tools_mode=bool(self.client.tools),
                                       spinner=spinner)
             spinner.start()
+            _log = logging.getLogger("ace.converse")
             try:
                 # 基础提示词 + 语言/技能/引用上下文
+                _log.debug("模型调用开始 round=%d msgs=%d base=%s",
+                           _round, len(msgs), self.cfg.get("base_url", ""))
                 system = self._build_system_prompt()
                 output = self.client.stream_generate(system, msgs,
                                                      on_delta=disp["on_delta"])
+                _log.debug("模型调用完成 len=%d", len(output))
             except KeyboardInterrupt:
                 spinner.stop(newline=True)
+                _log.debug("用户中断")
                 print("\n" + t("interrupted"))
                 return
             except Exception as e:
                 spinner.stop(newline=True)
+                _log.exception("模型调用失败")
                 print(c("red", "\n" + t("model_call_failed", err=e)))
                 return
             # 状态行/流式正文收尾换行
@@ -1953,6 +1990,16 @@ def main() -> None:
     logging.basicConfig(
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # 对话阶段日志落盘（~/.ace/ace.log），用于定位"无响应/卡住"现场
+    try:
+        _log_dir = Path.home() / ".ace"
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _fh = logging.FileHandler(str(_log_dir / "ace.log"), encoding="utf-8")
+        _fh.setLevel(logging.DEBUG)
+        _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logging.getLogger().addHandler(_fh)
+    except Exception:
+        pass
 
     if args.install_ui:
         print("正在安装 prompt_toolkit（自动检测已装状态 + 多镜像回退）...")
@@ -1976,6 +2023,8 @@ def main() -> None:
     if args.mock:
         cli.repl()          # 显式离线演示直接进聊天
         return
+    # 交互真实模式：先预热本地模型，避免对话中冷加载长时间无响应
+    cli._prewarm_ollama()
     cli.landing()           # 默认进入登录页（AI-CLI 启动平台同款首页菜单）
 
 
