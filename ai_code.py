@@ -1219,7 +1219,8 @@ class AgentCLI:
             except Exception:
                 snaps = 0
         base = "class:status-bar"
-        perm_cls = f"status-bar.perm-{perm}" if perm in ("readonly", "write", "full") else base
+        # 注意：FormattedText 片段必须带 class: 前缀，否则会被当成颜色名解析导致崩溃
+        perm_cls = f"class:status-bar.perm-{perm}" if perm in ("readonly", "write", "full") else base
         seg = [
             (base, f" 模型: {model}"),
             (base, "│"),

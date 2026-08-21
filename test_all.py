@@ -1003,6 +1003,9 @@ try:
     check("状态栏: 含模型/权限/会话/快照",
           "模型" in bar_text and "权限" in bar_text
           and "会话" in bar_text and "快照" in bar_text, bar_text[:200])
+    check("状态栏: 所有片段带 class: 前缀（防 Wrong color format 闪退）",
+          all(f[0].startswith("class:") for f in bar),
+          [f[0] for f in bar[:4]])
 except ImportError:
     pass  # 无 prompt_toolkit 环境跳过（补全器/状态栏本身也不启用）
 
