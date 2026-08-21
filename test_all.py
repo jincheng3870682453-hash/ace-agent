@@ -858,6 +858,30 @@ if hasattr(os, "startfile"):
         r = run_agent(el_h, "open_file", path=str(abs_dir))
         check("open_file 目录 → 打开系统文件管理器",
               r["status"] == "SUCCESS" and _sf.called and r["data"].get("is_dir"), r)
+
+# —— Windows 反斜杠路径 JSON 修复（C:\Users → \U 非法转义被丢弃的坑） ——
+from tools.base import repair_backslash_json as _repair
+_broken = '{"tool":"file_read","path":"C:\\Users\\Desktop\\a.txt"}'
+check("repair_backslash_json 修复 Windows 路径",
+      json.loads(_repair(_broken))["path"] == "C:\\Users\\Desktop\\a.txt", _repair(_broken))
+_r = el_h.process_agent_output(
+    "<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] read\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+    "<EXTERNAL>\nanswer.\n" + _broken + "\n</EXTERNAL>", "测试")
+check("execution_layer 修复反斜杠 JSON 并识别工具调用",
+      _r.get("tool") == "file_read" and _r.get("status") != "FORMAT_ERROR"
+      and "JSON 解析失败" not in (_r.get("message") or ""),
+      _r.get("error") or _r.get("message") or str(_r)[:120])
+from agent_runner import content_to_tool_protocol as _cttp
+_r2 = _cttp('```json\n{"name": "file_write", '
+            '"arguments": {"path": "C:\\Users\\Desktop\\x.py", "content": "1"}}\n```')
+check("content_to_tool_protocol 修复反斜杠 arguments",
+      '"file_write"' in _r2 and "C:\\\\Users\\\\Desktop\\\\x.py" in _r2, _r2[:120])
+
+# —— parse_document / terminal_view ls 不存在 → 404 ——
+r = run_agent(el_h, "parse_document", path=str(abs_dir / "不存在.docx"))
+check("parse_document 文件不存在报 404", r["status"] == "404", r.get("message"))
+r = run_agent(el_h, "terminal_view", command="ls " + str(abs_dir / "no_such_dir_xyz"))
+check("terminal_view ls 不存在目录报 404", r["status"] == "404", r.get("message"))
 r = run_agent(el_h, "math_calc", expression="2+2*10")
 check("math_calc 正常计算", r["status"] == "SUCCESS" and r["data"]["result"] == 22, r)
 r = run_agent(el_h, "math_calc", expression="9**9**9")

@@ -6,7 +6,7 @@
 """
 
 from tools.result import ExecutionResult
-from tools.base import ToolExecutorBase
+from tools.base import ToolExecutorBase, repair_backslash_json
 from tools.file_tools import FileTools
 from tools.code_tools import CodeTools
 from tools.web_tools import WebTools
@@ -21,4 +21,4 @@ class ToolExecutor(ToolExecutorBase, FileTools, CodeTools, WebTools,
     pass
 
 
-__all__ = ["ToolExecutor", "ExecutionResult"]
+__all__ = ["ToolExecutor", "ExecutionResult", "repair_backslash_json"]

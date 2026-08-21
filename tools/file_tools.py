@@ -147,6 +147,9 @@ class FileTools:
                 p = self.project_root / p
             try:
                 items = sorted(os.listdir(p))
+            except FileNotFoundError:
+                return ExecutionResult(status="error", error_code="404",
+                                       message=f"目录不存在: {p}")
             except Exception as e:
                 return ExecutionResult(status="error", error_code="500", message=str(e))
             return ExecutionResult(status="success", data={"stdout": "\n".join(items),

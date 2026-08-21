@@ -26,6 +26,17 @@ VERSION_SUBCOMMANDS = {"--version", "-V"}
 GIT_READONLY_SUBCOMMANDS = {"status", "log", "diff", "show",
                              "ls-files", "rev-parse", "branch"}
 
+# Windows 路径反斜杠修复：模型把 C:\Users\... 直接写进 JSON 时，
+# \U、\6 等是非法转义，json.loads 会失败导致整个工具调用被丢弃。
+_WIN_PATH_BACKSLASH_RE = re.compile(r'\\([^"\\/bfnrtu])')
+
+
+def repair_backslash_json(text: str) -> str:
+    r"""把 JSON 文本中反斜杠后跟非 JSON 转义字符的 \X 修复为 \\X（C:\Users → C:\\Users）。
+    合法转义（\" \\ \/ \b \f \n \r \t \u）不受影响。
+    通常用于 json 解析失败后的补救重试（模型输出 Windows 绝对路径时）。"""
+    return _WIN_PATH_BACKSLASH_RE.sub(r"\\\\\1", text)
+
 
 class ToolExecutorBase:
     def __init__(self, project_root: str = ".", sandbox_base: Optional[str] = None,

@@ -47,6 +47,7 @@ FOLDER = Path(__file__).resolve().parent
 sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
+from tools.base import repair_backslash_json  # noqa: E402
 
 SYSTEM_PROMPT_PATH = FOLDER / "agent_system_prompt_v7.md"
 SYSTEM_PROMPT_V8_PATH = FOLDER / "agent_system_prompt_v8.md"
@@ -193,7 +194,11 @@ def tool_calls_to_protocol(tool_calls: List[Dict]) -> str:
         try:
             args = json.loads(raw_args or "{}")
         except (json.JSONDecodeError, TypeError):
-            args = {}
+            # 模型可能把 Windows 绝对路径写进 arguments 字符串（C:\Users → \U 非法转义）
+            try:
+                args = json.loads(repair_backslash_json(raw_args or "{}"))
+            except (json.JSONDecodeError, TypeError):
+                args = {}
     # 兼容部分端点直接把 name/arguments 放在顶层
     if not name:
         name = tc.get("name", "")
@@ -280,7 +285,11 @@ def content_to_tool_protocol(content: str) -> str:
         try:
             obj = json.loads(cand)
         except json.JSONDecodeError:
-            continue
+            # Windows 绝对路径（C:\Users → \U 非法转义）会导致解析失败，修复后重试
+            try:
+                obj = json.loads(repair_backslash_json(cand))
+            except json.JSONDecodeError:
+                continue
         converted = _convert(obj)
         if converted:
             return converted

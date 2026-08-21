@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 
-from tools import ExecutionResult, ToolExecutor
+from tools import ExecutionResult, ToolExecutor, repair_backslash_json
 
 # ============================================================
 # 导入用户代码库（V1 + V2）
@@ -226,27 +226,37 @@ class AgentOutputParser:
         # 判断模式 A（工具调用）还是模式 B（最终回复）
         if content_after_answer.startswith("{"):
             # 模式 A：提取 JSON（用 raw_decode 精确解析，替代手工括号扫描）
+            text = content_after_answer.lstrip()
+            tool_call = None
             try:
-                text = content_after_answer.lstrip()
                 tool_call, json_end = json.JSONDecoder().raw_decode(text)
-                remaining = text[json_end:].strip()
-                if remaining:
-                    result["error"] = f"JSON 后存在多余内容: {remaining[:50]}"
+            except json.JSONDecodeError:
+                # 模型常把 Windows 绝对路径写进 JSON（C:\Users → \U 非法转义），
+                # 解析失败后做反斜杠修复再试一次（后续检查用修复后的文本）
+                fixed = repair_backslash_json(text)
+                try:
+                    tool_call, json_end = json.JSONDecoder().raw_decode(fixed)
+                    text = fixed
+                except json.JSONDecodeError as e:
+                    result["error"] = f"JSON 解析失败: {e}"
                     return result
-                if not isinstance(tool_call, dict):
-                    result["error"] = "工具调用必须是 JSON 对象（如 {\"tool\": \"...\"}）"
-                    return result
-                if "tool" not in tool_call:
-                    # 模型用 JSON 文本作答（引用配置/代码片段等），不是工具调用 → 按最终回复处理
-                    result["final_reply"] = content_after_answer
-                    result["valid"] = True
-                    return result
-                result["tool_call"] = tool_call
-                result["valid"] = True
-
-            except json.JSONDecodeError as e:
-                result["error"] = f"JSON 解析失败: {e}"
+            if tool_call is None:
+                result["error"] = "JSON 解析失败"
                 return result
+            remaining = text[json_end:].strip()
+            if remaining:
+                result["error"] = f"JSON 后存在多余内容: {remaining[:50]}"
+                return result
+            if not isinstance(tool_call, dict):
+                result["error"] = "工具调用必须是 JSON 对象（如 {\"tool\": \"...\"}）"
+                return result
+            if "tool" not in tool_call:
+                # 模型用 JSON 文本作答（引用配置/代码片段等），不是工具调用 → 按最终回复处理
+                result["final_reply"] = content_after_answer
+                result["valid"] = True
+                return result
+            result["tool_call"] = tool_call
+            result["valid"] = True
         else:
             # 模式 B：最终回复
             if not content_after_answer.strip():
