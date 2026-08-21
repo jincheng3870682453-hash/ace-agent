@@ -321,7 +321,8 @@ def _build_slash_completer(commands: Dict[str, str]):
                     for comp in self._path.get_completions(sub, complete_event):
                         yield Completion(
                             comp.text,
-                            start_position=comp.start_position + offset,
+                            # 钳制到 <=0：防止子文档偏移把 start_position 变正触发 prompt_toolkit 断言
+                            start_position=min(0, comp.start_position + offset),
                             display=comp.display,
                             display_meta=comp.display_meta,
                         )
@@ -353,7 +354,8 @@ def _build_slash_completer(commands: Dict[str, str]):
                 for comp in self._path.get_completions(sub, complete_event):
                     yield Completion(
                         comp.text,
-                        start_position=comp.start_position + offset,
+                        # 钳制到 <=0：防止子文档偏移把 start_position 变正触发 prompt_toolkit 断言
+                        start_position=min(0, comp.start_position + offset),
                         display=comp.display,
                         display_meta=comp.display_meta,
                     )

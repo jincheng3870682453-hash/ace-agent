@@ -981,6 +981,23 @@ out_text = buf.getvalue()
 check("CLI 可点击链接渲染（默认收起）",
       "点击打开文件" in out_text and "file:///" in out_text, out_text[:200])
 
+# —— 补全器回归：路径补全 start_position 不能为正（防 prompt_toolkit 断言崩溃） ——
+try:
+    import prompt_toolkit  # noqa: F401
+    from prompt_toolkit.document import Document as PTDocument
+
+    comp = ai_code._build_slash_completer(ai_code.AgentCLI.COMMANDS)
+    items = list(comp.get_completions(PTDocument("/open x"), None))
+    check("补全器: /open 路径补全不崩溃且 start_position<=0",
+          len(items) >= 0 and all(it.start_position <= 0 for it in items),
+          [it.start_position for it in items[:3]])
+    items2 = list(comp.get_completions(PTDocument("@file x"), None))
+    check("补全器: @file 路径补全不崩溃且 start_position<=0",
+          len(items2) >= 0 and all(it.start_position <= 0 for it in items2),
+          [it.start_position for it in items2[:3]])
+except ImportError:
+    pass  # 无 prompt_toolkit 环境跳过（补全器本身也不启用）
+
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")
 rep_fib = ad.check_all(fib_code)
