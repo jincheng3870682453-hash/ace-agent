@@ -358,12 +358,16 @@ def _build_slash_completer(commands: Dict[str, str]):
                         display_meta=comp.display_meta,
                     )
                 return
-            # 命令名前缀实时过滤
+            # 命令名前缀实时过滤（desc 是 i18n 键，显示时要翻译）
             prefix = text[1:]
             for name, desc in self.commands.items():
                 if name.startswith("/" + prefix):
-                    yield Completion(name, start_position=-len(text),
-                                     display_meta=desc)
+                    yield Completion(
+                        name,
+                        start_position=-len(text),
+                        display=f"{name}  {t(desc)}",
+                        display_meta=t(desc),
+                    )
 
     return SlashCompleter()
 
@@ -1125,6 +1129,19 @@ class AgentCLI:
                                    sec=time.time() - t0)))
                 return
 
+            if result["status"] == "403" and result.get("tool"):
+                # 权限不足 → 自动向用户申请临时授权（无感：不依赖模型主动 request_permission）
+                if self._ask_temp_grant_403(result["tool"], result.get("message", "")):
+                    self.el.permission.grant_temp(result["tool"])
+                    print(c("green", t("perm_granted_msg")))
+                    result = self.el.process_agent_output(output, user_input)
+                else:
+                    self.session["violations"] += 1
+                    print(c("red", t("error_line", status="403",
+                                     msg=result.get("message", "")[:80])))
+                    next_user = "用户拒绝临时授权，请换一种不需要该工具的方式完成任务。"
+                    continue
+
             if result["status"] in ("FORMAT_ERROR", "GUARD_VIOLATION",
                                     "BAIT_TRIGGERED", "AST_FAILED", "403"):
                 self.session["violations"] += 1
@@ -1156,6 +1173,20 @@ class AgentCLI:
                 next_user = (f"工具执行结果：\n{render_result(result)}\n"
                              f"请根据结果继续（输出下一条工具调用，或最终回复）。")
         print(c("yellow", t("max_rounds")))
+
+    def _ask_temp_grant_403(self, tool: str, reason: str = "") -> bool:
+        """403 自动权限申请：询问用户是否临时授权该工具（非交互环境自动拒绝）"""
+        if not sys.stdin.isatty():
+            return False
+        print(c("yellow", "\n" + t("perm_request_title", tool=tool)))
+        if reason:
+            print(c("dim", reason[:120]))
+        try:
+            answer = input(c("yellow", t("perm_approve_q"))).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        return answer in ("y", "yes")
 
     # ---------- 斜杠命令 ----------
 
