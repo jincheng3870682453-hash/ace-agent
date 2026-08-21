@@ -19,7 +19,13 @@ from tools.result import ExecutionResult
 class FileTools:
     def _exec_file_ops(self, tool_name: str, params: Dict) -> ExecutionResult:
         """文件操作（相对路径限制在项目目录内；绝对路径 = 用户明确意图，防路径穿越）"""
-        path = Path(os.path.expanduser(str(params.get("path", ""))))
+        path_str = str(params.get("path", "")).strip()
+        if not path_str and tool_name != "file_move":
+            # 小模型常漏 path 参数：明确 400（配示例），而不是把 Path("") 当目录写到 500
+            return ExecutionResult(status="error", error_code="400",
+                                   message=f"{tool_name} 需要 path 参数（示例: "
+                                           f'{{"tool": "{tool_name}", "path": "文件路径"}})')
+        path = Path(os.path.expanduser(path_str))
         if self.confine_files:
             confined = self._confined(path)
             if confined is not None:
@@ -62,16 +68,27 @@ class FileTools:
                 content = self._read_text_any(path)
                 return ExecutionResult(status="success", data={"content": content, "path": str(path)})
             elif tool_name == "file_write":
+                if path.is_dir():
+                    return ExecutionResult(status="error", error_code="400",
+                                           message=f"path 是目录: {path}，file_write 需要完整文件路径"
+                                                   "（如 C:\\Users\\<用户名>\\Desktop\\文件.py）")
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(params.get("content", ""), encoding="utf-8")
                 return ExecutionResult(status="success", data={"path": str(path), "bytes_written": len(params.get("content", ""))})
             elif tool_name == "file_delete":
+                if path.is_dir():
+                    return ExecutionResult(status="error", error_code="400",
+                                           message=f"path 是目录: {path}，file_delete 只删除文件")
                 if path.exists():
                     path.unlink()
                 return ExecutionResult(status="success", data={"deleted": str(path)})
             elif tool_name == "file_move":
                 src = Path(os.path.expanduser(str(params.get("source", ""))))
                 dest = Path(os.path.expanduser(str(params.get("dest", ""))))
+                if not str(params.get("source", "")).strip() or not str(params.get("dest", "")).strip():
+                    return ExecutionResult(status="error", error_code="400",
+                                           message='file_move 需要 source 与 dest 参数'
+                                                   '（示例: {"tool": "file_move", "source": "a.txt", "dest": "b.txt"}）')
                 if self.confine_files:
                     src = self._confined(src) or (src.resolve() if src.is_absolute() else None)
                     dest = self._confined(dest) or (dest.resolve() if dest.is_absolute() else None)

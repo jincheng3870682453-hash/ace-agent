@@ -604,8 +604,10 @@ class ExecutionLayer:
         # 12. 构建返回（本轮快照引用用完后立即清空，防止后续轮次误回滚）
         self.current_snapshot_id = None
         if result.status == "success":
-            # 成功推进：清空失败计数（模型已恢复正常）
-            self.repeat_fail.clear()
+            # 成功推进：只清空该工具的失败计数，保留其他工具的计数。
+            # 防止模型"成功一个工具"就把失败工具的计数清零、交替绕过熔断。
+            self.repeat_fail = {k: v for k, v in self.repeat_fail.items()
+                                if not k.startswith(tool_name + ":")}
             return {
                 "status": "SUCCESS",
                 "tool": tool_name,

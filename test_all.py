@@ -926,6 +926,28 @@ _ok = ("<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] m\n[/INTERNAL_THINKING]\n</INTERN
        "<EXTERNAL>\nanswer.\n{\"tool\": \"math_calc\", \"expression\": \"1+1\"}\n</EXTERNAL>")
 el_f.process_agent_output(_ok, "熔断测试")
 check("工具成功后失败计数清空", el_f.repeat_fail == {}, el_f.repeat_fail)
+
+# —— 交替成功/失败不能绕过熔断（成功只清自己的计数） ——
+el_g = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                      config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+_rdg = ("<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] r\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+        "<EXTERNAL>\nanswer.\n{\"tool\": \"file_read\", \"path\": \"nope.txt\"}\n</EXTERNAL>")
+_okg = ("<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] m\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+        "<EXTERNAL>\nanswer.\n{\"tool\": \"math_calc\", \"expression\": \"1+1\"}\n</EXTERNAL>")
+for _i in range(3):
+    el_g.process_agent_output(_rdg, "交替测试")
+    el_g.process_agent_output(_okg, "交替测试")
+check("交替成功/失败不绕过熔断（file_read 仍被熔断）",
+      "file_read" in el_g.banned_tools, el_g.repeat_fail)
+
+# —— file_write 空 path / 目录 path → 400（不再 500） ——
+r = run_agent(el_h, "file_write", content="x")
+check("file_write 缺 path 报 400（附示例）",
+      r["status"] == "400" and "path" in r.get("message", ""), r.get("message"))
+r = run_agent(el_h, "file_write", path=".", content="x")
+check("file_write 目录 path 报 400", r["status"] == "400", r.get("message"))
+r = run_agent(el_h, "file_move", source="ok.txt")
+check("file_move 缺 dest 报 400", r["status"] == "400", r.get("message"))
 r = el_h.process_agent_output(
     "<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] x\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
     "<EXTERNAL>\nanswer.\n[1,2,3]\n</EXTERNAL>", "测试")
