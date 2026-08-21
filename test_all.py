@@ -1001,6 +1001,22 @@ check("file_read 越界目录仍可列出（桌面场景）", r["status"] == "SU
       and r["data"].get("is_dir") is True and len(r["data"].get("listing", [])) >= 1,
       r.get("message"))
 
+# —— tools 模式工具调用 JSON 不泄漏给用户 ——
+_disp = ai_code.AgentCLI._make_display(tools_mode=True, spinner=None)
+_buf = io.StringIO()
+with contextlib.redirect_stdout(_buf):
+    _disp["on_delta"](('```json\n{"name": "terminal_view", '
+                       '"arguments": {"command": "ls -la ~/Desktop"}}\n```'))
+_out = _buf.getvalue()
+check("tools 模式工具调用 JSON 隐藏",
+      '"name"' not in _out and "terminal_view" not in _out, _out[:200])
+_disp2 = ai_code.AgentCLI._make_display(tools_mode=True, spinner=None)
+_buf2 = io.StringIO()
+with contextlib.redirect_stdout(_buf2):
+    _disp2["on_delta"]("你的桌面上有这些文件")
+_out2 = _buf2.getvalue()
+check("tools 模式纯文本正常展示", "桌面上" in _out2, _out2[:200])
+
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")
 rep_fib = ad.check_all(fib_code)

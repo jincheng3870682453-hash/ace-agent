@@ -989,7 +989,17 @@ class AgentCLI:
                         st["state"] = state
                         return
             elif tools_mode and full.strip():
-                # 原生工具模式且无协议标签：纯文本内容即最终回复（清洗思考标记后显示）
+                stripped = full.strip()
+                # 工具调用 JSON（```json {name/arguments}``` 或裸 {"name":...}）不展示给用户，
+                # 状态行保持"正在调用工具"；只有纯文本回复才流式展示
+                if ('"name"' in stripped or '"tool"' in stripped or '"arguments"' in stripped) \
+                        and (stripped.startswith("{") or stripped.startswith("```")):
+                    state = "tool"
+                    if spinner is not None:
+                        spinner.set_label(t("calling_tool"))
+                    st["state"] = state
+                    return
+                # 原生工具模式：纯文本内容即最终回复（清洗思考标记后显示）
                 state = "reply"
                 if spinner is not None:
                     spinner.stop()
