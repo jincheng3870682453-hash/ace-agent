@@ -250,10 +250,52 @@ def sanitize_plain_content(content: str) -> str:
     return cleaned
 
 
+def _extract_json_objects(text: str) -> List[str]:
+    """从文本中提取所有最外层完整平衡的 {...} JSON 对象片段。
+    正确处理字符串内的花括号/转义/```围栏，防止模型把 markdown 围栏
+    嵌进 JSON 字符串（如 plan 步骤里带 ```python 代码）时提取错乱。"""
+    objs: List[str] = []
+    n = len(text)
+    i = 0
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        start = i
+        j = i
+        while j < n:
+            c = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            else:
+                if c == '"':
+                    in_str = True
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        objs.append(text[start:j + 1])
+                        i = j
+                        break
+            j += 1
+        i += 1
+    return objs
+
+
 def content_to_tool_protocol(content: str) -> str:
     """部分本地模型（如 Ollama 上的 Qwen）把工具调用写成 JSON 文本而非结构化 tool_calls。
     识别两种文本 schema：项目自有 {"tool": ...} 与 Ollama 原生 {"name", "arguments"}；
-    从 ``` 围栏块中提取并逐个尝试；只转换已注册的工具名，防止误伤正常 JSON 回答。"""
+    从 ``` 围栏块 + 平衡花括号扫描中提取候选并逐个尝试；
+    只转换已注册的工具名，防止误伤正常 JSON 回答。"""
 
     def _convert(obj: dict) -> str:
         if not isinstance(obj, dict):
@@ -273,12 +315,15 @@ def content_to_tool_protocol(content: str) -> str:
         return ""
 
     text = (content or "").strip()
-    candidates = []
+    candidates: List[str] = []
     if "```" in text:
         for m in re.finditer(r"```[a-zA-Z0-9_+-]*\s*(.*?)```", text, re.DOTALL):
             candidates.append(m.group(1).strip())
     else:
         candidates.append(text)
+    # 增强：平衡花括号扫描，防嵌套围栏/正文干扰导致漏识别
+    for obj in _extract_json_objects(text):
+        candidates.append(obj)
     for cand in candidates:
         if not cand.startswith("{"):
             continue

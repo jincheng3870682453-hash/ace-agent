@@ -1105,6 +1105,24 @@ with contextlib.redirect_stdout(_buf2):
     _disp2["on_delta"]("你的桌面上有这些文件")
 _out2 = _buf2.getvalue()
 check("tools 模式纯文本正常展示", "桌面上" in _out2, _out2[:200])
+_disp3 = ai_code.AgentCLI._make_display(tools_mode=True, spinner=None)
+_buf3 = io.StringIO()
+with contextlib.redirect_stdout(_buf3):
+    _disp3["on_delta"]('好的，请稍等。\n```json\n{"name": "plan_propose", '
+                       '"arguments": {"steps": ["a"], "title": "t"}}\n```')
+_out3 = _buf3.getvalue()
+check("tools 模式'正文+json'混合输出隐藏 json",
+      '"name"' not in _out3 and "plan_propose" not in _out3, _out3[:200])
+
+# —— 嵌套 ``` 围栏的 JSON 仍能识别（模型把代码围栏嵌进 plan 步骤） ——
+from agent_runner import content_to_tool_protocol as _cttp2  # noqa: E402
+_nested = ('好的，请稍等。\n```json\n{"name": "plan_propose", "arguments": '
+           '{"steps": ["打开文件管理器并导航到桌面目录 C:\\\\Users\\\\69215\\\\Desktop。", '
+           '"使用编辑器打开文件并输入：\\n\\n```python\\nprint(\'1+1\')\\n```\\n保存。"], '
+           '"title": "创建 Python 文件的计划"}}\n```')
+_rn = _cttp2(_nested)
+check("嵌套代码围栏的 plan JSON 仍被识别",
+      '"plan_propose"' in _rn and "创建 Python 文件的计划" in _rn, _rn[:200])
 
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")

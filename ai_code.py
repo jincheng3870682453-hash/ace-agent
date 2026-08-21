@@ -990,10 +990,11 @@ class AgentCLI:
                         return
             elif tools_mode and full.strip():
                 stripped = full.strip()
-                # 工具调用 JSON（```json {name/arguments}``` 或裸 {"name":...}）不展示给用户，
-                # 状态行保持"正在调用工具"；只有纯文本回复才流式展示
+                # 工具调用 JSON（```json {name/arguments}```、裸 {"name":...}、
+                # 或"正文+json"混合输出）不展示给用户，状态行保持"正在调用工具"；
+                # 只有纯文本回复才流式展示
                 if ('"name"' in stripped or '"tool"' in stripped or '"arguments"' in stripped) \
-                        and (stripped.startswith("{") or stripped.startswith("```")):
+                        and "{" in stripped:
                     state = "tool"
                     if spinner is not None:
                         spinner.set_label(t("calling_tool"))
