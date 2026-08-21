@@ -21,27 +21,22 @@ class FileTools:
         """文件操作（默认限制在项目目录内，防路径穿越）"""
         path = Path(params.get("path", ""))
         if self.confine_files:
-            path = self._confined(path)
-            if path is None:
+            confined = self._confined(path)
+            if confined is not None:
+                path = confined
+            elif tool_name == "file_read" and path.is_dir():
+                # 只读目录列表允许越界（与 terminal_view ls 口径一致），
+                # 防止"帮我看看桌面/主目录"这类问题因工具选择而失败
+                pass
+            else:
                 return ExecutionResult(status="error", error_code="403",
-                                       message="路径越界：文件操作仅允许在项目目录内")
+                                       message="路径越界：文件操作仅允许在项目目录内"
+                                               "（目录可用 file_read 列出）")
         elif not path.is_absolute():
             path = self.project_root / path
 
         try:
             if tool_name == "file_read":
-                if self.confine_files:
-                    confined = self._confined(path)
-                    if confined is not None:
-                        path = confined
-                    elif path.is_dir():
-                        # 越界目录：仍允许只读列出（与 terminal_view ls 口径一致），
-                        # 防止"帮我看看桌面/主目录"这类问题因工具选择而失败
-                        pass
-                    else:
-                        return ExecutionResult(status="error", error_code="403",
-                                               message="路径越界：文件操作仅允许在项目目录内"
-                                                       "（目录可用 file_read 列出）")
                 if not path.exists():
                     return ExecutionResult(status="error", error_code="404",
                                            message=f"文件不存在: {path}"
