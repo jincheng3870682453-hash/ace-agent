@@ -710,12 +710,17 @@ class _MockArgs:
 
 
 class _Spinner:
-    """状态行动画线程：◈ 思考中... / ◈ 正在调用工具...（动态加点，后台每 0.12s 重绘）"""
+    """状态行动画线程：◈ 思考中... Ns / ◈ 正在调用工具...（动态加点 + 等待秒数，后台每 0.12s 重绘）"""
 
-    def __init__(self, label: str = "思考中") -> None:
+    def __init__(self, label: str = "思考中",
+                 hint_after: int = 0, hint_text: str = "") -> None:
         self._label = label
         self._stop_ev = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._start = time.time()
+        self._hint_after = hint_after
+        self._hint_text = hint_text
+        self._hint_shown = False
 
     def set_label(self, label: str) -> None:
         self._label = label
@@ -724,15 +729,22 @@ class _Spinner:
         if self._thread and self._thread.is_alive():
             return
         self._stop_ev.clear()
+        self._start = time.time()
+        self._hint_shown = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
         frame = 0
         while not self._stop_ev.is_set():
+            elapsed = int(time.time() - self._start)
             dots = "." * (frame % 4)
-            sys.stdout.write(f"\r◈ {self._label}{dots}   ")
+            sys.stdout.write(f"\r◈ {self._label}{dots} {elapsed}s   ")
             sys.stdout.flush()
+            if not self._hint_shown and self._hint_text and elapsed >= self._hint_after:
+                self._hint_shown = True
+                sys.stdout.write("\n" + self._hint_text + "\r◈ ")
+                sys.stdout.flush()
             frame += 1
             self._stop_ev.wait(0.12)
 
@@ -1020,7 +1032,11 @@ class AgentCLI:
         next_user = self.el.prepare_context(user_input)
         for _round in range(1, MAX_ROUNDS + 1):
             msgs = self.messages + [{"role": "user", "content": next_user}]
-            spinner = _Spinner(t("thinking"))
+            # 本地 Ollama：等待超过 15s 提示冷加载（4.7GB 模型首次调用需载入内存）
+            _hint = ""
+            if "11434" in str(self.cfg.get("base_url", "")):
+                _hint = c("dim", "⏳ 本地模型首次调用需加载到内存，可能需数十秒，请稍候…")
+            spinner = _Spinner(t("thinking"), hint_after=15, hint_text=_hint)
             disp = self._make_display(tools_mode=bool(self.client.tools),
                                       spinner=spinner)
             spinner.start()
