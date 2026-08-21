@@ -1154,6 +1154,14 @@ with contextlib.redirect_stdout(_buf3):
 _out3 = _buf3.getvalue()
 check("tools 模式'正文+json'混合输出隐藏 json",
       '"name"' not in _out3 and "plan_propose" not in _out3, _out3[:200])
+# 流式分片：第一个 delta 只有 ```json 和 {（还没有 name 键）也应隐藏
+_disp4 = ai_code.AgentCLI._make_display(tools_mode=True, spinner=None)
+_buf4 = io.StringIO()
+with contextlib.redirect_stdout(_buf4):
+    _disp4["on_delta"]('```json\n{\n  "na')
+_out4 = _buf4.getvalue()
+check("tools 模式分片 JSON（```json+{ 开头）不泄漏",
+      "```json" not in _out4 and "{" not in _out4, _out4[:200])
 
 # —— Windows 无默认程序打开 .py → 记事本回退 ——
 if hasattr(os, "startfile"):
