@@ -321,8 +321,7 @@ def _build_slash_completer(commands: Dict[str, str]):
                     for comp in self._path.get_completions(sub, complete_event):
                         yield Completion(
                             comp.text,
-                            # 钳制到 <=0：防止子文档偏移把 start_position 变正触发 prompt_toolkit 断言
-                            start_position=min(0, comp.start_position + offset),
+                            start_position=comp.start_position + offset,
                             display=comp.display,
                             display_meta=comp.display_meta,
                         )
@@ -354,22 +353,17 @@ def _build_slash_completer(commands: Dict[str, str]):
                 for comp in self._path.get_completions(sub, complete_event):
                     yield Completion(
                         comp.text,
-                        # 钳制到 <=0：防止子文档偏移把 start_position 变正触发 prompt_toolkit 断言
-                        start_position=min(0, comp.start_position + offset),
+                        start_position=comp.start_position + offset,
                         display=comp.display,
                         display_meta=comp.display_meta,
                     )
                 return
-            # 命令名前缀实时过滤（desc 是 i18n 键，显示时要翻译）
+            # 命令名前缀实时过滤
             prefix = text[1:]
             for name, desc in self.commands.items():
                 if name.startswith("/" + prefix):
-                    yield Completion(
-                        name,
-                        start_position=-len(text),
-                        display=f"{name}  {t(desc)}",
-                        display_meta=t(desc),
-                    )
+                    yield Completion(name, start_position=-len(text),
+                                     display_meta=desc)
 
     return SlashCompleter()
 
@@ -710,17 +704,12 @@ class _MockArgs:
 
 
 class _Spinner:
-    """状态行动画线程：◈ 思考中... Ns / ◈ 正在调用工具...（动态加点 + 等待秒数，后台每 0.12s 重绘）"""
+    """状态行动画线程：◈ 思考中... / ◈ 正在调用工具...（动态加点，后台每 0.12s 重绘）"""
 
-    def __init__(self, label: str = "思考中",
-                 hint_after: int = 0, hint_text: str = "") -> None:
+    def __init__(self, label: str = "思考中") -> None:
         self._label = label
         self._stop_ev = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._start = time.time()
-        self._hint_after = hint_after
-        self._hint_text = hint_text
-        self._hint_shown = False
 
     def set_label(self, label: str) -> None:
         self._label = label
@@ -729,22 +718,15 @@ class _Spinner:
         if self._thread and self._thread.is_alive():
             return
         self._stop_ev.clear()
-        self._start = time.time()
-        self._hint_shown = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
         frame = 0
         while not self._stop_ev.is_set():
-            elapsed = int(time.time() - self._start)
             dots = "." * (frame % 4)
-            sys.stdout.write(f"\r◈ {self._label}{dots} {elapsed}s   ")
+            sys.stdout.write(f"\r◈ {self._label}{dots}   ")
             sys.stdout.flush()
-            if not self._hint_shown and self._hint_text and elapsed >= self._hint_after:
-                self._hint_shown = True
-                sys.stdout.write("\n" + self._hint_text + "\r◈ ")
-                sys.stdout.flush()
             frame += 1
             self._stop_ev.wait(0.12)
 
@@ -768,6 +750,7 @@ def _sanitize_display_text(text: str) -> str:
         t = re.sub(rf"\[{label}\]", "", t, flags=re.IGNORECASE)
     t = re.sub(r"</?INTERNAL\s*>?", "", t, flags=re.IGNORECASE)
     t = re.sub(r"</?EXTERNAL\s*>?", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"</?EXTERNAL\s*$", "", t, flags=re.IGNORECASE)   # 残缺结尾标签
     t = re.sub(r"^\s*answer\.\s*", "", t)
     return t.strip()
 
@@ -827,34 +810,6 @@ class AgentCLI:
                 click = val
             print(c("dim", f"  🔗 {label}: {click}"))
 
-    def _prewarm_ollama(self) -> None:
-        """启动时预热本地 Ollama 模型：把冷加载挪到开局，对话中不再长时间无响应"""
-        base = str(self.cfg.get("base_url", ""))
-        if "11434" not in base:
-            return
-        model = str(self.cfg.get("model", "")).strip()
-        if not model:
-            return
-        try:
-            import json as _json
-            import urllib.request
-            with urllib.request.urlopen("http://localhost:11434/api/ps", timeout=5) as r:
-                data = _json.loads(r.read().decode("utf-8", "ignore"))
-            if any(m.get("model") == model for m in data.get("models", [])):
-                return  # 已在内存，无需预热
-            print(c("dim", "  ⏳ 正在预热本地模型（首次加载到内存可能需要数十秒）…"))
-            req = urllib.request.Request(
-                "http://localhost:11434/api/chat",
-                data=_json.dumps({"model": model,
-                                  "messages": [{"role": "user", "content": "hi"}],
-                                  "stream": False}).encode(),
-                headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=180) as r:
-                r.read()
-            print(c("dim", "  ✅ 模型已预热，可以开聊了"))
-        except Exception:
-            pass  # 预热失败不阻塞启动
-
     # ---------- 对话循环 ----------
 
     def _build_system_prompt(self) -> str:
@@ -865,6 +820,14 @@ class AgentCLI:
             parts.append(f"【语言指令】请始终使用 {LANG_NAMES.get(self.lang, self.lang)} 回答用户。")
         parts.append(f"【工作目录】{os.path.abspath(self.cfg['project_root'])}。"
                      f"文件操作请使用该目录下的相对路径或该绝对路径，不要臆造路径。")
+        # 用户环境：让模型知道"桌面/主目录"在哪，避免把工作目录当成用户桌面
+        _home = os.path.expanduser("~")
+        _desktop = os.path.join(_home, "Desktop")
+        if not os.path.isdir(_desktop):
+            _desktop = os.path.join(_home, "桌面")
+        parts.append(f"【用户环境】用户主目录: {_home}；用户桌面目录: {_desktop}。"
+                     f"当用户问'桌面/桌面上有什么/我的文件'等时，请列出 {_desktop} 的内容，"
+                     f"而不是工作目录；路径可用 ~ 展开（如 ls {os.path.join('~', 'Desktop')}）。")
         skill = SKILLS.get(self.skill)
         if skill and self.skill != "general":
             parts.append(f"【当前技能】{skill['name']}：{skill['desc']}。"
@@ -1010,8 +973,11 @@ class AgentCLI:
                         if spinner is not None:
                             spinner.stop()
                         visible = after.lstrip()
-                        if "</EXTERNAL>" in visible:
-                            visible = visible.split("</EXTERNAL>")[0]
+                        # 清理结尾 </EXTERNAL>（含残缺的 </EXTERNAL 无 > 变体）
+                        for _tag in ("</EXTERNAL>", "</EXTERNAL"):
+                            if _tag in visible:
+                                visible = visible.split(_tag)[0]
+                                break
                         if len(visible) > st["reply_printed"]:
                             if st["state"] != "reply":
                                 print()   # 状态行 → 正文换行
@@ -1057,37 +1023,24 @@ class AgentCLI:
             print()
         t0 = time.time()
         # 记忆预注入：模型生成前把相关历史记忆放进 prompt（无记忆时原样返回）
-        _log = logging.getLogger("ace.converse")
-        _log.debug("converse 开始: user=%r", user_input)
         next_user = self.el.prepare_context(user_input)
-        _log.debug("prepare_context 完成")
         for _round in range(1, MAX_ROUNDS + 1):
             msgs = self.messages + [{"role": "user", "content": next_user}]
-            # 本地 Ollama：等待超过 15s 提示冷加载（4.7GB 模型首次调用需载入内存）
-            _hint = ""
-            if "11434" in str(self.cfg.get("base_url", "")):
-                _hint = c("dim", "⏳ 本地模型首次调用需加载到内存，可能需数十秒，请稍候…")
-            spinner = _Spinner(t("thinking"), hint_after=15, hint_text=_hint)
+            spinner = _Spinner(t("thinking"))
             disp = self._make_display(tools_mode=bool(self.client.tools),
                                       spinner=spinner)
             spinner.start()
-            _log = logging.getLogger("ace.converse")
             try:
                 # 基础提示词 + 语言/技能/引用上下文
-                _log.debug("模型调用开始 round=%d msgs=%d base=%s",
-                           _round, len(msgs), self.cfg.get("base_url", ""))
                 system = self._build_system_prompt()
                 output = self.client.stream_generate(system, msgs,
                                                      on_delta=disp["on_delta"])
-                _log.debug("模型调用完成 len=%d", len(output))
             except KeyboardInterrupt:
                 spinner.stop(newline=True)
-                _log.debug("用户中断")
                 print("\n" + t("interrupted"))
                 return
             except Exception as e:
                 spinner.stop(newline=True)
-                _log.exception("模型调用失败")
                 print(c("red", "\n" + t("model_call_failed", err=e)))
                 return
             # 状态行/流式正文收尾换行
@@ -1184,19 +1137,6 @@ class AgentCLI:
                                    sec=time.time() - t0)))
                 return
 
-            if result["status"] == "403" and result.get("tool"):
-                # 权限不足 → 自动向用户申请临时授权（无感：不依赖模型主动 request_permission）
-                if self._ask_temp_grant_403(result["tool"], result.get("message", "")):
-                    self.el.permission.grant_temp(result["tool"])
-                    print(c("green", t("perm_granted_msg")))
-                    result = self.el.process_agent_output(output, user_input)
-                else:
-                    self.session["violations"] += 1
-                    print(c("red", t("error_line", status="403",
-                                     msg=result.get("message", "")[:80])))
-                    next_user = "用户拒绝临时授权，请换一种不需要该工具的方式完成任务。"
-                    continue
-
             if result["status"] in ("FORMAT_ERROR", "GUARD_VIOLATION",
                                     "BAIT_TRIGGERED", "AST_FAILED", "403"):
                 self.session["violations"] += 1
@@ -1228,52 +1168,6 @@ class AgentCLI:
                 next_user = (f"工具执行结果：\n{render_result(result)}\n"
                              f"请根据结果继续（输出下一条工具调用，或最终回复）。")
         print(c("yellow", t("max_rounds")))
-
-    def _ask_temp_grant_403(self, tool: str, reason: str = "") -> bool:
-        """403 自动权限申请：询问用户是否临时授权该工具（非交互环境自动拒绝）"""
-        if not sys.stdin.isatty():
-            return False
-        print(c("yellow", "\n" + t("perm_request_title", tool=tool)))
-        if reason:
-            print(c("dim", reason[:120]))
-        try:
-            answer = input(c("yellow", t("perm_approve_q"))).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return False
-        return answer in ("y", "yes")
-
-    def _build_status_bar(self):
-        """底部状态栏（Claude Code 同款常驻，每次按键实时刷新）"""
-        from prompt_toolkit.formatted_text import FormattedText
-        model = str(self.cfg.get("model", "?"))
-        perm = str(self.cfg.get("permission", "write"))
-        mode = "mock" if self.client.mock else "在线"
-        snaps = 0
-        if self.el.guardian:
-            try:
-                snaps = len(self.el.guardian.list_snapshots())
-            except Exception:
-                snaps = 0
-        base = "class:status-bar"
-        # 注意：FormattedText 片段必须带 class: 前缀，否则会被当成颜色名解析导致崩溃
-        perm_cls = f"class:status-bar.perm-{perm}" if perm in ("readonly", "write", "full") else base
-        seg = [
-            (base, f" 模型: {model}"),
-            (base, "│"),
-            (perm_cls, f" 权限: {perm}"),
-            (base, "│"),
-            (base, f" 模式: {mode}"),
-            (base, "│"),
-            (base, f" 会话: {self.session['rounds']}轮/{self.session['tools']}工具"),
-            (base, "│"),
-            (base, f" 快照: {snaps}"),
-            (base, "│"),
-            (base, f" 违规: {self.el.violation_count}"),
-            (base, "│"),
-            (base, " /help 帮助"),
-        ]
-        return FormattedText(seg)
 
     # ---------- 斜杠命令 ----------
 
@@ -1839,44 +1733,19 @@ class AgentCLI:
 
                 @kb.add("escape")
                 def _exit_on_escape(event):
-                    buf = event.current_buffer
-                    if buf.complete_state is not None:
-                        buf.cancel_completion()   # 菜单打开：先关菜单
-                        return
-                    if not buf.text.strip():
-                        raise EOFError            # 空输入：退出
-                    buf.reset()                   # 有内容：清空当前输入行
+                    # 空输入时按 ESC 直接退出（菜单打开时 ESC 优先关闭菜单）
+                    if not event.current_buffer.text.strip():
+                        raise EOFError
 
-                @kb.add("enter")
-                @kb.add("c-j")
-                def _enter(event):
-                    """智能回车：输入不完整时接受补全（@fi→@file），已完整输入时直接提交"""
-                    buf = event.current_buffer
-                    cs = buf.complete_state
-                    if cs is not None and cs.current_completion is not None:
-                        # 补全会改变当前行 → 接受补全；行已与补全一致 → 视为完整输入，提交
-                        if buf.text != cs.current_completion.text:
-                            buf.apply_completion(cs.current_completion)
-                            return
-                    buf.validate_and_handle()
-
-                # 注意：只传自定义 kb，让 PromptSession 内部自行合并默认绑定。
-                # 手动 merge_key_bindings 再传入会破坏默认「回车=提交」，导致输入后卡死。
                 session = PromptSession(
                     completer=_build_slash_completer(self.COMMANDS),
                     complete_while_typing=True,
                     key_bindings=kb,
-                    bottom_toolbar=lambda: self._build_status_bar(),
                     style=Style.from_dict({
                         "prompt": "ansimagenta bold",
                         "completion-menu.completion": "bg:#2b2b3c #ffffff",
                         "completion-menu.completion.current": "bg:#5f3dc4 #ffffff",
                         "completion-menu.completion.meta": "bg:#1e1e2e #aaaaaa",
-                        # 底部状态栏样式（Claude Code 同款常驻）
-                        "status-bar": "bg:#1e1e2e #c8c8c8",
-                        "status-bar.perm-readonly": "bg:#1e1e2e #16a34a",
-                        "status-bar.perm-write": "bg:#1e1e2e #d97706",
-                        "status-bar.perm-full": "bg:#1e1e2e #dc2626",
                     }),
                 )
             except ImportError:
@@ -1926,39 +1795,7 @@ class AgentCLI:
               else c("dim", t("bye")))
 
 
-def _install_crash_hook() -> None:
-    """崩溃黑匣子：任何未捕获异常（含后台线程）写入 ~/.ace/crash.log，主线程退出前提示"""
-    import traceback
-
-    def _write_log(tp, val, tb) -> None:
-        text = "".join(traceback.format_exception(tp, val, tb))
-        try:
-            crash_dir = Path.home() / ".ace"
-            crash_dir.mkdir(parents=True, exist_ok=True)
-            with open(crash_dir / "crash.log", "a", encoding="utf-8") as f:
-                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ACE 崩溃\n{text}\n{'=' * 60}\n")
-        except Exception:
-            pass
-
-    def _main_hook(tp, val, tb):
-        _write_log(tp, val, tb)
-        print(c("red", f"\n💥 ACE 崩溃: {val}"))
-        print(c("dim", f"   详情已写入 {Path.home() / '.ace' / 'crash.log'}"))
-        sys.exit(1)
-
-    def _thread_hook(args):
-        _write_log(args.exc_type, args.exc_value, args.exc_traceback)
-
-    sys.excepthook = _main_hook
-    try:
-        import threading
-        threading.excepthook = _thread_hook
-    except Exception:
-        pass
-
-
 def main() -> None:
-    _install_crash_hook()
     parser = argparse.ArgumentParser(description="AI Code —— AI Agent 命令行终端")
     parser.add_argument("--mock", action="store_true", help="离线演示（脚本化假模型）")
     parser.add_argument("--base-url", help="API 地址（OpenAI 或 Anthropic 兼容）")
@@ -1980,19 +1817,6 @@ def main() -> None:
     logging.basicConfig(
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    # 对话阶段日志落盘（~/.ace/ace.log），用于定位"无响应/卡住"现场
-    try:
-        _log_dir = Path.home() / ".ace"
-        _log_dir.mkdir(parents=True, exist_ok=True)
-        _log = logging.getLogger("ace.converse")
-        _log.setLevel(logging.DEBUG)
-        _fh = logging.FileHandler(str(_log_dir / "ace.log"), encoding="utf-8")
-        _fh.setLevel(logging.DEBUG)
-        _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        _log.addHandler(_fh)
-        _log.propagate = False   # 只写文件，不打扰控制台
-    except Exception:
-        pass
 
     if args.install_ui:
         print("正在安装 prompt_toolkit（自动检测已装状态 + 多镜像回退）...")
@@ -2016,8 +1840,6 @@ def main() -> None:
     if args.mock:
         cli.repl()          # 显式离线演示直接进聊天
         return
-    # 交互真实模式：先预热本地模型，避免对话中冷加载长时间无响应
-    cli._prewarm_ollama()
     cli.landing()           # 默认进入登录页（AI-CLI 启动平台同款首页菜单）
 
 

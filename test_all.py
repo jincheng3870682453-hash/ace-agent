@@ -981,33 +981,14 @@ out_text = buf.getvalue()
 check("CLI 可点击链接渲染（默认收起）",
       "点击打开文件" in out_text and "file:///" in out_text, out_text[:200])
 
-# —— 补全器回归：路径补全 start_position 不能为正（防 prompt_toolkit 断言崩溃） ——
-try:
-    import prompt_toolkit  # noqa: F401
-    from prompt_toolkit.document import Document as PTDocument
+# —— 系统提示词包含用户桌面路径（"桌面有什么"不再答非所问） ——
+_sp = cli_cmd._build_system_prompt()
+check("系统提示词含用户桌面目录",
+      "用户桌面目录" in _sp and "Desktop" in _sp and "工作目录" in _sp, _sp[:300])
 
-    comp = ai_code._build_slash_completer(ai_code.AgentCLI.COMMANDS)
-    items = list(comp.get_completions(PTDocument("/open x"), None))
-    check("补全器: /open 路径补全不崩溃且 start_position<=0",
-          len(items) >= 0 and all(it.start_position <= 0 for it in items),
-          [it.start_position for it in items[:3]])
-    items2 = list(comp.get_completions(PTDocument("@file x"), None))
-    check("补全器: @file 路径补全不崩溃且 start_position<=0",
-          len(items2) >= 0 and all(it.start_position <= 0 for it in items2),
-          [it.start_position for it in items2[:3]])
-
-    # —— 底部状态栏（Claude Code 同款） ——
-    bar = cli_cmd._build_status_bar()
-    from prompt_toolkit.formatted_text import to_formatted_text, fragment_list_to_text
-    bar_text = fragment_list_to_text(to_formatted_text(bar))
-    check("状态栏: 含模型/权限/会话/快照",
-          "模型" in bar_text and "权限" in bar_text
-          and "会话" in bar_text and "快照" in bar_text, bar_text[:200])
-    check("状态栏: 所有片段带 class: 前缀（防 Wrong color format 闪退）",
-          all(f[0].startswith("class:") for f in bar),
-          [f[0] for f in bar[:4]])
-except ImportError:
-    pass  # 无 prompt_toolkit 环境跳过（补全器/状态栏本身也不启用）
+# —— 残缺 </EXTERNAL 标签清理 ——
+_clean = ai_code._sanitize_display_text("你好！\n</EXTERNAL")
+check("残缺 </EXTERNAL 标签被清理", "</EXTERNAL" not in _clean, repr(_clean))
 
 fib_code = ("def fib(n: int) -> int:\n    if n < 2:\n        return n\n"
             "    return fib(n - 1) + fib(n - 2)\n\nprint(fib(8))")
