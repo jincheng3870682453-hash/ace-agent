@@ -30,6 +30,7 @@ ai_code.py —— ACE（AI Code Engine）命令行
 
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
@@ -37,6 +38,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -62,6 +64,8 @@ LEGACY_CONFIG_PATH = Path.home() / ".agent_cli.json"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 MAX_ROUNDS = 20
 SYSTEM_PROMPT = load_system_prompt()
+
+logger = logging.getLogger("ace")
 
 
 class CommandCancelled(Exception):
@@ -243,6 +247,39 @@ def _config_sanity_hints(cfg: Dict) -> List[str]:
         hints.append("检测到模型名是 ZAI 网关别名（deepseek-v4-*），直连 BigModel 不认，请用 /model glm-4.6 切换")
     return hints
 
+
+@dataclass
+class CLIConfig:
+    """ACE 运行配置（纯标准库 dataclass 校验，替代手写 get("key", default) 与 Pydantic 方案）"""
+
+    base_url: str = ""
+    api_key: str = ""
+    model: str = "default"
+    permission: str = "write"
+    project_root: str = "."
+    bait: bool = True
+    tools: bool = False
+    max_history: int = 0
+    lang: str = "zh"
+    skill: str = "general"
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "CLIConfig":
+        """从字典构造，只取已知字段；缺失字段用默认值"""
+        known = {f.name: data[f.name] for f in fields(cls) if f.name in data}
+        return cls(**known)
+
+    def __post_init__(self) -> None:
+        if self.permission not in ("readonly", "write", "full"):
+            raise ValueError(f"permission 必须是 readonly/write/full，收到: {self.permission!r}")
+        if (not isinstance(self.max_history, int)
+                or isinstance(self.max_history, bool) or self.max_history < 0):
+            raise ValueError(f"max_history 必须是非负整数，收到: {self.max_history!r}")
+        if self.lang not in LANG_NAMES:
+            raise ValueError(f"lang 必须是 {', '.join(LANG_NAMES)}，收到: {self.lang!r}")
+        if self.skill not in SKILLS:
+            raise ValueError(f"skill 必须是 {', '.join(SKILLS)}，收到: {self.skill!r}")
+
 # ---- ANSI 颜色（非 tty 或 NO_COLOR 时自动关闭，遵循 NO_COLOR 约定）----
 ANSI = {
     "reset": "\033[0m", "bold": "\033[1m", "dim": "\033[2m",
@@ -385,6 +422,14 @@ def merge_config(args) -> Dict:
     cfg.setdefault("bait", True)
     cfg.setdefault("tools", bool(getattr(args, "tools", False)))
     cfg.setdefault("max_history", int(getattr(args, "max_history", 0) or 0))
+    # 配置校验与归一化（纯 stdlib dataclass）
+    try:
+        cli_cfg = CLIConfig.from_dict(cfg)
+        for f in fields(CLIConfig):
+            if f.name in cfg:
+                cfg[f.name] = getattr(cli_cfg, f.name)
+    except ValueError as e:
+        print(c("yellow", f"  ⚠ 配置校验: {e}"))
     return cfg
 
 
@@ -1733,6 +1778,10 @@ def main() -> None:
     parser.add_argument("--install-ui", action="store_true",
                         help="一键安装实时补全依赖（prompt_toolkit，Claude Code 同款 / 弹窗菜单）")
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     if args.install_ui:
         print("正在安装 prompt_toolkit（自动检测已装状态 + 多镜像回退）...")

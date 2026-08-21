@@ -23,6 +23,7 @@ import json
 import re
 import time
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -34,6 +35,7 @@ URGENCY_KEYWORDS = ("快", "马上", "立刻", "立即", "尽快", "赶紧", "�
 URGENCY_WEIGHT = 1.6          # 催促词记忆权重提升
 
 
+@lru_cache(maxsize=8192)
 def _tokenize(text: str) -> List[str]:
     """分词：拉丁单词 + 中文整段 + 中文二元组"""
     tokens: List[str] = []
@@ -46,6 +48,7 @@ def _tokenize(text: str) -> List[str]:
     return tokens or ["empty"]
 
 
+@lru_cache(maxsize=8192)
 def simhash(text: str) -> int:
     """64 位 SimHash 指纹"""
     weights = [0] * SIMHASH_BITS

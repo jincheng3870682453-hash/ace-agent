@@ -1,0 +1,17 @@
+services:
+  ace:
+    build: .
+    stdin_open: true
+    tty: true
+    command: python ai_code.py --mock
+
+  # 本地模型服务（可选）：容器内 ACE 可通过 http://ollama:11434/v1 接入
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  ollama:

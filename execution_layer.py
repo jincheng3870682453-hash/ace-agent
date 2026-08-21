@@ -243,45 +243,14 @@ class AgentOutputParser:
 
         # 判断模式 A（工具调用）还是模式 B（最终回复）
         if content_after_answer.startswith("{"):
-            # 模式 A：提取 JSON
+            # 模式 A：提取 JSON（用 raw_decode 精确解析，替代手工括号扫描）
             try:
-                # 找到匹配的 }
-                brace_count = 0
-                json_end = 0
-                in_string = False
-                escape = False
-                for i, char in enumerate(content_after_answer):
-                    if escape:
-                        escape = False
-                        continue
-                    if char == "\\":
-                        escape = True
-                        continue
-                    if char == '"' and not escape:
-                        in_string = not in_string
-                        continue
-                    if not in_string:
-                        if char == "{":
-                            brace_count += 1
-                        elif char == "}":
-                            brace_count -= 1
-                            if brace_count == 0:
-                                json_end = i + 1
-                                break
-
-                if json_end == 0:
-                    result["error"] = "JSON 括号不匹配"
-                    return result
-
-                json_str = content_after_answer[:json_end]
-                remaining = content_after_answer[json_end:].strip()
-
-                # 检查 JSON 后是否有非空白字符
+                text = content_after_answer.lstrip()
+                tool_call, json_end = json.JSONDecoder().raw_decode(text)
+                remaining = text[json_end:].strip()
                 if remaining:
                     result["error"] = f"JSON 后存在多余内容: {remaining[:50]}"
                     return result
-
-                tool_call = json.loads(json_str)
                 if not isinstance(tool_call, dict):
                     result["error"] = "工具调用必须是 JSON 对象（如 {\"tool\": \"...\"}）"
                     return result

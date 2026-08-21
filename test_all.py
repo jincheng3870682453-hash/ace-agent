@@ -68,6 +68,16 @@ print("[1] gateway_v2 —— L1-L5 五层网关")
 # ============================================================
 from gateway_v2 import WordGateway, GuardViolation, Intent  # noqa: E402
 
+import gateway_v2.flywheel  # noqa: E402
+import gateway_v2.guard  # noqa: E402
+import gateway_v2.intent  # noqa: E402
+import gateway_v2.model  # noqa: E402
+check("gateway 包分层模块可导入",
+      gateway_v2.intent.Intent is Intent
+      and gateway_v2.guard.InstinctGuard is not None
+      and gateway_v2.model.ModelAdapter is not None
+      and gateway_v2.flywheel.Flywheel is not None)
+
 intent = Intent(raw_input="帮我写一段 python 代码，处理数据")
 check("L1 意图识别 coding", intent.intent == "coding", intent.to_dict())
 
@@ -716,6 +726,23 @@ check("防蠢: 检测 ZAI 别名模型", len(hints) >= 1 and "glm-4.6" in hints[
 hints2 = ai_code._config_sanity_hints(
     {"model": "glm-4.6", "base_url": "https://open.bigmodel.cn/api/anthropic"})
 check("防蠢: 真实模型名不误报", len(hints2) == 0, hints2)
+
+# —— 配置校验（纯 stdlib dataclass，替代 Pydantic 方案） ——
+try:
+    ai_code.CLIConfig.from_dict({"permission": "root"})
+    _cfg_bad = False
+except ValueError:
+    _cfg_bad = True
+check("CLIConfig 校验非法 permission", _cfg_bad)
+try:
+    ai_code.CLIConfig.from_dict({"max_history": -1})
+    _cfg_bad2 = False
+except ValueError:
+    _cfg_bad2 = True
+check("CLIConfig 校验负数 max_history", _cfg_bad2)
+check("CLIConfig 默认值归一化",
+      ai_code.CLIConfig.from_dict({}).permission == "write"
+      and ai_code.CLIConfig.from_dict({}).max_history == 0)
 
 # —— 登录页 / 首页（AI-CLI 启动平台同款） ——
 check("ACE logo 存在", "██" in ai_code.ACE_LOGO)

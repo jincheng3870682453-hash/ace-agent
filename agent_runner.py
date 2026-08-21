@@ -24,6 +24,7 @@ agent_runner.py —— Agent 交互循环（把 LLM 和执行层接起来）
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
@@ -31,6 +32,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional
+
+logger = logging.getLogger("ace")
 
 # Windows GBK 控制台兼容：强制 UTF-8 输出（否则 emoji 会 UnicodeEncodeError）
 for _stream in (sys.stdout, sys.stderr):
@@ -345,6 +348,7 @@ class ModelProvider:
 
     def _generate_tools(self, prompt: str) -> str:
         """原生工具调用：模型返回结构化 tool_calls，由执行层统一裁决执行"""
+        logger.debug("LLM 请求 model=%s tools=on", self.model)
         messages = ([{"role": "system",
                       "content": load_system_prompt(tools_mode=True) + self.system_suffix}]
                     + self.history + [{"role": "user", "content": prompt}])
@@ -377,6 +381,7 @@ class ModelProvider:
 
     def _generate_text(self, prompt: str) -> str:
         """文本协议回退：模型按 <INTERNAL>/<EXTERNAL> 格式输出"""
+        logger.debug("LLM 请求 model=%s tools=off", self.model)
         messages = ([{"role": "system",
                       "content": load_system_prompt() + self.system_suffix}]
                     + self.history + [{"role": "user", "content": prompt}])
@@ -515,6 +520,10 @@ def main() -> None:
                         help="保留最近 N 轮对话历史（0 = 不裁剪）")
     parser.add_argument("--input", help="直接传入一条用户消息（非交互模式）")
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     provider = ModelProvider(args)
     el = ExecutionLayer(

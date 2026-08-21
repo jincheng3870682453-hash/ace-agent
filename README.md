@@ -93,7 +93,7 @@ flowchart TB
 |---|---|---|
 | 用户层 | `ai_code.py` | 登录页、聊天 REPL、斜杠命令、提供商切换（纯终端，编辑器无关） |
 | 交互循环 | `agent_runner.py` | LLM ↔ 执行层多轮闭环；格式错误/守门/诱饵自动回喂模型修正，最多 20 轮 |
-| 模型网关 | `gateway_v2.py` | L1 意图 → L2 技能 → L3 模型（OpenAI/Anthropic 双协议）→ L4 守门（8 规则）→ L5 飞轮 |
+| 模型网关 | `gateway_v2/` | L1 意图 → L2 技能 → L3 模型（OpenAI/Anthropic 双协议）→ L4 守门（8 规则）→ L5 飞轮（包结构分层） |
 | 执行层 | `execution_layer.py` | 协议解析、三级权限裁决、诱饵/AST 闸门、工具执行、快照与守门串联 |
 | 支撑模块 | `work.py` / `guardian.py` / `Archive.py` / `Nuwa.py` / 解析器 | 行为检测、快照回滚、记忆、报告、文档解析 |
 
@@ -106,7 +106,7 @@ flowchart TB
 | `ai_code.py` | ACE 命令行：登录页 / REPL / 斜杠补全 / 提供商注册表 / 配置向导 | ✅ |
 | `agent_runner.py` | 交互循环：LLM ↔ 执行层多轮闭环，错误自动回喂 | ✅ |
 | `execution_layer.py` | 执行层主入口：解析、权限、安全闸门、工具执行（真实搜索/SQLite/浏览器/通知/图像） | ✅ |
-| `gateway_v2.py` | L1-L5 五层网关：意图 / 技能 / 模型 / 守门 / 飞轮 | ✅ |
+| `gateway_v2/` | L1-L5 五层网关包：`intent.py`（L1/L2）· `model.py`（L3）· `guard.py`（L4）· `flywheel.py`（L5） | ✅ |
 | `work.py` | 诱饵工厂（5 种语义诱饵）+ ASTDetector（6 规则）+ BehaviorConstraint | ✅ |
 | `guardian.py` | 物理快照回滚：自动快照、完整性预检、HMAC 签名、自动清理 | ✅ |
 | `Archive.py` | SimHash 记忆引擎：主题切换、短输入保护、催促加权、会话隔离 | ✅ |
@@ -114,7 +114,10 @@ flowchart TB
 | `universal_document_parser.py` | N 合一文档解析 + 懒加载 + 截断 + 50MB 防线 | ✅ |
 | `agent_system_prompt_v8.md` | Agent 系统提示词精简版（INTERNAL/EXTERNAL 协议） | ✅ |
 | `agent_system_prompt_tools.md` | 原生工具调用版提示词（`--tools` 模式） | ✅ |
-| `test_all.py` | 全模块端到端测试（199 项，纯 stdlib） | ✅ |
+| `test_all.py` | 全模块端到端测试（242 项，纯 stdlib） | ✅ |
+| `docs/ADR.md` | 架构决策记录（SimHash/诱饵频率/双层协议/零依赖/Plan Mode） | ✅ |
+| `CONTRIBUTING.md` | 贡献指南（环境/测试/风格/提交流程） | ✅ |
+| `Dockerfile` + `docker-compose.yml` | 容器化：ACE + Ollama 一键编排 | ✅ |
 
 ---
 

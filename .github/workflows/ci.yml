@@ -35,7 +35,7 @@ jobs:
           pip install requests
 
       - name: Compile check
-        run: python -m compileall -q ai_code.py agent_runner.py execution_layer.py gateway_v2.py work.py guardian.py Archive.py Nuwa.py universal_document_parser.py
+        run: python -m compileall -q ai_code.py agent_runner.py execution_layer.py gateway_v2 work.py guardian.py Archive.py Nuwa.py universal_document_parser.py
 
       - name: Run tests (端到端全量)
         run: python test_all.py
