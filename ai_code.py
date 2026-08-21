@@ -1833,9 +1833,7 @@ class AgentCLI:
             try:
                 from prompt_toolkit import PromptSession
                 from prompt_toolkit.styles import Style
-                from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
-                from prompt_toolkit.key_binding.bindings.basic import load_basic_bindings
-                from prompt_toolkit.key_binding.defaults import load_key_bindings
+                from prompt_toolkit.key_binding import KeyBindings
 
                 kb = KeyBindings()
 
@@ -1862,20 +1860,12 @@ class AgentCLI:
                             return
                     buf.validate_and_handle()
 
-                # 合并默认绑定：恢复「菜单回车=确认补全」等标准行为，自定义 ESC/回车 追加在前
-                try:
-                    merged = merge_key_bindings([
-                        kb,
-                        load_basic_bindings(),
-                        load_key_bindings(),
-                    ])
-                except Exception:
-                    merged = kb
-
+                # 注意：只传自定义 kb，让 PromptSession 内部自行合并默认绑定。
+                # 手动 merge_key_bindings 再传入会破坏默认「回车=提交」，导致输入后卡死。
                 session = PromptSession(
                     completer=_build_slash_completer(self.COMMANDS),
                     complete_while_typing=True,
-                    key_bindings=merged,
+                    key_bindings=kb,
                     bottom_toolbar=lambda: self._build_status_bar(),
                     style=Style.from_dict({
                         "prompt": "ansimagenta bold",
@@ -1994,10 +1984,13 @@ def main() -> None:
     try:
         _log_dir = Path.home() / ".ace"
         _log_dir.mkdir(parents=True, exist_ok=True)
+        _log = logging.getLogger("ace.converse")
+        _log.setLevel(logging.DEBUG)
         _fh = logging.FileHandler(str(_log_dir / "ace.log"), encoding="utf-8")
         _fh.setLevel(logging.DEBUG)
         _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logging.getLogger().addHandler(_fh)
+        _log.addHandler(_fh)
+        _log.propagate = False   # 只写文件，不打扰控制台
     except Exception:
         pass
 
