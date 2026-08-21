@@ -1789,9 +1789,30 @@ class AgentCLI:
 
                 @kb.add("escape")
                 def _exit_on_escape(event):
-                    # 空输入时按 ESC 直接退出（菜单打开时 ESC 优先关闭菜单）
-                    if not event.current_buffer.text.strip():
+                    # 空输入时按 ESC 直接退出；补全菜单开着时 ESC 优先关闭菜单
+                    buf = event.current_buffer
+                    if not buf.text.strip():
                         raise EOFError
+                    if buf.complete_state is not None:
+                        buf.cancel_completion()
+
+                @kb.add("enter")
+                def _two_step_enter(event):
+                    """两段回车：斜杠命令第一次回车只弹出命令列表（预览，不发送），
+                    第二次回车才真正发送。与 Claude Code 的 / 菜单体验一致。"""
+                    buf = event.current_buffer
+                    text = buf.text.strip()
+                    if text.startswith("/") and not getattr(buf, "_ace_preview_shown", False):
+                        # 第一次回车：展开补全菜单（列表预览），不发送
+                        buf._ace_preview_shown = True
+                        try:
+                            buf.start_completion(select_first=False)
+                        except Exception:
+                            pass
+                        return
+                    # 第二次回车（或非命令输入）：正常提交
+                    buf._ace_preview_shown = False
+                    buf.validate_and_handle()
 
                 session = PromptSession(
                     completer=_build_slash_completer(self.COMMANDS),
