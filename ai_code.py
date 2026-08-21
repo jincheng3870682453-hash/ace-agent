@@ -1762,12 +1762,25 @@ class AgentCLI:
                         raise EOFError            # 空输入：退出
                     buf.reset()                   # 有内容：清空当前输入行
 
-                # 合并默认绑定：恢复「菜单回车=确认补全」等标准行为，自定义 ESC 追加在后
+                @kb.add("enter")
+                @kb.add("c-j")
+                def _enter(event):
+                    """智能回车：输入不完整时接受补全（@fi→@file），已完整输入时直接提交"""
+                    buf = event.current_buffer
+                    cs = buf.complete_state
+                    if cs is not None and cs.current_completion is not None:
+                        # 补全会改变当前行 → 接受补全；行已与补全一致 → 视为完整输入，提交
+                        if buf.text != cs.current_completion.text:
+                            buf.apply_completion(cs.current_completion)
+                            return
+                    buf.validate_and_handle()
+
+                # 合并默认绑定：恢复「菜单回车=确认补全」等标准行为，自定义 ESC/回车 追加在前
                 try:
                     merged = merge_key_bindings([
+                        kb,
                         load_basic_bindings(),
                         load_key_bindings(),
-                        kb,
                     ])
                 except Exception:
                     merged = kb
