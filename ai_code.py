@@ -1898,7 +1898,39 @@ class AgentCLI:
               else c("dim", t("bye")))
 
 
+def _install_crash_hook() -> None:
+    """崩溃黑匣子：任何未捕获异常（含后台线程）写入 ~/.ace/crash.log，主线程退出前提示"""
+    import traceback
+
+    def _write_log(tp, val, tb) -> None:
+        text = "".join(traceback.format_exception(tp, val, tb))
+        try:
+            crash_dir = Path.home() / ".ace"
+            crash_dir.mkdir(parents=True, exist_ok=True)
+            with open(crash_dir / "crash.log", "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ACE 崩溃\n{text}\n{'=' * 60}\n")
+        except Exception:
+            pass
+
+    def _main_hook(tp, val, tb):
+        _write_log(tp, val, tb)
+        print(c("red", f"\n💥 ACE 崩溃: {val}"))
+        print(c("dim", f"   详情已写入 {Path.home() / '.ace' / 'crash.log'}"))
+        sys.exit(1)
+
+    def _thread_hook(args):
+        _write_log(args.exc_type, args.exc_value, args.exc_traceback)
+
+    sys.excepthook = _main_hook
+    try:
+        import threading
+        threading.excepthook = _thread_hook
+    except Exception:
+        pass
+
+
 def main() -> None:
+    _install_crash_hook()
     parser = argparse.ArgumentParser(description="AI Code —— AI Agent 命令行终端")
     parser.add_argument("--mock", action="store_true", help="离线演示（脚本化假模型）")
     parser.add_argument("--base-url", help="API 地址（OpenAI 或 Anthropic 兼容）")
