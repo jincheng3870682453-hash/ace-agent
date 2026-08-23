@@ -29,7 +29,7 @@
   "model_call_failed": "✗ Model call failed: {err}",
   "exec_layer_error": "  ⚠ Execution layer error: {err}",
   "plan_approve_q": "  Approve this plan and execute? [y/N]: ",
-  "auto_approve_plan": "  Non-interactive mode: plan auto-approved.",
+  "auto_reject_plan": "  Non-interactive mode: plan auto-rejected (no approver present).",
   "plan_approved_msg": "  Plan approved, executing.",
   "plan_rejected_msg": "  Plan rejected.",
   "perm_request_title": "  Agent requests temporary access to tool: {tool}",

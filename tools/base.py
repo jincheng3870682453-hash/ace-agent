@@ -14,6 +14,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tools.registry import SPEC_BY_NAME
 from tools.result import ExecutionResult
 
 SHELL_META_RE = re.compile(r"[|&;<>`$\n\r]")
@@ -29,6 +30,52 @@ GIT_READONLY_SUBCOMMANDS = {"status", "log", "diff", "show",
 # Windows 路径反斜杠修复：模型把 C:\Users\... 直接写进 JSON 时，
 # \U、\6 等是非法转义，json.loads 会失败导致整个工具调用被丢弃。
 _WIN_PATH_BACKSLASH_RE = re.compile(r'\\([^"\\/bfnrtu])')
+
+# —— 敏感目标：凭据 / 持久化入口 / 系统目录 ——
+# 绝对路径写入是产品意图（"放到桌面"），但意图不覆盖凭据与自启动入口：
+# 写 ~/.ssh/authorized_keys、~/.bashrc 是持久化后门，读 ~/.ai_code.json 是窃取本工具自身的 API key。
+# 这里按"路径成分"匹配而非全字符串正则，避免 D:\project\ssh_utils.py 这类误伤。
+_SENSITIVE_BASENAMES = {
+    ".ai_code.json", ".agent_cli.json", ".netrc", "_netrc",
+    ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile",
+    "authorized_keys", "known_hosts", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    "credentials", "shadow", "sudoers",
+}
+_SENSITIVE_DIRNAMES = {
+    ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker", ".config/gcloud",
+}
+# 目录整体不可写（系统 / 自启动）
+_SENSITIVE_DIR_PREFIXES = (
+    "c:/windows", "c:/program files", "c:/program files (x86)",
+    "/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/boot", "/sys", "/proc",
+)
+_STARTUP_FRAGMENTS = ("start menu/programs/startup", "currentversion/run")
+
+
+def sensitive_target(path: "Path | str") -> Optional[str]:
+    """命中敏感目标返回原因串，否则 None。
+
+    用于文件写/删/移 与 终端命令的前置拦截。注意：这是"已知高价值目标"清单，
+    不是完备边界——真正的隔离仍需容器/低权限账户（见 README 部署说明）。
+    """
+    raw = str(path).replace("\\", "/")
+    low = raw.lower()
+    name = low.rsplit("/", 1)[-1]
+    parts = [p for p in low.split("/") if p]
+
+    if name in _SENSITIVE_BASENAMES:
+        return f"敏感文件（凭据/启动脚本）: {name}"
+    for d in _SENSITIVE_DIRNAMES:
+        if d in parts or (("/" in d) and d in low):
+            return f"敏感目录: {d}"
+    if low.startswith(_SENSITIVE_DIR_PREFIXES):
+        return "系统目录"
+    if any(frag in low for frag in _STARTUP_FRAGMENTS):
+        return "自启动项"
+    # .claude/settings.json 等同类配置（含模型凭据）
+    if ".claude/" in low and name.endswith(".json"):
+        return "敏感文件（模型凭据配置）"
+    return None
 
 
 def repair_backslash_json(text: str) -> str:
@@ -93,7 +140,15 @@ class ToolExecutorBase:
 
     @staticmethod
     def _check_url(url: str) -> Optional[str]:
-        """URL 协议校验 + 私网地址防护（DNS 解析后拦截内网/回环/链路本地，防 SSRF）"""
+        """URL 协议校验 + 私网地址防护（DNS 解析后拦截内网/回环/链路本地，防 SSRF）
+
+        与旧版的差异（三处 fail-open 已收）：
+          1. 校验**全部**解析结果，不再只看第一条（多 A 记录混入内网可绕过）
+          2. DNS 解析失败不再放行，直接拒绝
+          3. 调用方必须传 allow_redirects=False（302 跳内网是独立的绕过路径）
+        残留风险：校验与实际请求之间会二次解析 DNS（TOCTOU / DNS rebinding），
+        彻底修需要把已校验 IP 固定进连接层，本次未做。
+        """
         from urllib.parse import urlparse
         try:
             parsed = urlparse(url)
@@ -105,23 +160,28 @@ class ToolExecutorBase:
         if scheme not in ("http", "https"):
             return f"仅支持 http/https 协议，拒绝: {scheme}"
         host = parsed.hostname
-        if host:
+        if not host:
+            return "URL 缺少主机名"
+        import socket
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except Exception as e:
+            return f"主机名解析失败，拒绝访问: {host}（{e}）"
+        checked = 0
+        for info in infos:
+            ip = info[4][0].split("%")[0]
             try:
-                import socket
-                for info in socket.getaddrinfo(host, None):
-                    ip = info[4][0].split("%")[0]
-                    try:
-                        addr = ipaddress.ip_address(ip)
-                    except ValueError:
-                        continue
-                    if (addr.is_private or addr.is_loopback or addr.is_link_local
-                            or addr.is_multicast or addr.is_reserved
-                            or addr.is_unspecified
-                            or (addr.version == 4 and ip.startswith("100.64."))):
-                        return f"拒绝访问内网/回环/链路本地地址: {ip}"
-                    break   # 首个公网解析结果即放行
-            except Exception:
-                pass
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            checked += 1
+            if (addr.is_private or addr.is_loopback or addr.is_link_local
+                    or addr.is_multicast or addr.is_reserved
+                    or addr.is_unspecified
+                    or (addr.version == 4 and ip.startswith("100.64."))):
+                return f"拒绝访问内网/回环/链路本地地址: {ip}"
+        if checked == 0:
+            return f"主机名未解析到可校验的 IP，拒绝访问: {host}"
         return None
 
     def _resolve_read_path(self, path_str: str) -> Optional[Path]:
@@ -140,53 +200,22 @@ class ToolExecutorBase:
         result: Optional[ExecutionResult] = None
 
         try:
-            if tool_name == "parse_document":
-                result = self._exec_parse_document(params)
-            elif tool_name == "open_file":
-                result = self._exec_open_file(params)
-            elif tool_name == "edit_file":
-                result = self._exec_edit_file(params)
-            elif tool_name in ("file_read", "file_write", "file_delete", "file_move"):
-                result = self._exec_file_ops(tool_name, params)
-            elif tool_name == "terminal_view":
-                result = self._exec_terminal_view(params)
-            elif tool_name == "terminal_exec":
-                result = self._exec_terminal_exec(params)
-            elif tool_name == "code_execute":
-                result = self._exec_code_execute(params)
-            elif tool_name == "search":
-                result = self._exec_search(params)
-            elif tool_name == "browser_screenshot":
-                result = self._exec_browser_screenshot(params)
-            elif tool_name == "math_calc":
-                result = self._exec_math_calc(params)
-            elif tool_name == "datetime_now":
-                result = self._exec_datetime_now(params)
-            elif tool_name == "api_get":
-                result = self._exec_api_get(params)
-            elif tool_name == "api_post":
-                result = self._exec_api_post(params)
-            elif tool_name == "db_query":
-                result = self._exec_db_query(params)
-            elif tool_name == "db_write":
-                result = self._exec_db_write(params)
-            elif tool_name == "browser_open":
-                result = self._exec_browser_open(params)
-            elif tool_name == "browser_click":
-                result = self._exec_browser_click(params)
-            elif tool_name == "browser_type":
-                result = self._exec_browser_type(params)
-            elif tool_name == "notify_send":
-                result = self._exec_notify_send(params)
-            elif tool_name == "image_generate":
-                result = self._exec_image_generate(params)
-            else:
+            spec = SPEC_BY_NAME.get(tool_name)
+            handler = getattr(self, spec.handler, None) if (spec and spec.handler) else None
+            if handler is None:
+                # 未注册 / 已登记但无 handler（如 terminal_dangerous 占位项）都走这里
                 result = ExecutionResult(
                     status="error",
                     error_code="400",
                     message=f"未知工具: {tool_name}"
                 )
+            elif spec.pass_tool_name:
+                # file_read/file_write/file_delete/file_move 共用 _exec_file_ops
+                result = handler(tool_name, params)
+            else:
+                result = handler(params)
         except Exception as e:
+
             result = ExecutionResult(
                 status="error",
                 error_code="500",

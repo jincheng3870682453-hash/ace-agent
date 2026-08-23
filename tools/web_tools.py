@@ -154,7 +154,8 @@ class WebTools:
             return ExecutionResult(status="error", error_code="400", message=url_err)
         try:
             import requests
-            resp = requests.get(url, timeout=30)
+            # allow_redirects=False：302 跳 169.254.169.254 是绕过 _check_url 的独立路径
+            resp = requests.get(url, timeout=30, allow_redirects=False)
             return ExecutionResult(status="success", data={
                 "status_code": resp.status_code,
                 "content": resp.text[:5000]
@@ -169,7 +170,8 @@ class WebTools:
             return ExecutionResult(status="error", error_code="400", message=url_err)
         try:
             import requests
-            resp = requests.post(url, json=params.get("data", {}), timeout=30)
+            resp = requests.post(url, json=params.get("data", {}), timeout=30,
+                                 allow_redirects=False)
             return ExecutionResult(status="success", data={
                 "status_code": resp.status_code,
                 "content": resp.text[:5000]

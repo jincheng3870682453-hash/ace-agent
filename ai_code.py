@@ -279,7 +279,7 @@ class CLIConfig:
     base_url: str = ""
     api_key: str = ""
     model: str = "default"
-    permission: str = "write"
+    permission: str = "readonly"
     project_root: str = "."
     bait: bool = True
     tools: bool = False
@@ -443,7 +443,7 @@ def merge_config(args) -> Dict:
     cfg.setdefault("base_url", os.environ.get("AGENT_BASE_URL", ""))
     cfg.setdefault("api_key", os.environ.get("AGENT_API_KEY", ""))
     cfg.setdefault("model", os.environ.get("AGENT_MODEL", "default"))
-    cfg.setdefault("permission", "write")
+    cfg.setdefault("permission", "readonly")
     cfg.setdefault("project_root", ".")
     cfg.setdefault("bait", True)
     cfg.setdefault("tools", bool(getattr(args, "tools", False)))
@@ -461,6 +461,12 @@ def merge_config(args) -> Dict:
 
 def save_cli_config(cfg: Dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 配置里有明文 api_key：收紧到仅所有者可读写。
+    # Windows 上 os.chmod 只影响只读位，真正的 ACL 收紧需要 icacls，这里尽力而为。
+    try:
+        os.chmod(CONFIG_PATH, 0o600)
+    except OSError:
+        pass
     print(c("green", f"配置已保存到 {CONFIG_PATH}"))
 
 
@@ -1151,8 +1157,10 @@ class AgentCLI:
                         print()
                         answer = "n"
                 else:
-                    print(c("dim", t("auto_approve_plan")))
-                    answer = "y"
+                    # 非交互（管道/CI）下 fail-close：与下方 PERMISSION_REQUEST 口径一致。
+                    # 无人确认时自动批准计划等于把审批环节变成空过场。
+                    print(c("dim", t("auto_reject_plan")))
+                    answer = "n"
                 if answer in ("y", "yes"):
                     self.el.approve_plan()
                     print(c("green", t("plan_approved_msg")))

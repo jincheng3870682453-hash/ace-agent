@@ -148,6 +148,16 @@ answer.
 
 2. file_read
    {"tool":"file_read","path":"/absolute/path"}
+   传 offset/limit 可分段读取并返回带行号的片段；大文件必须分段读，不要整读
+
+2a. grep
+   {"tool":"grep","pattern":"def _exec_","glob":"*.py"}
+   在项目目录内按正则搜文件内容，返回 文件:行号: 内容（原生实现，不经过 shell）
+
+2b. glob
+   {"tool":"glob","pattern":"**/*.py"}
+   按通配符查找文件路径（定位文件用；搜内容用 grep）
+
 
 3. api_get
    {"tool":"api_get","url":"https://api.example.com"}
@@ -198,11 +208,20 @@ answer.
 禁止在计划或步骤中出现"打开文件管理器""用 VS Code/记事本打开""导航到桌面"
 等手动操作——Agent 无法打开编辑器手动输入，这类步骤永远不会被执行。
 正确做法：file_write 写入 →（可选）file_read 验证 →（可选）open_file 给用户看。
+修改已有文件请用 str_replace 做局部替换，不要整文件覆盖。
 
 11. terminal_exec
     {"tool":"terminal_exec","command":"touch /tmp/test"}
 
+11a. str_replace
+    {"tool":"str_replace","path":"a.py","old_string":"原片段","new_string":"新片段"}
+    改已有文件的首选。old_string 必须唯一：命中多处返回 409 且文件不被修改，
+    此时补足前后各 3-5 行上下文重试，或确认要全量替换时传 replace_all=true。
+    tab/空格混用与整块缩进偏移会自动容错，写入时以文件真实缩进为准。
+    new_string 传空串 = 删除该片段。
+
 12. file_write
+
     {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"print(1)"}
     相对路径写入项目目录内；绝对路径（如桌面/主目录）代表用户明确意图，放行；
     用户说"放到桌面/主目录"时必须用绝对路径，否则会写进项目目录

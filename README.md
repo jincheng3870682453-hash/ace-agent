@@ -19,7 +19,12 @@
 - 📋 **Plan Mode 计划执行**：复杂任务先提议分步计划（`plan_propose`），用户批准后才放行执行，杜绝"边想边干"
 - 🔑 **权限申请**：工具被 403 拦截时模型可申请临时授权（`request_permission`），用户一键批准/拒绝，授权仅一次有效
 - 🧠 **记忆与报告**：SimHash 主题切换记忆预注入（模型生成前注入，多会话隔离）、Nuwa POC 报告（HTML+JSON）
+- ✂️ **局部编辑**：`str_replace` 按片段替换（唯一匹配才写、匹配失败不落盘、返回 unified diff）。多匹配报 409 让模型补上下文重试，`replace_all=true` 才全量替换；tab/空格与整块缩进偏移自动容错，写入时以文件真实缩进为准，不会把模型的错误缩进带进文件
+- 🔎 **本地代码检索**：`grep`（正则搜内容，原生实现不经 shell，限项目内）+ `glob`（通配符找文件）+ `file_read` 的 `offset/limit` 分段读（返回带行号片段）——只读权限下即可用，不必猜文件名
+
+- 🧩 **工具注册表**：`tools/registry.py` 单点声明 name / schema / 权限组 / handler，function calling schema 与三级权限集合全部由它派生；也是 MCP 的接入点
 - 🔍 **真实联网能力**：`search` 工具真实搜索（DuckDuckGo → Bing 双引擎兜底，无需 API Key）；CLI `/search <关键词>` 直接验证；`api_get` 抓取网页正文
+
 - 🗄️ **真实工具全家桶**：SQLite 数据库（db_query 只读/db_write 受控写入）、真实打开浏览器（browser_open）、屏幕截图（browser_screenshot，可选 pillow）、通知（notify_send：console/file/toast）、免费图像生成（image_generate，pollinations.ai）
 - 📄 **文档解析**：N 合一（Word/Excel/PPT/PDF/OCR/纯文本）+ 50MB 大文件防线
 - 🚪 **层层退出**：聊天内 exit 回首页，首页 7/Esc/q 才真正退出
@@ -55,7 +60,8 @@ flowchart TB
         EXEC["工具执行器"]
     end
     subgraph TOOLS["工具集"]
-        T1["file_* / terminal_view 白名单"]
+        T1["file_* / grep / glob / terminal_view 白名单"]
+
         T2["code_execute 沙箱"]
         T3["math_calc 白名单 / api_* 协议校验"]
         T4["parse_document"]
@@ -106,7 +112,8 @@ flowchart TB
 | `ai_code.py` | ACE 命令行：登录页 / REPL / 斜杠补全 / 提供商注册表 / 配置向导 | ✅ |
 | `agent_runner.py` | 交互循环：LLM ↔ 执行层多轮闭环，错误自动回喂 | ✅ |
 | `execution_layer.py` | 执行层主入口：协议解析、权限、安全闸门、Plan Mode、权限申请（工具执行已拆到 `tools/`） | ✅ |
-| `tools/` | 工具执行器包：`file_tools` / `code_tools` / `web_tools` / `db_tools` / `notify_tools` / `parse_tools` | ✅ |
+| `tools/` | 工具执行器包：`registry`（工具唯一声明处）/ `file_tools` / `code_tools` / `web_tools` / `db_tools` / `notify_tools` / `parse_tools` | ✅ |
+
 | `gateway_v2/` | L1-L5 五层网关包：`intent.py`（L1/L2）· `model.py`（L3）· `guard.py`（L4）· `flywheel.py`（L5） | ✅ |
 | `work.py` | 诱饵工厂（5 种语义诱饵）+ ASTDetector（6 规则）+ BehaviorConstraint | ✅ |
 | `guardian.py` | 物理快照回滚：自动快照、完整性预检、HMAC 签名、自动清理 | ✅ |
@@ -115,7 +122,9 @@ flowchart TB
 | `universal_document_parser.py` | N 合一文档解析 + 懒加载 + 截断 + 50MB 防线 | ✅ |
 | `agent_system_prompt_v8.md` | Agent 系统提示词精简版（INTERNAL/EXTERNAL 协议） | ✅ |
 | `agent_system_prompt_tools.md` | 原生工具调用版提示词（`--tools` 模式） | ✅ |
-| `test_all.py` | 全模块端到端测试（249 项，纯 stdlib） | ✅ |
+| `test_all.py` | 全模块端到端测试（326 项，纯 stdlib） | ✅ |
+
+
 | `i18n.py` + `locales/` | 轻量国际化：zh/en/ja JSON 字典，`@lang` 同步切换界面语言 | ✅ |
 | `docs/ADR.md` | 架构决策记录（SimHash/诱饵频率/双层协议/零依赖/Plan Mode） | ✅ |
 | `CONTRIBUTING.md` | 贡献指南（环境/测试/风格/提交流程） | ✅ |
@@ -211,15 +220,18 @@ ace --install-ui                # 一键安装 / 实时补全依赖（多镜像�
 - `terminal_view` 白名单只读命令（内建实现 + 元字符拦截 + 版本参数严格校验），readonly 不再能执行任意 shell
 - `code_execute` 策略层沙箱：AST 拦截危险模块（os/subprocess/socket/pickle/importlib...）、内建逃逸链（`__builtins__`/`__class__`）、open 全禁 → 环境变量清洗 → 临时目录 + 30s 超时
 - `math_calc` 白名单 AST 求值：仅纯算术，幂运算限 100^1000，杜绝 eval 逃逸与指数 DoS
-- 路径穿越防护：文件工具与 ls/cat 默认限制在项目目录内（`confine_files`，含跨盘符检查）
+- 路径穿越防护：文件工具与 ls/cat 默认限制在项目目录内（`confine_files`，含跨盘符检查）；`grep`/`glob` 无条件限制在项目目录内（只读检索不放开项目外，避免全盘扫凭据）
+
 - `api_get/api_post` 仅 http/https，且 **DNS 解析后拦截内网/回环/链路本地地址**（防 SSRF）；未实现工具返回 501 而非假成功
 - 快照 HMAC-SHA256 签名（`signing_key`）防元信息伪造；快照上限自动清理防备份爆炸
 - 诱饵验证循环：首次 code_execute 自动注入语义诱饵 → 修复后重提；按任务隔离
 - AST 熔断：未用导入/类型注解/无限递归/循环引用/硬编码密钥/SQL 注入（收敛为真实注入模式，不误伤正常递归）
 - 守门分层：block 级拦截并回滚本轮快照；warn 级不阻断；读文件/最终回复只过文本规则
 - 临时授权单次有效（用后即焚）；回滚仅回滚本轮快照
+- 敏感目标拦截：绝对路径写入放行（"放到桌面"）但不含凭据与自启动入口（`~/.ssh`、`~/.bashrc`、`~/.ai_code.json` 等）；`terminal_view` 也禁读这些文件
+- 默认权限为 `readonly`，写工具需显式 `/permission write` 或 `--permission write` 开启
 
-> ⚠️ 生产部署注意：`code_execute`/`terminal_exec` 是进程内策略层沙箱，非 OS 级隔离。生产环境建议：容器/虚拟机运行、readonly 起步按需授权、`signing_key` 置于项目目录之外。
+> ⚠️ 生产部署注意：`code_execute`/`terminal_exec` 是进程内策略层沙箱，非 OS 级隔离——沙箱模块黑名单与终端高危命令筛查都只是止血层，`python -c` 一类等价路径无法靠枚举封死。生产环境必须配合：容器/虚拟机 + 低权限账户运行、按需授权而非常开 write、`signing_key` 置于项目目录之外。
 
 ---
 

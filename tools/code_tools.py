@@ -25,10 +25,14 @@ class CodeTools:
         "socket.socket", "socket.connect", "socket.create_connection",
         "shutil.rmtree", "os.remove", "os.unlink", "os.rmdir", "os.removedirs",
     }
-    # 整模块禁用导入（含别名导入、from x import y），封死逃逸链
-    DANGEROUS_MODULES = {"subprocess", "socket", "ctypes", "os", "shutil",
+    # 整模块禁用导入（含别名导入、from x import y）。
+    # 注意：黑名单枚举不可能闭合——补掉一批等价物只是抬高门槛，不是边界。
+    # nt 是 CPython 内建（os.system 实际就是 nt.system）；pathlib 能绕过 open() 拦截
+    # （Path.write_text）；runpy/webbrowser 都能触发外部执行。
+    DANGEROUS_MODULES = {"subprocess", "socket", "ctypes", "os", "nt", "shutil",
                          "importlib", "pickle", "marshal", "multiprocessing",
-                         "pty", "builtins", "sys"}
+                         "pty", "builtins", "sys", "pathlib", "runpy",
+                         "webbrowser", "posix"}
     DANGEROUS_FUNCS = {"eval", "exec", "compile", "__import__",
                        "globals", "locals", "vars", "getattr", "setattr",
                        "delattr", "input", "breakpoint"}

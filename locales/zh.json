@@ -29,7 +29,7 @@
   "model_call_failed": "✗ 模型调用失败: {err}",
   "exec_layer_error": "  ⚠ 执行层异常: {err}",
   "plan_approve_q": "  批准该计划并执行？[y/N]: ",
-  "auto_approve_plan": "  非交互模式：自动批准计划。",
+  "auto_reject_plan": "  非交互模式：自动拒绝计划（无人确认时不放行）。",
   "plan_approved_msg": "  计划已批准，开始执行。",
   "plan_rejected_msg": "  计划已被拒绝。",
   "perm_request_title": "  Agent 请求临时授权工具: {tool}",

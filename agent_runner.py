@@ -48,6 +48,8 @@ sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
 from tools.base import repair_backslash_json  # noqa: E402
+from tools.registry import openai_tools  # noqa: E402
+
 
 SYSTEM_PROMPT_PATH = FOLDER / "agent_system_prompt_v7.md"
 SYSTEM_PROMPT_V8_PATH = FOLDER / "agent_system_prompt_v8.md"
@@ -91,91 +93,9 @@ def _post_chat(base_url: str, api_key: str, model: str, messages: List[Dict],
 # 原生工具调用（OpenAI 兼容 function calling，Ollama/Qwen 等均支持）
 # ============================================================
 
-TOOLS = [
-    {"type": "function", "function": {"name": "terminal_view",
-     "description": "只读查看目录/文件/进程状态（白名单命令，无 shell 副作用）",
-     "parameters": {"type": "object", "properties": {"command": {"type": "string",
-     "description": "只读命令，如 ls -la / pwd / cat file.py"}}, "required": ["command"]}}},
-    {"type": "function", "function": {"name": "file_read",
-     "description": "读取文件内容", "parameters": {"type": "object",
-     "properties": {"path": {"type": "string", "description": "文件路径"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "file_write",
-     "description": "写入/覆盖文件（执行层自动快照）", "parameters": {"type": "object",
-     "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-     "required": ["path", "content"]}}},
-    {"type": "function", "function": {"name": "file_delete",
-     "description": "删除文件（执行层自动快照）", "parameters": {"type": "object",
-     "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "file_move",
-     "description": "移动/重命名文件", "parameters": {"type": "object",
-     "properties": {"source": {"type": "string"}, "dest": {"type": "string"}},
-     "required": ["source", "dest"]}}},
-    {"type": "function", "function": {"name": "terminal_exec",
-     "description": "执行修改性 shell 命令（写入权限，自动快照）", "parameters": {"type": "object",
-     "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
-    {"type": "function", "function": {"name": "code_execute",
-     "description": "在受限沙盒中执行 Python 代码（禁止 os/subprocess/socket 等危险调用）",
-     "parameters": {"type": "object", "properties": {"language": {"type": "string"},
-     "code": {"type": "string"}}, "required": ["language", "code"]}}},
-    {"type": "function", "function": {"name": "search",
-     "description": "联网搜索（DuckDuckGo/Bing，无需 API Key）", "parameters": {"type": "object",
-     "properties": {"query": {"type": "string"}, "top_k": {"type": "integer"}},
-     "required": ["query"]}}},
-    {"type": "function", "function": {"name": "math_calc",
-     "description": "纯算术表达式求值（白名单 AST，无副作用）", "parameters": {"type": "object",
-     "properties": {"expression": {"type": "string"}}, "required": ["expression"]}}},
-    {"type": "function", "function": {"name": "datetime_now",
-     "description": "获取当前时间", "parameters": {"type": "object",
-     "properties": {"format": {"type": "string"}}}}},
-    {"type": "function", "function": {"name": "api_get",
-     "description": "GET 请求获取数据（自动拦截内网/SSRF）", "parameters": {"type": "object",
-     "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
-    {"type": "function", "function": {"name": "api_post",
-     "description": "POST 请求提交数据", "parameters": {"type": "object",
-     "properties": {"url": {"type": "string"}, "data": {"type": "object"}},
-     "required": ["url"]}}},
-    {"type": "function", "function": {"name": "db_query",
-     "description": "SQLite 只读查询（仅 SELECT/WITH，最多 100 行）", "parameters": {"type": "object",
-     "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
-    {"type": "function", "function": {"name": "db_write",
-     "description": "SQLite 写入（INSERT/UPDATE/DELETE/CREATE/ALTER，拒绝 DROP 等）",
-     "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
-     "required": ["query"]}}},
-    {"type": "function", "function": {"name": "browser_open",
-     "description": "用系统默认浏览器打开 http/https 链接", "parameters": {"type": "object",
-     "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
-    {"type": "function", "function": {"name": "browser_screenshot",
-     "description": "截取屏幕画面保存到 .ace_shots/（需 pillow，Windows 可免依赖）",
-     "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "notify_send",
-     "description": "发送通知（console/file/toast）", "parameters": {"type": "object",
-     "properties": {"channel": {"type": "string"}, "to": {"type": "string"},
-     "content": {"type": "string"}}, "required": ["channel", "content"]}}},
-    {"type": "function", "function": {"name": "image_generate",
-     "description": "生成图片保存到 .ace_images/（pollinations.ai 免费）", "parameters": {"type": "object",
-     "properties": {"prompt": {"type": "string"}, "size": {"type": "string"}},
-     "required": ["prompt"]}}},
-    {"type": "function", "function": {"name": "parse_document",
-     "description": "解析 Word/Excel/PPT/PDF/图片/文本并提取内容", "parameters": {"type": "object",
-     "properties": {"path": {"type": "string"}, "force_ocr": {"type": "boolean"}},
-     "required": ["path"]}}},
-    {"type": "function", "function": {"name": "open_file",
-     "description": "生成可点击文件链接（用户点击后打开）", "parameters": {"type": "object",
-     "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "edit_file",
-     "description": "用 VS Code 或系统默认编辑器打开文件", "parameters": {"type": "object",
-     "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "plan_propose",
-     "description": "复杂任务先输出分步计划，等待用户批准后再执行",
-     "parameters": {"type": "object", "properties": {"title": {"type": "string"},
-     "steps": {"type": "array", "items": {"type": "string"}}},
-     "required": ["steps"]}}},
-    {"type": "function", "function": {"name": "request_permission",
-     "description": "请求用户临时授权某个工具（如被 403 拦截的写入/高权限操作）",
-     "parameters": {"type": "object", "properties": {"target": {"type": "string"},
-     "reason": {"type": "string"}},
-     "required": ["target"]}}},
-]
+TOOLS = openai_tools()  # 由 tools/registry.py 的 TOOL_SPECS 派生，勿在此手写工具
+
+
 
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 

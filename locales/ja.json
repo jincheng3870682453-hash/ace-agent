@@ -29,7 +29,7 @@
   "model_call_failed": "✗ モデル呼び出し失敗: {err}",
   "exec_layer_error": "  ⚠ 実行レイヤーエラー: {err}",
   "plan_approve_q": "  この計画を承認して実行しますか？[y/N]: ",
-  "auto_approve_plan": "  非対話モード：計画を自動承認しました。",
+  "auto_reject_plan": "  非対話モード：承認者不在のため計画を自動拒否しました。",
   "plan_approved_msg": "  計画を承認、実行します。",
   "plan_rejected_msg": "  計画は拒否されました。",
   "perm_request_title": "  Agent がツールの一時アクセスを要求: {tool}",

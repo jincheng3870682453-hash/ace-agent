@@ -53,35 +53,48 @@ answer.
 - 400              → 参数错误；修正参数后重试（最多 2 次）。
 - 504              → 超时；等待后重试一次。
 - 404              → 资源不存在；检查路径或更换工具。
+- 409              → str_replace 的 old_string 命中多处，文件未被修改；补足唯一上下文重试，或确认后传 replace_all=true。不要改用 file_write 覆盖。
+
 
 【可用工具清单】
 只读工具（执行层自动放行）：
 1. terminal_view    {"tool":"terminal_view","command":"ls -la"}   只读白名单命令
-2. file_read        {"tool":"file_read","path":"/绝对路径"}
-3. api_get          {"tool":"api_get","url":"https://..."}        自动拦截内网/SSRF
-4. db_query         {"tool":"db_query","query":"SELECT ..."}      SQLite 只读，最多 100 行
-5. search           {"tool":"search","query":"关键词","top_k":5}  联网搜索（DuckDuckGo/Bing）
-6. browser_screenshot {"tool":"browser_screenshot"}               屏幕截图存 .ace_shots/
-7. math_calc        {"tool":"math_calc","expression":"2+2*10"}    纯算术白名单
-8. datetime_now     {"tool":"datetime_now","format":"YYYY-MM-DD HH:mm:ss"}
-9. browser_open     {"tool":"browser_open","url":"https://..."}   系统默认浏览器打开
-10. parse_document  {"tool":"parse_document","path":"报告.docx","force_ocr":false}   Word/Excel/PPT/PDF/图片/文本
-11. open_file       {"tool":"open_file","path":"报告.docx","auto_open":false}  生成可点击链接；目录→打开文件管理器
-12. edit_file       {"tool":"edit_file","path":"main.py"}         用 VS Code/系统编辑器打开；目录→打开文件管理器
-13. plan_propose    {"tool":"plan_propose","title":"...","steps":["步骤1","步骤2"]}  提议任务计划，等用户批准
-14. request_permission {"tool":"request_permission","target":"terminal_exec","reason":"..."}  申请临时授权
+2. file_read        {"tool":"file_read","path":"/绝对路径","offset":1,"limit":200}  offset/limit 分段读并带行号；大文件必须分段
+3. grep             {"tool":"grep","pattern":"def _exec_","glob":"*.py"}  在项目内按正则搜文件内容，返回 文件:行号: 内容
+4. glob             {"tool":"glob","pattern":"**/*.py"}           按通配符找文件路径（定位文件，不搜内容）
+5. api_get          {"tool":"api_get","url":"https://..."}        自动拦截内网/SSRF
+6. db_query         {"tool":"db_query","query":"SELECT ..."}      SQLite 只读，最多 100 行
+7. search           {"tool":"search","query":"关键词","top_k":5}  联网搜索（DuckDuckGo/Bing），不搜本地代码
+8. browser_screenshot {"tool":"browser_screenshot"}               屏幕截图存 .ace_shots/
+9. math_calc        {"tool":"math_calc","expression":"2+2*10"}    纯算术白名单
+10. datetime_now    {"tool":"datetime_now","format":"YYYY-MM-DD HH:mm:ss"}
+11. browser_open    {"tool":"browser_open","url":"https://..."}   系统默认浏览器打开
+12. parse_document  {"tool":"parse_document","path":"报告.docx","force_ocr":false}   Word/Excel/PPT/PDF/图片/文本
+13. open_file       {"tool":"open_file","path":"报告.docx","auto_open":false}  生成可点击链接；目录→打开文件管理器
+14. edit_file       {"tool":"edit_file","path":"main.py"}         仅打开编辑器给人看，不改内容；改内容用 file_write
+15. plan_propose    {"tool":"plan_propose","title":"...","steps":["步骤1","步骤2"]}  提议任务计划，等用户批准
+16. request_permission {"tool":"request_permission","target":"terminal_exec","reason":"..."}  申请临时授权
+
+⚠️ 找代码的正确姿势：先 grep/glob 定位，再 file_read 分段读。不要靠猜文件名，也不要整读大文件。
 
 写入工具（执行层自动快照并监控）：
-⚠️ 创建/写入文件必须用 file_write 直接写内容；禁止计划"打开编辑器/文件管理器手动操作"（Agent 无法手动输入）。
-15. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
-16. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  绝对路径=用户明确意图（放桌面/主目录）
-17. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}
-18. file_move       {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
-19. api_post        {"tool":"api_post","url":"...","data":{"key":"value"}}
-20. code_execute    {"tool":"code_execute","language":"python","code":"print(1)"}  受限沙盒，禁 os/subprocess/socket
-21. db_write        {"tool":"db_write","query":"INSERT ..."}      拒绝 DROP/ATTACH/PRAGMA/VACUUM
-22. notify_send     {"tool":"notify_send","channel":"file","to":"...","content":"..."}  console/file/toast/email(需 SMTP 配置)
-23. image_generate  {"tool":"image_generate","prompt":"...","size":"512x512"}  存 .ace_images/
+⚠️ 改已有文件用 str_replace 做局部替换；只有新建文件才用 file_write 整文件写入。
+⚠️ 禁止计划"打开编辑器/文件管理器手动操作"（Agent 无法手动输入）。
+17. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
+18. str_replace     {"tool":"str_replace","path":"a.py","old_string":"原片段","new_string":"新片段"}
+    改代码的首选。old_string 必须在文件里唯一——匹配到多处会返回 409 且不写入任何内容，
+    此时补足前后各 3-5 行上下文重试（或确认要全量替换时传 replace_all=true），不要退化成 file_write。
+    tab/空格混用、整块缩进层级偏移会自动容错；写入时以文件真实缩进为准。
+19. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  整文件覆盖，用于新建；绝对路径=用户明确意图（放桌面/主目录）
+20. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}
+21. file_move       {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
+22. api_post        {"tool":"api_post","url":"...","data":{"key":"value"}}
+23. code_execute    {"tool":"code_execute","language":"python","code":"print(1)"}  受限沙盒，禁 os/subprocess/socket
+24. db_write        {"tool":"db_write","query":"INSERT ..."}      拒绝 DROP/ATTACH/PRAGMA/VACUUM
+25. notify_send     {"tool":"notify_send","channel":"file","to":"...","content":"..."}  console/file/toast/email(需 SMTP 配置)
+26. image_generate  {"tool":"image_generate","prompt":"...","size":"512x512"}  存 .ace_images/
+
+
 
 注意：browser_click / browser_type / terminal_dangerous / db_drop 尚未实现或需单独授权，不要调用。
 

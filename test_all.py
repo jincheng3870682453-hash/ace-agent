@@ -740,8 +740,8 @@ try:
 except ValueError:
     _cfg_bad2 = True
 check("CLIConfig 校验负数 max_history", _cfg_bad2)
-check("CLIConfig 默认值归一化",
-      ai_code.CLIConfig.from_dict({}).permission == "write"
+check("CLIConfig 默认 readonly（写权限需显式 /permission 开启）",
+      ai_code.CLIConfig.from_dict({}).permission == "readonly"
       and ai_code.CLIConfig.from_dict({}).max_history == 0)
 
 # —— 登录页 / 首页（AI-CLI 启动平台同款） ——
@@ -852,6 +852,42 @@ check("file_write ~/Desktop 展开到主目录",
 r = run_agent(el_h, "file_move", source="ok.txt", dest=str(abs_dir / "moved.txt"))
 check("file_move 绝对目标放行", r["status"] == "SUCCESS"
       and (abs_dir / "moved.txt").exists(), r)
+
+# —— 敏感目标拦截：绝对路径放行不等于凭据/自启动入口放行 ——
+from tools.base import sensitive_target as _sens
+check("sensitive_target 不误伤普通盘符路径",
+      _sens("D:\\学习\\build") is None and _sens("C:/proj/src/ssh_utils.py") is None)
+check("sensitive_target 命中凭据/自启动",
+      _sens("~/.ssh/authorized_keys") and _sens("%USERPROFILE%\\.ai_code.json")
+      and _sens("/home/u/.bashrc") and _sens("C:\\Windows\\System32\\drivers\\etc\\hosts"))
+r = run_agent(el_h, "file_write", path=str(Path.home() / ".ssh" / "authorized_keys"),
+              content="ssh-rsa AAAA")
+check("file_write 拒绝写 ~/.ssh/authorized_keys", r["status"] == "403", r.get("message"))
+r = run_agent(el_h, "file_delete", path=str(Path.home() / ".bashrc"))
+check("file_delete 拒绝删 ~/.bashrc", r["status"] == "403", r.get("message"))
+r = run_agent(el_h, "file_move", source="moved.txt",
+              dest=str(Path.home() / ".ai_code.json"))
+check("file_move 拒绝覆盖 ~/.ai_code.json", r["status"] == "403", r.get("message"))
+r = run_agent(el_h, "terminal_view", command=f'cat "{Path.home() / ".ai_code.json"}"')
+check("terminal_view 拒绝读凭据文件（readonly 也拿不到 API key）",
+      r["status"] == "403", r.get("message"))
+# —— terminal_exec 前置筛查：拦根删除/凭据，放行正常清理 ——
+r = run_agent(el_h, "terminal_exec", command="rm -rf /")
+check("terminal_exec 拦 rm -rf /", r["status"] == "403", r.get("message"))
+r = run_agent(el_h, "terminal_exec", command="type %USERPROFILE%\\.ai_code.json")
+check("terminal_exec 拦读凭据文件", r["status"] == "403", r.get("message"))
+r = run_agent(el_h, "terminal_exec", command="git commit -m \"fix reboot bug\"")
+check("terminal_exec 不误伤含 reboot 的提交信息", r["status"] == "SUCCESS", r.get("message"))
+r = run_agent(el_h, "terminal_exec", command="rm -rf __no_such_build_dir__")
+check("terminal_exec 放行普通目录清理", r["status"] == "SUCCESS", r.get("message"))
+# —— 沙箱黑名单补齐：os 的等价物与绕过 open() 的写入路径 ——
+r = run_agent(el_h, "code_execute", language="python", code="import nt\nnt.system('echo x')")
+check("code_execute 拦 import nt（os.system 等价物）", r["status"] == "403", r.get("message"))
+r = run_agent(el_h, "code_execute", language="python",
+              code="from pathlib import Path\nPath('x.txt').write_text('y')")
+check("code_execute 拦 pathlib（绕过 open() 的写入路径）", r["status"] == "403", r.get("message"))
+
+
 if hasattr(os, "startfile"):
     import unittest.mock as _mock
     with _mock.patch.object(os, "startfile") as _sf:
@@ -1130,6 +1166,127 @@ r = run_agent(el_h, "file_read", path=str(FOLDER.parent))
 check("file_read 越界目录仍可列出（桌面场景）", r["status"] == "SUCCESS"
       and r["data"].get("is_dir") is True and len(r["data"].get("listing", [])) >= 1,
       r.get("message"))
+
+# —— 工具注册表：三处硬编码收成一处（tools/registry.py 为唯一声明处） ——
+from tools.registry import SPEC_BY_NAME as _SPECS, openai_tools as _oai  # noqa: E402
+from execution_layer import (TOOL_EXAMPLES as _TE, WRITE_TOOLS as _WT)  # noqa: E402
+check("function calling schema 由注册表派生",
+      {t["function"]["name"] for t in _oai()} == {s.name for s in _SPECS.values() if s.expose},
+      len(_oai()))
+check("权限集合由注册表派生（grep/glob 属只读组）",
+      "grep" in _READ_TOOLS and "glob" in _READ_TOOLS and "grep" not in _WT)
+check("TOOL_EXAMPLES 由注册表 example 字段派生",
+      _TE.get("grep", "").startswith('{"tool":"grep"'), _TE.get("grep"))
+check("已登记未实现的高危工具不暴露给模型",
+      "terminal_dangerous" not in {t["function"]["name"] for t in _oai()})
+
+# —— 只读代码检索 grep/glob：修复 readonly 默认下"只能 ls 和 cat"的退化 ——
+_search_root = mktemp()
+(_search_root / "pkg").mkdir()
+(_search_root / "pkg" / "alpha.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+(_search_root / "pkg" / "beta.txt").write_text("hello from txt\n", encoding="utf-8")
+(_search_root / "node_modules").mkdir()
+(_search_root / "node_modules" / "gamma.py").write_text("def hello(): pass\n", encoding="utf-8")
+(_search_root / "long.txt").write_text("\n".join(f"line{i}" for i in range(1, 51)),
+                                       encoding="utf-8")
+el_search = ExecutionLayer(project_root=str(_search_root), permission_level="readonly",
+                           config={"bait": {"enabled": False}})
+r = run_agent(el_search, "grep", pattern="def hello")
+check("readonly 下 grep 可搜代码内容", r["status"] == "SUCCESS"
+      and r["data"]["match_count"] >= 1, r.get("message"))
+check("grep 跳过 node_modules 等依赖目录",
+      "node_modules" not in r["data"]["content"], r["data"]["content"][:200])
+r = run_agent(el_search, "grep", pattern="hello", glob="*.py")
+check("grep glob 过滤生效（.txt 不入结果）",
+      r["status"] == "SUCCESS" and "beta.txt" not in r["data"]["content"],
+      r["data"].get("content"))
+r = run_agent(el_search, "grep", pattern="[unclosed")
+check("grep 非法正则报 400 而非 500", r["status"] == "400", r.get("message"))
+r = run_agent(el_search, "grep", pattern="hello", path=str(FOLDER.parent))
+check("grep 越界路径 403（只读检索不放开项目外）", r["status"] == "403", r.get("message"))
+r = run_agent(el_search, "glob", pattern="**/*.py")
+check("readonly 下 glob 可定位文件且跳过依赖目录",
+      r["status"] == "SUCCESS"
+      and any(f.endswith("alpha.py") for f in r["data"]["files"])
+      and not any("node_modules" in f for f in r["data"]["files"]),
+      r["data"].get("files"))
+r = run_agent(el_search, "glob", pattern="C:/**/*.py")
+check("glob 拒绝绝对路径 pattern", r["status"] == "400", r.get("message"))
+
+# —— file_read 分段读取（局部编辑的前置：模型要拿到带行号的片段） ——
+r = run_agent(el_search, "file_read", path="long.txt")
+check("file_read 不传 offset/limit 时返回原文",
+      r["status"] == "SUCCESS" and r["data"]["content"].startswith("line1\n")
+      and r["data"]["total_lines"] == 50 and r["data"]["truncated"] is False,
+      r.get("message"))
+r = run_agent(el_search, "file_read", path="long.txt", offset=10, limit=3)
+check("file_read 分段返回带行号片段",
+      r["status"] == "SUCCESS" and "10→line10" in r["data"]["content"]
+      and "line13" not in r["data"]["content"] and r["data"]["truncated"] is True,
+      r["data"].get("content"))
+r = run_agent(el_search, "file_read", path="long.txt", offset="x")
+check("file_read 非法 offset 报 400", r["status"] == "400", r.get("message"))
+
+# —— str_replace 局部编辑：唯一匹配才写、失败不落盘、缩进容错但不引入缩进错误 ——
+check("str_replace 属写权限组（可拿到快照）",
+      "str_replace" in _WT and "str_replace" not in _READ_TOOLS)
+r = run_agent(el_search, "str_replace", path="long.txt",
+              old_string="line1", new_string="lineX")
+check("readonly 下 str_replace 被权限门拦截", r["status"] == "403", r.get("message"))
+
+_edit_root = mktemp()
+el_edit = ExecutionLayer(project_root=str(_edit_root), permission_level="write",
+                         config={"bait": {"enabled": False}})
+_target = _edit_root / "mod.py"
+
+_target.write_text("def a():\n    return 1\n\ndef b():\n    return 2\n", encoding="utf-8")
+r = run_agent(el_edit, "str_replace", path="mod.py",
+              old_string="    return 1", new_string="    return 42")
+check("str_replace 唯一匹配替换成功且返回 diff",
+      r["status"] == "SUCCESS" and r["data"]["matched_by"] == "exact"
+      and r["data"]["replaced"] == 1 and "-    return 1" in r["data"]["diff"]
+      and _target.read_text(encoding="utf-8")
+      == "def a():\n    return 42\n\ndef b():\n    return 2\n", r.get("message"))
+
+_target.write_text("x = 1\ny = 1\n", encoding="utf-8")
+r = run_agent(el_edit, "str_replace", path="mod.py", old_string="= 1", new_string="= 2")
+check("str_replace 多匹配报 409 且不落盘",
+      r["status"] == "409" and _target.read_text(encoding="utf-8") == "x = 1\ny = 1\n",
+      r.get("message"))
+check("409 指引模型补上下文重试而非改用 file_write",
+      "replace_all" in (r.get("instruction") or "")
+      and "file_write" in (r.get("instruction") or ""), r.get("instruction"))
+r = run_agent(el_edit, "str_replace", path="mod.py", old_string="= 1",
+              new_string="= 2", replace_all=True)
+check("str_replace replace_all 全量替换",
+      r["status"] == "SUCCESS" and r["data"]["replaced"] == 2
+      and _target.read_text(encoding="utf-8") == "x = 2\ny = 2\n", r.get("message"))
+
+# 关键用例：文件里是 8/12 空格缩进，模型给的是 tab + 少一级缩进
+_target.write_text("class C:\n    def m(self):\n        if x:\n"
+                   "            do_a()\n            do_b()\n", encoding="utf-8")
+r = run_agent(el_edit, "str_replace", path="mod.py",
+              old_string="if x:\n\tdo_a()\n\tdo_b()",
+              new_string="if x:\n\tdo_a()\n\tdo_c()")
+check("str_replace 容错 tab/缩进偏移，且按文件真实缩进写回",
+      r["status"] == "SUCCESS" and r["data"]["matched_by"] == "whitespace_normalized"
+      and _target.read_text(encoding="utf-8")
+      == "class C:\n    def m(self):\n        if x:\n"
+         "            do_a()\n            do_c()\n", r.get("message"))
+# 归一化不得跨缩进层级误匹配：块内相对缩进不一致就不该命中
+_target.write_text("if a:\n    p()\nelse:\n        p()\n", encoding="utf-8")
+r = run_agent(el_edit, "str_replace", path="mod.py",
+              old_string="if a:\n    p()\n    q()", new_string="zz")
+check("str_replace 相对缩进不一致时不误匹配（404 且不落盘）",
+      r["status"] == "404" and _target.read_text(encoding="utf-8")
+      == "if a:\n    p()\nelse:\n        p()\n", r.get("message"))
+r = run_agent(el_edit, "str_replace", path="mod.py", old_string="p()", new_string="p()")
+check("str_replace old_string 与 new_string 相同报 400", r["status"] == "400", r.get("message"))
+r = run_agent(el_edit, "str_replace", path=str(Path.home() / ".bashrc"),
+              old_string="x", new_string="y")
+check("str_replace 拒绝改敏感目标（~/.bashrc）", r["status"] == "403", r.get("message"))
+
+
 
 # —— tools 模式工具调用 JSON 不泄漏给用户 ——
 _disp = ai_code.AgentCLI._make_display(tools_mode=True, spinner=None)

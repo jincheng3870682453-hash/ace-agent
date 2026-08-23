@@ -122,6 +122,40 @@ HIGH_RISK_TOOLS = {
 # 控制类工具：由执行层直接处理（计划提议 / 权限申请），不走真实工具执行
 CONTROL_TOOLS = {"plan_propose", "request_permission"}
 
+# 参数报错时给模型的具体示例（小模型常漏参数，示例能显著提升修正成功率）
+TOOL_EXAMPLES = {}
+
+
+def refresh_tool_sets() -> None:
+    """从 tools/registry.py 的 TOOL_SPECS 重建权限集合与参数示例。
+
+    权限分级与工具清单的唯一来源是注册表；这里只做同步。
+    运行时注册工具（MCP / 插件）后需再调用一次，否则新工具会被权限门当成未知工具。
+    集合就地更新（clear+update）而非重新赋值，保证外部 `from execution_layer import
+    READ_TOOLS` 拿到的引用同步生效；PERMISSION_LEVELS 里的并集是快照，所以一并重建。
+    """
+    from tools.registry import (PERM_HIGH_RISK, PERM_READ, PERM_WRITE,
+                               control_tool_names, names_with_permission,
+                               tool_examples)
+    for target, names in ((READ_TOOLS, names_with_permission(PERM_READ)),
+                          (WRITE_TOOLS, names_with_permission(PERM_WRITE)),
+                          (HIGH_RISK_TOOLS, names_with_permission(PERM_HIGH_RISK)),
+                          (CONTROL_TOOLS, control_tool_names())):
+        target.clear()
+        target.update(names)
+    TOOL_EXAMPLES.clear()
+    TOOL_EXAMPLES.update(tool_examples())
+    pm = globals().get("PermissionManager")
+    if pm is not None:
+        pm.PERMISSION_LEVELS["readonly"]["tools"] = set(READ_TOOLS)
+        pm.PERMISSION_LEVELS["write"]["tools"] = READ_TOOLS | WRITE_TOOLS
+        pm.PERMISSION_LEVELS["full"]["tools"] = READ_TOOLS | WRITE_TOOLS | HIGH_RISK_TOOLS
+
+
+
+refresh_tool_sets()
+
+
 # AST 门禁分层：安全规则熔断；风格规则仅警告（不阻塞正常开发）
 AST_SAFETY_RULES = {"hardcoded_secrets", "sql_injection",
                     "infinite_recursion", "circular_ref"}
@@ -135,33 +169,10 @@ AST_RULE_DESCRIPTIONS = {
     "sql_injection": "SQL 注入风险",
 }
 
-# 参数报错时给模型的具体示例（小模型常漏参数，示例能显著提升修正成功率）
-TOOL_EXAMPLES = {
-    "terminal_view": '{"tool":"terminal_view","command":"ls -la"}',
-    "terminal_exec": '{"tool":"terminal_exec","command":"mkdir test"}',
-    "file_read": '{"tool":"file_read","path":"README.md"}',
-    "file_write": '{"tool":"file_write","path":"out.txt","content":"hello"}',
-    "file_delete": '{"tool":"file_delete","path":"old.txt"}',
-    "file_move": '{"tool":"file_move","source":"a.txt","dest":"b.txt"}',
-    "code_execute": '{"tool":"code_execute","language":"python","code":"print(1)"}',
-    "search": '{"tool":"search","query":"Python 教程","top_k":5}',
-    "math_calc": '{"tool":"math_calc","expression":"2+2*10"}',
-    "datetime_now": '{"tool":"datetime_now","format":"YYYY-MM-DD HH:mm:ss"}',
-    "api_get": '{"tool":"api_get","url":"https://example.com"}',
-    "api_post": '{"tool":"api_post","url":"https://example.com","data":{"key":"value"}}',
-    "db_query": '{"tool":"db_query","query":"SELECT * FROM t"}',
-    "db_write": '{"tool":"db_write","query":"INSERT INTO t (name) VALUES (\'x\')"}',
-    "browser_open": '{"tool":"browser_open","url":"https://example.com"}',
-    "notify_send": '{"tool":"notify_send","channel":"console","content":"hello"}',
-    "image_generate": '{"tool":"image_generate","prompt":"a cat","size":"512x512"}',
-    "parse_document": '{"tool":"parse_document","path":"报告.docx"}',
-    "open_file": '{"tool":"open_file","path":"README.md"}',
-    "edit_file": '{"tool":"edit_file","path":"main.py"}',
-    "plan_propose": '{"tool":"plan_propose","title":"任务","steps":["步骤1","步骤2"]}',
-    "request_permission": '{"tool":"request_permission","target":"terminal_exec","reason":"原因"}',
-}
+# 参数报错时给模型的具体示例：见文件顶部 TOOL_EXAMPLES（由注册表 example 字段派生）
 
 # terminal_view 只读白名单（修复：只读工具绝不允许 shell=True 执行任意命令）
+
 
 
 # ============================================================
@@ -628,7 +639,15 @@ class ExecutionLayer:
                     extra_instruction = (
                         "这是执行层安全限制（路径越界/白名单/沙盒拦截），不是权限问题。"
                         "请改用项目目录内的合法路径或换用其他工具，不要调用 request_permission。")
+            elif result.error_code == "409":
+                # str_replace 多匹配：这是"定位不唯一"，不是参数格式错，也不是权限问题。
+                # 明确告诉模型重试路径，否则它会去调 request_permission 或改用整文件覆盖。
+                extra_instruction = (
+                    "old_string 命中多处，执行层已放弃写入（文件未被修改）。"
+                    "请补足唯一上下文后重试同一工具，或确认要全量替换时传 replace_all=true；"
+                    "不要退化成 file_write 整文件覆盖，也不要调用 request_permission。")
             elif result.error_code == "400" and tool_name in TOOL_EXAMPLES:
+
                 # 参数缺失/格式错误：直接给模型一个可抄的示例
                 extra_instruction = f"参数格式示例: {TOOL_EXAMPLES[tool_name]}"
             # 重复失败熔断：同工具同错误连续失败达阈值 → 禁止再调用
