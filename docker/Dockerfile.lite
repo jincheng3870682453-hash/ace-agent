@@ -1,0 +1,24 @@
+# ACE Agent Lite —— 核心功能，无内置模型，体积最小
+# 镜像大小: ~180MB
+FROM python:3.11-slim-bookworm
+
+# 安全: 非 root 运行
+RUN groupadd -r ace && useradd -r -g ace -m -d /home/ace ace
+
+# 只安装核心依赖
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm -rf /tmp/requirements.txt /root/.cache/pip
+
+WORKDIR /app
+COPY --chown=ace:ace . /app
+
+# 创建必要目录
+RUN mkdir -p /app/.sandbox_tmp /app/.ace_shots /app/.ace_images && \
+    chown -R ace:ace /app
+
+USER ace
+
+# 默认进入首页菜单
+CMD ["python", "ai_code.py", "--mock"]

@@ -1,0 +1,67 @@
+version: "3.8"
+
+services:
+  # 方案A: 纯 ACE，模型通过 volume 挂载 (镜像 <200MB)
+  ace-lite:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.lite
+    image: ace-agent:lite
+    container_name: ace-lite
+    volumes:
+      - ../:/app/project         # 挂载你的工作目录
+      - ace-config:/home/ace     # 持久化配置 (~/.ai_code.json)
+    environment:
+      - AGENT_BASE_URL=${AGENT_BASE_URL:-}
+      - AGENT_API_KEY=${AGENT_API_KEY:-}
+      - AGENT_MODEL=${AGENT_MODEL:-}
+      - PYTHONUTF8=1
+    stdin_open: true
+    tty: true
+    command: ["python", "ai_code.py"]
+
+  # 方案B: 内置 VLM (镜像 ~2.3GB，启动即用)
+  ace-standard:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.standard
+    image: ace-agent:standard
+    container_name: ace-standard
+    volumes:
+      - ../:/app/project
+      - ace-config:/home/ace
+      - ace-memory:/app/.agent_memory.json
+    environment:
+      - AGENT_BASE_URL=${AGENT_BASE_URL:-}
+      - AGENT_API_KEY=${AGENT_API_KEY:-}
+      - AGENT_MODEL=${AGENT_MODEL:-}
+      - VLM_URL=http://localhost:8080/v1  # 内置 VLM 地址
+      - PYTHONUTF8=1
+    ports:
+      - "8080:8080"   # llama.cpp server (可选暴露)
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        limits:
+          memory: 8G   # 根据实际内存调整
+
+  # 方案C: 模型单独跑，ACE 通过 API 调用 (最灵活，镜像最小)
+  # 适合已有 Ollama / LM Studio 的用户
+  vlm-server:
+    image: ghcr.io/ggerganov/llama.cpp:full
+    container_name: ace-vlm
+    volumes:
+      - ../models:/models:ro
+    command: >
+      /bin/llama-server
+      -m /models/qwen2.5-vl-3b-q4_k_m.gguf
+      --mmproj /models/qwen2.5-vl-3b-mmproj.gguf
+      --host 0.0.0.0 --port 8080
+      -c 4096 --jinja
+    ports:
+      - "8080:8080"
+
+volumes:
+  ace-config:
+  ace-memory:

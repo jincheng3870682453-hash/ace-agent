@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+.pytest_cache
+.mypy_cache
+
+# 测试和临时文件
+.test_tmp
+.sandbox_tmp
+.ace_shots
+.ace_images
+.agent_flywheel
+.poc_reports
+agent.db
+notifications.log
+
+# 文档和模型 (如果外挂)
+models/
+*.gguf
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# Docker 本身
+Dockerfile*
+docker-compose.yml
+docker-entrypoint.sh
+download_model.py

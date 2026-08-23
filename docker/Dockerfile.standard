@@ -1,0 +1,88 @@
+# ACE Agent Standard —— 内置 Qwen2.5-VL-3B 识图模型
+# 镜像大小: ~2.3GB (ACE 200MB + llama.cpp 20MB + 模型 1.8GB + 系统 300MB)
+# 运行要求: 内存 >= 4GB (CPU推理) 或 显存 >= 4GB (GPU加速)
+
+# ========== 阶段1: 编译 llama.cpp ==========
+FROM python:3.11-slim-bookworm AS llama-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 克隆 llama.cpp (支持 Qwen2.5-VL 的分支或主分支最新版)
+RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /llama.cpp \
+    && cd /llama.cpp \
+    && cmake -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --config Release -j$(nproc)
+
+# 保留必要二进制
+RUN mkdir -p /llama-bin && \
+    cp /llama.cpp/build/bin/llama-server /llama-bin/ && \
+    cp /llama.cpp/build/bin/llama-mtmd-cli /llama-bin/ && \
+    cp /llama.cpp/build/bin/llama-quantize /llama-bin/
+
+# ========== 阶段2: 下载模型 ==========
+FROM python:3.11-slim-bookworm AS model-downloader
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 模型缓存目录
+RUN mkdir -p /models
+
+# 下载 Qwen2.5-VL-3B-Instruct GGUF 量化模型 (Q4_K_M, 约1.8GB)
+# 使用魔搭社区或 HuggingFace 镜像加速
+# 注: 这里用 Qwen2.5-VL-3B 的 GGUF，需要主模型 + mmproj (视觉投影)
+RUN curl -L -o /models/qwen2.5-vl-3b-q4_k_m.gguf \
+    "https://www.modelscope.cn/models/huihui-ai/Qwen2.5-VL-3B-Instruct-abliterated/resolve/master/GGUF/ggml-model-Q4_K_M.gguf" \
+    || curl -L -o /models/qwen2.5-vl-3b-q4_k_m.gguf \
+    "https://hf-mirror.com/huihui-ai/Qwen2.5-VL-3B-Instruct-abliterated/resolve/main/GGUF/ggml-model-Q4_K_M.gguf"
+
+# 下载视觉投影模型 (mmproj, 约500MB-1GB，用于处理图片)
+RUN curl -L -o /models/qwen2.5-vl-3b-mmproj.gguf \
+    "https://www.modelscope.cn/models/huihui-ai/Qwen2.5-VL-3B-Instruct-abliterated/resolve/master/GGUF/mmproj-ggml-model-f16.gguf" \
+    || curl -L -o /models/qwen2.5-vl-3b-mmproj.gguf \
+    "https://hf-mirror.com/huihui-ai/Qwen2.5-VL-3B-Instruct-abliterated/resolve/main/GGUF/mmproj-ggml-model-f16.gguf"
+
+# ========== 阶段3: 最终运行镜像 ==========
+FROM python:3.11-slim-bookworm
+
+# 安装运行时必要的库 (llama.cpp 需要的基本库)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建非 root 用户
+RUN groupadd -r ace && useradd -r -g ace -m -d /home/ace ace
+
+# 安装 Python 依赖
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm -rf /tmp/requirements.txt /root/.cache/pip
+
+WORKDIR /app
+COPY --chown=ace:ace . /app
+
+# 从阶段1复制 llama.cpp 二进制
+COPY --from=llama-builder /llama-bin/ /usr/local/bin/
+
+# 从阶段2复制模型文件
+COPY --from=model-downloader /models/ /app/models/
+RUN chown -R ace:ace /app/models
+
+# 创建必要目录
+RUN mkdir -p /app/.sandbox_tmp /app/.ace_shots /app/.ace_images /app/.agent_flywheel && \
+    chown -R ace:ace /app
+
+# 启动脚本: 同时启动 llama-server 和 ACE
+COPY --chown=ace:ace docker/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+USER ace
+
+# 暴露 llama.cpp server 端口 (供 ACE 内部调用)
+EXPOSE 8080
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

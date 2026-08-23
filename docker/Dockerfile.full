@@ -1,0 +1,21 @@
+# ACE Agent Full —— 完整功能，含文档解析 + 内置 VLM
+# 镜像大小: ~3GB (在 standard 基础上增加文档解析库)
+# 注意: 旧版 Office 格式(.doc/.xls)仍需主机安装 LibreOffice
+
+# 前置: 需先构建 ace-agent:standard
+FROM ace-agent:standard AS base
+
+USER root
+
+# 安装文档解析的系统依赖 + Python 库
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr tesseract-ocr-chi-sim poppler-utils \
+    libreoffice-writer antiword \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装文档解析 Python 库
+RUN pip install --no-cache-dir \
+    python-docx openpyxl xlrd python-pptx \
+    pdfplumber pymupdf pandas pdf2image pytesseract pillow
+
+USER ace
