@@ -314,7 +314,10 @@ ANSI = {
     "red": "\033[31m", "green": "\033[32m", "yellow": "\033[33m",
     "blue": "\033[34m", "magenta": "\033[35m", "cyan": "\033[36m",
 }
-USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+# FORCE_COLOR：管道/重定向下强制保留颜色。NO_COLOR 优先级更高（用户明确要求关色）。
+# demo/record_demo.py 靠它抓到带色的真实会话，否则录出来的演示是灰的。
+USE_COLOR = bool((sys.stdout.isatty() or os.environ.get("FORCE_COLOR"))
+                 and not os.environ.get("NO_COLOR"))
 if os.name == "nt":
     try:
         os.system("")  # Windows 启用 ANSI 转义（其他平台无此需要）

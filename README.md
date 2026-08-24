@@ -1,12 +1,25 @@
-# ACE · AI Code Engine
+<h1 align="center">ACE · AI Code Engine</h1>
 
-[![CI](https://github.com/jincheng3870682453-hash/ace-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/jincheng3870682453-hash/ace-agent/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
-![Tests](https://img.shields.io/badge/tests-357%20passing-brightgreen)
-![Dependencies](https://img.shields.io/badge/core%20deps-zero-orange)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+<p align="center">
+  <strong>一个把安全下沉到执行层的 AI 编码 Agent —— 模型只负责理解和输出，<br>
+  权限、沙箱、快照回滚全部由执行层裁决。</strong>
+</p>
 
-**一个把安全下沉到执行层的 AI 编码 Agent —— 模型只负责理解和输出，权限、沙箱、快照回滚全部由执行层裁决。**
+<p align="center">
+  <a href="https://github.com/jincheng3870682453-hash/ace-agent/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jincheng3870682453-hash/ace-agent/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue">
+  <img alt="Dependencies" src="https://img.shields.io/badge/core%20deps-zero-orange">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
+
+<p align="center">
+  <img src="demo/demo.svg" alt="ACE 终端会话演示：提问 → 调用工具 → 作答 → 查状态 → 降权限" width="820">
+</p>
+
+<p align="center">
+  <sub>上图是 <code>python ai_code.py --mock</code> 的真实会话录制（离线、无需密钥），
+  用 <a href="demo/record_demo.py"><code>demo/record_demo.py</code></a> 可随时重录。</sub>
+</p>
 
 大多数 Agent 把安全交给提示词："请不要删除文件"。ACE 不这么做：模型的每一次工具调用都要穿过一个独立的执行层，由它做权限裁决、危险行为检测、写入前快照。提示词失效时，执行层仍然拦得住。
 
@@ -33,8 +46,9 @@
 ```bash
 git clone https://github.com/jincheng3870682453-hash/ace-agent.git
 cd ace-agent
-python test_all.py          # 357 项端到端测试，纯 stdlib，应当全绿
+python test_all.py          # 端到端测试，纯 stdlib，应当全绿
 ```
+
 
 不配密钥先看效果：
 
@@ -274,8 +288,10 @@ ace-agent/
 ├── universal_document_parser.py# N 合一文档解析 + 懒加载 + 50MB 防线
 ├── i18n.py + locales/          # 轻量国际化（zh / en / ja JSON 字典）
 ├── prompts/                    # 系统提示词：v7 完整版 · v8 精简版 · tools 原生调用版
-├── test_all.py                 # 全模块端到端测试（357 项，纯 stdlib）
+├── test_all.py                 # 全模块端到端测试（纯 stdlib）
+├── demo/                       # README 演示动画 + 录制脚本（跑真实 --mock 会话）
 ├── docs/ADR.md                 # 架构决策记录
+
 ├── LICENSE                     # MIT
 ├── docker/                     # lite / standard / full 三档镜像 + 模型下载脚本
 └── .github/workflows/ci.yml    # CI：Python 3.10/3.11/3.12 编译检查 + 全量测试 + ruff
@@ -286,9 +302,12 @@ ace-agent/
 ```bash
 python test_all.py                          # 全量测试，退出码非 0 即失败
 ruff check . --select E9,F63,F7,F82         # CI 用的同一套硬错误检查
+python demo/record_demo.py                  # 重录 README 顶部的演示动画
+python demo/record_demo.py --check          # 只校验动画是否还和当前输出一致
 ```
 
-测试是单文件、纯 stdlib、无框架的端到端断言，`check(名称, 条件, 详情)` 逐条打印。CI 在 Python 3.10 / 3.11 / 3.12 三个版本上跑编译检查 + 全量测试 + ruff。
+测试是单文件、纯 stdlib、无框架的端到端断言，`check(名称, 条件, 详情)` 逐条打印。用例总数随平台浮动（Windows 上 357 项，Linux 上 346 项——差额是 Windows 专有的路径/编码用例），所以这里不写死一个数字。CI 在 Python 3.10 / 3.11 / 3.12 三个版本上跑编译检查 + 全量测试 + ruff。
+
 
 改动前请读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（环境 / 测试 / 风格 / 提交流程）。改了行为的话，把断言旧行为的用例一起改掉——不要只加新用例。
 

@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1016" height="674" viewBox="0 0 1016 674" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono','Noto Sans Mono CJK SC',monospace" font-size="15">
+<style>
+text{white-space:pre;dominant-baseline:middle}
+@keyframes s0{0%,4.967%{opacity:0}4.968%,100%{opacity:1}}
+.r0{animation:s0 12.08s steps(1,end) infinite}
+@keyframes s1{0%,7.285%{opacity:0}7.286%,100%{opacity:1}}
+.r1{animation:s1 12.08s steps(1,end) infinite}
+@keyframes s2{0%,9.603%{opacity:0}9.604%,100%{opacity:1}}
+.r2{animation:s2 12.08s steps(1,end) infinite}
+@keyframes s3{0%,11.921%{opacity:0}11.922%,100%{opacity:1}}
+.r3{animation:s3 12.08s steps(1,end) infinite}
+@keyframes s4{0%,14.238%{opacity:0}14.239%,100%{opacity:1}}
+.r4{animation:s4 12.08s steps(1,end) infinite}
+@keyframes s5{0%,16.556%{opacity:0}16.557%,100%{opacity:1}}
+.r5{animation:s5 12.08s steps(1,end) infinite}
+@keyframes s6{0%,22.765%{opacity:0}22.766%,100%{opacity:1}}
+.r6{animation:s6 12.08s steps(1,end) infinite}
+@keyframes s7{0%,25.083%{opacity:0}25.084%,100%{opacity:1}}
+.r7{animation:s7 12.08s steps(1,end) infinite}
+@keyframes s8{0%,27.401%{opacity:0}27.402%,100%{opacity:1}}
+.r8{animation:s8 12.08s steps(1,end) infinite}
+@keyframes s9{0%,29.719%{opacity:0}29.720%,100%{opacity:1}}
+.r9{animation:s9 12.08s steps(1,end) infinite}
+@keyframes s10{0%,32.036%{opacity:0}32.037%,100%{opacity:1}}
+.r10{animation:s10 12.08s steps(1,end) infinite}
+@keyframes s11{0%,34.354%{opacity:0}34.355%,100%{opacity:1}}
+.r11{animation:s11 12.08s steps(1,end) infinite}
+@keyframes s12{0%,36.672%{opacity:0}36.673%,100%{opacity:1}}
+.r12{animation:s12 12.08s steps(1,end) infinite}
+@keyframes s13{0%,38.990%{opacity:0}38.991%,100%{opacity:1}}
+.r13{animation:s13 12.08s steps(1,end) infinite}
+@keyframes s14{0%,41.308%{opacity:0}41.309%,100%{opacity:1}}
+.r14{animation:s14 12.08s steps(1,end) infinite}
+@keyframes s15{0%,43.626%{opacity:0}43.627%,100%{opacity:1}}
+.r15{animation:s15 12.08s steps(1,end) infinite}
+@keyframes s16{0%,49.834%{opacity:0}49.835%,100%{opacity:1}}
+.r16{animation:s16 12.08s steps(1,end) infinite}
+@keyframes s17{0%,52.152%{opacity:0}52.153%,100%{opacity:1}}
+.r17{animation:s17 12.08s steps(1,end) infinite}
+@keyframes s18{0%,54.470%{opacity:0}54.471%,100%{opacity:1}}
+.r18{animation:s18 12.08s steps(1,end) infinite}
+@keyframes s19{0%,56.788%{opacity:0}56.789%,100%{opacity:1}}
+.r19{animation:s19 12.08s steps(1,end) infinite}
+@keyframes s20{0%,59.106%{opacity:0}59.107%,100%{opacity:1}}
+.r20{animation:s20 12.08s steps(1,end) infinite}
+@keyframes s21{0%,61.424%{opacity:0}61.425%,100%{opacity:1}}
+.r21{animation:s21 12.08s steps(1,end) infinite}
+@keyframes s22{0%,67.632%{opacity:0}67.633%,100%{opacity:1}}
+.r22{animation:s22 12.08s steps(1,end) infinite}
+@keyframes s23{0%,69.950%{opacity:0}69.951%,100%{opacity:1}}
+.r23{animation:s23 12.08s steps(1,end) infinite}
+@keyframes s24{0%,76.159%{opacity:0}76.160%,100%{opacity:1}}
+.r24{animation:s24 12.08s steps(1,end) infinite}
+.cur{animation:blink 1.05s steps(1,end) infinite}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+</style>
+<rect width="1016" height="674" rx="10" fill="#1b1f29"/>
+<rect y="40" width="1016" height="634" fill="#11141b"/>
+<circle cx="22" cy="20" r="5.5" fill="#ff5f57"/><circle cx="40" cy="20" r="5.5" fill="#febc2e"/><circle cx="58" cy="20" r="5.5" fill="#28c840"/>
+<text x="508.0" y="21" text-anchor="middle" font-size="12.5" fill="#7d879c">ace-agent — python ai_code.py --mock</text>
+<text class="r0" x="22" y="52" xml:space="preserve"><tspan fill="#d7dce5">ACE</tspan><tspan fill="#7d879c"> v1.0 · AI Code Engine</tspan></text>
+<text class="r1" x="22" y="76" xml:space="preserve"><tspan fill="#d7dce5">  模型: mock（离线演示）</tspan></text>
+<text class="r2" x="22" y="100" xml:space="preserve"><tspan fill="#d7dce5">  权限: write | 目录: .</tspan></text>
+<text class="r3" x="22" y="124" xml:space="preserve"><tspan fill="#f0c674">  ⚠ 当前为写权限：terminal_exec 可执行任意 shell 命令。生产环境建议 readonly 起步，按需用 /permission 切换。</tspan></text>
+<text class="r4" x="22" y="148" xml:space="preserve"><tspan fill="#d7dce5">  输入 </tspan><tspan fill="#c39ac9">/help</tspan><tspan fill="#d7dce5"> 查看命令，</tspan><tspan fill="#c39ac9">@</tspan><tspan fill="#d7dce5"> 打开快捷方式，</tspan><tspan fill="#c39ac9">/exit</tspan><tspan fill="#d7dce5"> 退出</tspan></text>
+<text class="r5" x="22" y="172" xml:space="preserve"><tspan fill="#d7dce5">❯ 现在几点</tspan><tspan class="cur" fill="#c39ac9">&#9601;</tspan></text>
+<text class="r6" x="22" y="196" xml:space="preserve">&#160;</text>
+<text class="r7" x="22" y="220" xml:space="preserve"><tspan fill="#d7dce5">◈ 思考中.</tspan></text>
+<text class="r8" x="22" y="244" xml:space="preserve">&#160;</text>
+<text class="r9" x="22" y="268" xml:space="preserve"><tspan fill="#d7dce5">◈ 正在调用工具</tspan></text>
+<text class="r10" x="22" y="292" xml:space="preserve"><tspan fill="#d7dce5">  ↳ 工具 datetime_now </tspan><tspan fill="#5fd68a">✓</tspan><tspan fill="#d7dce5"> [SUCCESS]</tspan><tspan fill="#7d879c"> · 0.00s</tspan></text>
+<text class="r11" x="22" y="316" xml:space="preserve">&#160;</text>
+<text class="r12" x="22" y="340" xml:space="preserve"><tspan fill="#d7dce5">◈ 思考中.   当前时间是 2026-08-24 13:58:13</tspan></text>
+<text class="r13" x="22" y="364" xml:space="preserve">&#160;</text>
+<text class="r14" x="22" y="388" xml:space="preserve"><tspan fill="#5fd68a">  ✓ 完成（2 轮, 0.4s）</tspan></text>
+<text class="r15" x="22" y="412" xml:space="preserve"><tspan fill="#d7dce5">❯ /status</tspan><tspan class="cur" fill="#c39ac9">&#9601;</tspan></text>
+<text class="r16" x="22" y="436" xml:space="preserve"><tspan fill="#d7dce5">  会话: 2 轮 | 工具执行 1 次 | 违规 0 次 | 已运行 0s</tspan></text>
+<text class="r17" x="22" y="460" xml:space="preserve"><tspan fill="#d7dce5">  语言: 中文 | 技能: 通用助手 | 引用: 0 项</tspan></text>
+<text class="r18" x="22" y="484" xml:space="preserve"><tspan fill="#d7dce5">  权限: write | 违规累计 0 | 执行累计 1</tspan></text>
+<text class="r19" x="22" y="508" xml:space="preserve"><tspan fill="#d7dce5">  快照: 0 个（自动清理上限 20，/undo 一键回滚最近）</tspan></text>
+<text class="r20" x="22" y="532" xml:space="preserve"><tspan fill="#d7dce5">  模块: v2=True v1={'work': True, 'guardian': True, 'archive': True, 'nuwa': True} parser=True</tspan></text>
+<text class="r21" x="22" y="556" xml:space="preserve"><tspan fill="#d7dce5">❯ /permission readonly</tspan><tspan class="cur" fill="#c39ac9">&#9601;</tspan></text>
+<text class="r22" x="22" y="580" xml:space="preserve"><tspan fill="#5fd68a">权限已切换为 readonly</tspan></text>
+<text class="r23" x="22" y="604" xml:space="preserve"><tspan fill="#d7dce5">❯ /exit</tspan><tspan class="cur" fill="#c39ac9">&#9601;</tspan></text>
+<text class="r24" x="22" y="628" xml:space="preserve"><tspan fill="#7d879c">  再见，ACE 已退出。</tspan></text>
+</svg>
