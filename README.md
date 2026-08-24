@@ -1,4 +1,9 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="ACE logo" width="88" height="88">
+</p>
+
 <h1 align="center">ACE · AI Code Engine</h1>
+
 
 <p align="center">
   <strong>一个把安全下沉到执行层的 AI 编码 Agent —— 模型只负责理解和输出，<br>
@@ -290,6 +295,8 @@ ace-agent/
 ├── prompts/                    # 系统提示词：v7 完整版 · v8 精简版 · tools 原生调用版
 ├── test_all.py                 # 全模块端到端测试（纯 stdlib）
 ├── demo/                       # README 演示动画 + 录制脚本（跑真实 --mock 会话）
+├── assets/logo.svg             # 标识（原创几何构图，无第三方素材）
+
 ├── docs/ADR.md                 # 架构决策记录
 
 ├── LICENSE                     # MIT

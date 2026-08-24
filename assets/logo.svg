@@ -1,0 +1,29 @@
+<!-- ACE 标识：原创几何构图，无任何第三方素材 / 字体轮廓，可自由商用。
+     构图含义：盾 = 执行层（安全在这一层裁决），盾内的 ❯ 与光标 = 终端会话。
+     "模型的每一次调用都要穿过这道盾" 就是这个项目的全部主张。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"
+     role="img" aria-label="ACE · AI Code Engine">
+  <title>ACE · AI Code Engine</title>
+  <defs>
+    <linearGradient id="ace-shield" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#66cccc"/>
+      <stop offset="0.55" stop-color="#7aa6f0"/>
+      <stop offset="1" stop-color="#c39ac9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 底板：跟终端演示同一套暗色，缩到 16px 当 favicon 也不糊 -->
+  <rect width="128" height="128" rx="28" fill="#11141b"/>
+  <rect x="1" y="1" width="126" height="126" rx="27" fill="none"
+        stroke="#2a3040" stroke-width="2"/>
+
+  <!-- 盾：执行层 -->
+  <path d="M64 18 L106 31 V67 C106 90 87 105 64 113 C41 105 22 90 22 67 V31 Z"
+        fill="none" stroke="url(#ace-shield)" stroke-width="6"
+        stroke-linejoin="round"/>
+
+  <!-- 盾内：提示符 ❯ 与光标 -->
+  <path d="M50 51 L68 65 L50 79" fill="none" stroke="#66cccc" stroke-width="8"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="74" y="72" width="16" height="7" rx="3.5" fill="#c39ac9"/>
+</svg>
