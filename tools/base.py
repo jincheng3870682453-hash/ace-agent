@@ -60,12 +60,18 @@ _SENSITIVE_DIR_PREFIXES = (
     "/var/spool/cron",
 )
 _STARTUP_FRAGMENTS = ("start menu/programs/startup", "currentversion/run")
+# Agent 自身的安全状态目录：回滚快照存在项目目录内，而项目目录正是 agent 可写的范围。
+# 不挡这里，agent 改一行 .guardian/snapshots/<id>/meta.json 就能让 verify_snapshot
+# 失败，熔断回滚静默变成空操作——安全网被它要防的东西拆了。
+_AGENT_STATE_DIRNAMES = {".guardian"}
+
 
 
 def sensitive_target(path: "Path | str") -> Optional[str]:
     """命中敏感目标返回原因串，否则 None。
 
-    用于文件写/删/移 与 终端命令的前置拦截。注意：这是"已知高价值目标"清单，
+    用于文件写/删/移 与 终端命令的前置拦截。挡两类东西：用户的凭据/自启动入口，
+    以及 agent 自己的回滚快照目录。注意：这是"已知高价值目标"清单，
     不是完备边界——真正的隔离仍需容器/低权限账户（见 README 部署说明）。
     """
     raw = str(path).replace("\\", "/")
@@ -75,6 +81,9 @@ def sensitive_target(path: "Path | str") -> Optional[str]:
 
     if name in _SENSITIVE_BASENAMES:
         return f"敏感文件（凭据/启动脚本）: {name}"
+    if _AGENT_STATE_DIRNAMES & set(parts):
+        return "Agent 自身的回滚快照目录（改它等于拆掉回滚安全网）"
+
     if name.endswith(_SENSITIVE_SUFFIXES):
         return f"私钥/证书文件: {name}"
     for d in _SENSITIVE_DIRNAMES:

@@ -904,13 +904,26 @@ class ExecutionLayer:
             "instruction": "请修正输出后重试"
         }
 
-    def _rollback_current_snapshot(self, snapshot_id: Optional[str]) -> None:
-        """熔断回滚：仅回滚本轮创建的快照（防止回滚到过期快照破坏无关修改）"""
-        if self.guardian and snapshot_id:
-            try:
-                self.guardian.rollback(snapshot_id)
-            except Exception:
-                pass
+    def _rollback_current_snapshot(self, snapshot_id: Optional[str]) -> bool:
+        """熔断回滚：仅回滚本轮创建的快照（防止回滚到过期快照破坏无关修改）
+
+        返回是否真的回滚成功。这里不抛异常——调用点正在处理一次守门违规，
+        抛出会把原始违规信息盖掉。但也不能静默：回滚失败意味着违规产生的写入
+        还留在磁盘上，用户必须知道，否则"已回滚"是个假承诺。
+        """
+        if not (self.guardian and snapshot_id):
+            return False
+        try:
+            ok = self.guardian.rollback(snapshot_id)
+            if not ok:
+                print(f"警告: 快照 {snapshot_id} 回滚未完成，改动仍在磁盘上，"
+                      f"备份见 .guardian/rollback_backups/", file=sys.stderr)
+            return ok
+        except Exception as e:
+            print(f"警告: 快照 {snapshot_id} 回滚失败（{e}），改动仍在磁盘上，请手动检查",
+                  file=sys.stderr)
+            return False
+
 
     def _gate_code_execute(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         """code_execute 安全闸门：诱饵验证 + AST 行为检测（work.py）"""

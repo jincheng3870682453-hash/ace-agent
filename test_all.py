@@ -891,6 +891,30 @@ check("file_move 拒绝覆盖 ~/.ai_code.json", r["status"] == "403", r.get("mes
 r = run_agent(el_h, "terminal_view", command=f'cat "{Path.home() / ".ai_code.json"}"')
 check("terminal_view 拒绝读凭据文件（readonly 也拿不到 API key；先命中越界，confine_files=False 时由 sensitive_target 兜底）",
       r["status"] == "403", r.get("message"))
+# —— 回滚安全网自保：快照存在项目目录内，而项目目录正是 agent 可写的范围 ——
+# 不挡住 .guardian，agent 改一行 meta.json 就能让 verify_snapshot 失败，
+# 熔断回滚静默变空操作——安全网被它要防的东西拆了。
+check("sensitive_target 命中 .guardian 快照目录",
+      _sens("proj/.guardian/snapshots/x/meta.json")
+      and _sens("C:\\proj\\.guardian\\rollback_backups") is not None
+      and _sens("proj/guardian_notes.md") is None)
+_el_g = ExecutionLayer(project_root=str(mktemp()), permission_level="full")
+(_el_g.project_root / "app.py").write_text("orig = 1", encoding="utf-8")
+_r = run_agent(_el_g, "file_write", path="app.py", content="changed = 2")
+_sid = _r.get("snapshot_id")
+check("写入前确实创建了快照", _r["status"] == "SUCCESS" and bool(_sid), _r.get("message"))
+_r = run_agent(_el_g, "file_write",
+               path=f".guardian/snapshots/{_sid}/meta.json", content="{}")
+check("agent 改不了自己的快照元信息", _r["status"] == "403", _r.get("message"))
+_r = run_agent(_el_g, "file_delete",
+               path=f".guardian/snapshots/{_sid}/files/app.py")
+check("agent 删不了自己的快照内容", _r["status"] == "403", _r.get("message"))
+check("快照未被篡改，回滚真的能还原",
+      _el_g._rollback_current_snapshot(_sid)
+      and (_el_g.project_root / "app.py").read_text(encoding="utf-8") == "orig = 1")
+check("回滚失败返回 False 而非静默吞掉",
+      _el_g._rollback_current_snapshot("不存在的快照id") is False)
+
 # —— terminal_exec 逐次确认闸门：权限等级够也要人点头 ——
 r = run_agent(el_h, "terminal_exec", command="echo hi")
 check("terminal_exec 即使 full 权限也要逐次确认",

@@ -27,7 +27,7 @@ _TEXT_EXTENSIONS = {".py", ".txt", ".md", ".json", ".log", ".csv", ".ini", ".cfg
 _SEARCH_SKIP_DIRS = {".git", ".hg", ".svn", "__pycache__", "node_modules",
                      ".venv", "venv", ".idea", ".vscode", ".mypy_cache",
                      ".pytest_cache", "dist", "build", "site-packages",
-                     ".ace_shots", ".ace_images", ".guardian_snapshots"}
+                     ".ace_shots", ".ace_images", ".guardian"}
 _SEARCH_MAX_FILE_BYTES = 2_000_000   # 超过 2MB 视为非源码，跳过
 _SEARCH_MAX_FILES = 5_000            # 遍历文件数上限，防止指到巨大目录时卡死
 _SEARCH_MAX_LINE_CHARS = 300         # 单条匹配行截断长度（避免压缩后的长行吃满上下文）
