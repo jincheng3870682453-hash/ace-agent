@@ -51,9 +51,10 @@ from tools.base import repair_backslash_json  # noqa: E402
 from tools.registry import openai_tools  # noqa: E402
 
 
-SYSTEM_PROMPT_PATH = FOLDER / "agent_system_prompt_v7.md"
-SYSTEM_PROMPT_V8_PATH = FOLDER / "agent_system_prompt_v8.md"
-SYSTEM_PROMPT_TOOLS_PATH = FOLDER / "agent_system_prompt_tools.md"
+PROMPT_DIR = FOLDER / "prompts"
+SYSTEM_PROMPT_PATH = PROMPT_DIR / "agent_system_prompt_v7.md"
+SYSTEM_PROMPT_V8_PATH = PROMPT_DIR / "agent_system_prompt_v8.md"
+SYSTEM_PROMPT_TOOLS_PATH = PROMPT_DIR / "agent_system_prompt_tools.md"
 MAX_ROUNDS = 20
 
 

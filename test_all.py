@@ -228,7 +228,7 @@ print("[6] universal_document_parser —— 文档解析")
 # ============================================================
 from universal_document_parser import parse_document  # noqa: E402
 
-res = parse_document(FOLDER / "agent_system_prompt_v7.md")
+res = parse_document(FOLDER / "prompts" / "agent_system_prompt_v7.md")
 check("md 直接解析", res.success and res.method == "direct_text" and "系统身份层" in res.text)
 
 long_file = mktemp() / "long.txt"
@@ -1246,7 +1246,7 @@ check("agent_runner.TOOLS 与注册表一致",
       len(_AR_TOOLS))
 
 # 提示词是模型看到的第二份清单：漏登记的工具模型永远不会调
-_v8_prompt = (Path(__file__).parent / "agent_system_prompt_v8.md").read_text(encoding="utf-8")
+_v8_prompt = (Path(__file__).parent / "prompts" / "agent_system_prompt_v8.md").read_text(encoding="utf-8")
 _missing_in_prompt = [t["function"]["name"] for t in _oai()
                       if t["function"]["name"] not in _v8_prompt]
 check("暴露的工具都出现在 v8 提示词里（防提示词与注册表漂移）",
