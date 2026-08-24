@@ -4,6 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
 ![Tests](https://img.shields.io/badge/tests-357%20passing-brightgreen)
 ![Dependencies](https://img.shields.io/badge/core%20deps-zero-orange)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **一个把安全下沉到执行层的 AI 编码 Agent —— 模型只负责理解和输出，权限、沙箱、快照回滚全部由执行层裁决。**
 
@@ -22,6 +23,7 @@
 - [配置](#配置)
 - [项目结构](#项目结构)
 - [开发与测试](#开发与测试)
+- [许可](#许可)
 - [设计参考](#设计参考)
 
 ## 快速开始
@@ -274,6 +276,7 @@ ace-agent/
 ├── prompts/                    # 系统提示词：v7 完整版 · v8 精简版 · tools 原生调用版
 ├── test_all.py                 # 全模块端到端测试（357 项，纯 stdlib）
 ├── docs/ADR.md                 # 架构决策记录
+├── LICENSE                     # MIT
 ├── docker/                     # lite / standard / full 三档镜像 + 模型下载脚本
 └── .github/workflows/ci.yml    # CI：Python 3.10/3.11/3.12 编译检查 + 全量测试 + ruff
 ```
@@ -290,6 +293,10 @@ ruff check . --select E9,F63,F7,F82         # CI 用的同一套硬错误检查
 改动前请读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（环境 / 测试 / 风格 / 提交流程）。改了行为的话，把断言旧行为的用例一起改掉——不要只加新用例。
 
 Windows 提示：控制台 GBK 已做 UTF-8 兜底，但建议全局设 `PYTHONUTF8=1`。文档解析的增强依赖（python-docx / openpyxl / pdfplumber / pymupdf / pytesseract）按需装，见 `requirements.txt`；旧版 Office 格式（.doc/.xls/.ppt/.wps/.et）回退依赖系统级 LibreOffice 或 antiword。
+
+## 许可
+
+[MIT](LICENSE) © 2026 jincheng3870682453-hash
 
 ## 设计参考
 
