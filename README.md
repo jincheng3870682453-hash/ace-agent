@@ -1,7 +1,7 @@
 # ACE · AI Code Engine
 
 > **沙盒 AI Agent 执行层 + Claude Code 风格命令行终端**
-> 把「AI 只管执行，安全交给执行层」的哲学落地成一套可上线的工程：五层网关、诱饵验证、AST 熔断、物理快照回滚、SimHash 记忆、POC 报告，外加一个带登录页、斜杠补全、一键切提供商的全功能终端。
+> 把「AI 只管执行，安全交给执行层」的哲学落地成一套可上线的工程：意图/守门/飞轮网关、诱饵验证、AST 熔断、物理快照回滚、SimHash 记忆、POC 报告，外加一个带登录页、斜杠补全、一键切提供商的全功能终端。
 
 | 状态 | 版本 | 测试 |
 |---|---|---|
@@ -46,10 +46,9 @@ flowchart TB
     subgraph LOOP["交互循环（agent_runner.py）"]
         C["LLM ↔ 执行层 多轮闭环<br/>错误自动回喂模型修正"]
     end
-    subgraph GW["五层网关（gateway_v2.py）"]
+    subgraph GW["网关（gateway_v2/）"]
         L1["L1 意图识别"]
         L2["L2 Skill 推荐"]
-        L3["L3 模型适配<br/>OpenAI / Anthropic 兼容"]
         L4["L4 本能守门 · 8 规则"]
         L5["L5 反馈飞轮（SFT 数据）"]
     end
@@ -78,7 +77,7 @@ flowchart TB
     L -->|"1. 进入聊天"| R
     L -->|"2/3. 配置/切提供商"| P
     R --> C
-    C <--> L3
+    C --> L1
     C --> PARSE
     PARSE --> PERM
     PERM --> GATE
@@ -99,7 +98,7 @@ flowchart TB
 |---|---|---|
 | 用户层 | `ai_code.py` | 登录页、聊天 REPL、斜杠命令、提供商切换（纯终端，编辑器无关） |
 | 交互循环 | `agent_runner.py` | LLM ↔ 执行层多轮闭环；格式错误/守门/诱饵自动回喂模型修正，最多 20 轮 |
-| 模型网关 | `gateway_v2/` | L1 意图 → L2 技能 → L3 模型（OpenAI/Anthropic 双协议）→ L4 守门（8 规则）→ L5 飞轮（包结构分层） |
+| 模型网关 | `gateway_v2/` | L1 意图 → L2 技能 → L4 守门（8 规则）→ L5 飞轮（包结构分层） |
 | 执行层 | `execution_layer.py` | 协议解析、三级权限裁决、诱饵/AST 闸门、工具执行、快照与守门串联 |
 | 支撑模块 | `work.py` / `guardian.py` / `Archive.py` / `Nuwa.py` / 解析器 | 行为检测、快照回滚、记忆、报告、文档解析 |
 
@@ -114,7 +113,7 @@ flowchart TB
 | `execution_layer.py` | 执行层主入口：协议解析、权限、安全闸门、Plan Mode、权限申请（工具执行已拆到 `tools/`） | ✅ |
 | `tools/` | 工具执行器包：`registry`（工具唯一声明处）/ `file_tools` / `code_tools` / `web_tools` / `db_tools` / `notify_tools` / `parse_tools` | ✅ |
 
-| `gateway_v2/` | L1-L5 五层网关包：`intent.py`（L1/L2）· `model.py`（L3）· `guard.py`（L4）· `flywheel.py`（L5） | ✅ |
+| `gateway_v2/` | 网关包：`intent.py`（L1/L2）· `guard.py`（L4）· `flywheel.py`（L5） | ✅ |
 | `work.py` | 诱饵工厂（5 种语义诱饵）+ ASTDetector（6 规则）+ BehaviorConstraint | ✅ |
 | `guardian.py` | 物理快照回滚：自动快照、完整性预检、HMAC 签名、自动清理 | ✅ |
 | `Archive.py` | SimHash 记忆引擎：主题切换、短输入保护、催促加权、会话隔离 | ✅ |
@@ -247,7 +246,6 @@ config = {
     "session_id": "会话标识",                   # Archive 记忆按会话隔离
     "bait": {"enabled": True, "frequency": 0}, # 诱饵验证（0 = 每任务一次）
     "guard": {"rules": {"no_hardcoded_secrets": False}},  # 关闭某条守门规则
-    "model_callback": fn,   # L3 接入你自己的 LLM（或 base_url + api_key）
     "email_smtp": {"host": "smtp.qq.com", "port": 587,
                    "user": "you@qq.com", "password": "授权码",
                    "use_tls": True},   # notify_send email 渠道（缺省时返回 501）

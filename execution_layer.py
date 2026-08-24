@@ -4,7 +4,7 @@
 execution_layer.py —— Agent 执行层（完整版）
 
 串联 Word 体系 V1+V2：
-  · gateway_v2.py  → L1-L5 五层网关
+  · gateway_v2.py  → L1/L2/L4/L5 网关
   · work.py        → 诱饵 + AST 检测
   · guardian.py    → 物理快照回滚
   · Archive.py     → SimHash 记忆注入

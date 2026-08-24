@@ -37,9 +37,8 @@ python test_all.py
 ai_code.py                     ACE CLI（登录页/REPL/斜杠命令/@ 快捷方式）
 agent_runner.py                参考引擎（LLM + 执行层循环，支持 --tools）
 execution_layer.py             执行层（协议解析/权限/工具执行/Plan Mode/权限申请）
-gateway_v2/                    L1-L5 五层网关包
+gateway_v2/                    网关包（L1/L2/L4/L5）
   intent.py                    L1 意图 + L2 技能推荐
-  model.py                     L3 模型适配
   guard.py                     L4 本能守门
   flywheel.py                  L5 反馈飞轮
 work.py                        诱饵工厂 + AST 检测

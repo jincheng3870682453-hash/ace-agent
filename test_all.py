@@ -4,7 +4,7 @@
 test_all.py —— ai angent 全模块端到端测试（纯 stdlib，无需 pytest）
 
 覆盖：
-  1. gateway_v2  五层网关（L1 意图 / L2 技能 / L4 守门 8 规则 / L5 飞轮）
+  1. gateway_v2  网关（L1 意图 / L2 技能 / L4 守门 8 规则 / L5 飞轮）
   2. work        诱饵工厂（5 种诱饵注入/验证）+ AST 行为检测（6 规则）
   3. guardian    物理快照回滚（预检/备份/恢复/清理）
   4. Archive     SimHash 记忆（短输入保护/主题切换/催促权重/召回）
@@ -76,19 +76,21 @@ def run_confirmed(el, tool: str, user: str = "测试输入", **params):
 
 
 # ============================================================
-print("[1] gateway_v2 —— L1-L5 五层网关")
+print("[1] gateway_v2 —— L1/L2/L4/L5 四层网关")
 # ============================================================
 from gateway_v2 import WordGateway, GuardViolation, Intent  # noqa: E402
 
 import gateway_v2.flywheel  # noqa: E402
 import gateway_v2.guard  # noqa: E402
 import gateway_v2.intent  # noqa: E402
-import gateway_v2.model  # noqa: E402
 check("gateway 包分层模块可导入",
       gateway_v2.intent.Intent is Intent
       and gateway_v2.guard.InstinctGuard is not None
-      and gateway_v2.model.ModelAdapter is not None
       and gateway_v2.flywheel.Flywheel is not None)
+check("L3 模型适配层已移除（模型调用只留 ai_code.ModelClient 一处）",
+      not hasattr(gateway_v2, "ModelAdapter")
+      and not (Path(gateway_v2.__file__).parent / "model.py").exists())
+
 
 intent = Intent(raw_input="帮我写一段 python 代码，处理数据")
 check("L1 意图识别 coding", intent.intent == "coding", intent.to_dict())
