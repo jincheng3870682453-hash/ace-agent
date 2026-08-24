@@ -54,12 +54,13 @@ FOLDER = Path(__file__).resolve().parent
 sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
-from agent_runner import (ERROR_STATUSES, PROMPT_EXEC_EXCEPTION,  # noqa: E402
-                          PROMPT_ERROR_RETRY, PROMPT_PLAN_APPROVED,
-                          PROMPT_TOOL_RESULT, ModelProvider, TOOLS,
-                          ask_yes_no, content_to_tool_protocol,
-                          final_reply_protocol, load_system_prompt,
-                          render_result, resolve_permission, resolve_plan,
+from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E402
+                          PROMPT_EXEC_EXCEPTION, PROMPT_ERROR_RETRY,
+                          PROMPT_PLAN_APPROVED, PROMPT_TOOL_RESULT,
+                          ModelProvider, TOOLS, ask_grant, ask_yes_no,
+                          content_to_tool_protocol, final_reply_protocol,
+                          load_system_prompt, render_result,
+                          resolve_permission, resolve_plan,
                           sanitize_plain_content, tool_calls_to_protocol)
 from i18n import set_language, t  # noqa: E402
 
@@ -1166,16 +1167,24 @@ class AgentCLI:
                 continue
 
             if result["status"] == "PERMISSION_REQUEST":
-                print(c("yellow", "\n" + t("perm_request_title",
-                                           tool=result.get("tool"))))
+                tool_name = result.get("tool")
+                print(c("yellow", "\n" + t("perm_request_title", tool=tool_name)))
                 if result.get("reason"):
                     print(c("dim", t("perm_reason", reason=result["reason"])))
-                granted = ask_yes_no(c("yellow", t("perm_approve_q")),
+                decision = ask_grant(c("yellow", t("perm_approve_q")),
                                      lambda: print(c("dim", t("auto_deny_perm"))))
-                next_user = resolve_permission(self.el, granted)
-                print(c("green", t("perm_granted_msg")) if granted
-                      else c("yellow", t("perm_denied_msg")))
+                next_user = resolve_permission(self.el, decision)
+                if decision == GRANT_DENY:
+                    print(c("yellow", t("perm_denied_msg")))
+                elif tool_name in self.el.permission.session_grants:
+                    print(c("green", t("perm_granted_session_msg")))
+                else:
+                    # 选了"本会话"但被 grant_session 降级回单次（terminal_exec 这类）
+                    if decision == GRANT_SESSION:
+                        print(c("yellow", t("perm_session_refused", tool=tool_name)))
+                    print(c("green", t("perm_granted_msg")))
                 continue
+
 
 
             if result["status"] == "FINAL_REPLY":

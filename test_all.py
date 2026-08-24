@@ -1263,6 +1263,69 @@ check("CLI 不再内联复制状态机提示词（防再次漂移）", not _inli
 check("错误态清单单源且含 TOOL_BANNED",
       "TOOL_BANNED" in _ar.ERROR_STATUSES and _ac.ERROR_STATUSES is _ar.ERROR_STATUSES)
 
+# —— 会话级授权：让 readonly 默认可用，同时不给 terminal_exec 开后门 ——
+_pm = _PM("readonly")
+check("会话级授权不被消耗（连续多次都放行）",
+      _pm.grant_session("file_write") is True
+      and _pm.can_execute("file_write") and _pm.can_execute("file_write")
+      and _pm.can_execute("file_write"))
+check("单次授权仍然用后即焚",
+      (_pm.grant_temp("file_delete") or True)
+      and _pm.can_execute("file_delete") and not _pm.can_execute("file_delete"))
+_pm2 = _PM("full")
+check("terminal_exec 拒绝会话级授权，降级为单次",
+      _pm2.grant_session("terminal_exec") is False
+      and "terminal_exec" not in _pm2.session_grants
+      and "terminal_exec" in _pm2.temp_grants)
+check("get_status 暴露会话级授权清单",
+      _pm.get_status()["session_grants"] == ["file_write"])
+_pm.revoke_temp("file_write")
+check("revoke_temp 同时撤销会话级授权", not _pm.can_execute("file_write"))
+
+# ask_grant 三态解析（伪造 tty + input）
+import builtins as _bi  # noqa: E402
+
+
+class _FakeTTY:
+    @staticmethod
+    def isatty():
+        return True
+
+
+def _grant_with(answer: str) -> str:
+    _saved_in, _saved_input = _ar.sys.stdin, _bi.input
+    _ar.sys.stdin = _FakeTTY()
+    _bi.input = lambda *_a, **_k: answer
+    try:
+        return _ar.ask_grant("q: ")
+    finally:
+        _ar.sys.stdin, _bi.input = _saved_in, _saved_input
+
+
+check("ask_grant 解析 y/a/其他三态",
+      _grant_with("y") == _ar.GRANT_ONCE
+      and _grant_with("a") == _ar.GRANT_SESSION
+      and _grant_with("A") == _ar.GRANT_SESSION
+      and _grant_with("") == _ar.GRANT_DENY
+      and _grant_with("n") == _ar.GRANT_DENY
+      and _grant_with("随便") == _ar.GRANT_DENY)
+
+# 走完整链路：readonly 下 file_write 被拦 → 会话级授权 → 后续写入不再询问
+_el_s = ExecutionLayer(project_root=str(sandbox_root), permission_level="readonly",
+                       config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+r = run_agent(_el_s, "file_write", path="sess.txt", content="a")
+check("readonly 下写工具先被 403", r["status"] == "403", r.get("message"))
+_el_s.pending_permission = {"tool": "file_write", "reason": "需要写文件"}
+_el_s.grant_pending_permission(session=True)
+r = run_agent(_el_s, "file_write", path="sess.txt", content="b")
+r2 = run_agent(_el_s, "file_write", path="sess.txt", content="c")
+check("会话级授权后连续写入都不再弹权限申请",
+      r["status"] == "SUCCESS" and r2["status"] == "SUCCESS", (r["status"], r2["status"]))
+r = run_agent(_el_s, "terminal_exec", command="echo hi")
+check("会话级授权不外溢到 terminal_exec（仍逐次确认）",
+      r["status"] in ("PERMISSION_REQUEST", "403"), r.get("message"))
+
+
 
 # —— 只读代码检索 grep/glob：修复 readonly 默认下"只能 ls 和 cat"的退化 ——
 _search_root = mktemp()

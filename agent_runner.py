@@ -405,6 +405,11 @@ PROMPT_TOOL_RESULT = ("工具执行结果：\n{rendered}\n"
 ERROR_STATUSES = ("FORMAT_ERROR", "GUARD_VIOLATION", "BAIT_TRIGGERED",
                   "AST_FAILED", "403", "TOOL_BANNED")
 
+# 授权决策三态
+GRANT_ONCE = "once"
+GRANT_SESSION = "session"
+GRANT_DENY = "deny"
+
 
 def ask_yes_no(question: str, on_auto_deny=None) -> bool:
     """y/N 确认；非交互（管道 / CI / 无 tty）一律判否。
@@ -423,6 +428,30 @@ def ask_yes_no(question: str, on_auto_deny=None) -> bool:
         return False
 
 
+def ask_grant(question: str, on_auto_deny=None) -> str:
+    """授权三态确认：y 本次 / a 本会话 / 其他一律拒绝。
+
+    默认权限是 readonly，而临时授权用后即焚——如果只有"本次"一个选项，
+    一个 10 处编辑的任务就要弹 10 次窗、多跑 10 轮模型。"本会话"这一档是
+    为了让这个默认可用，而不是逼用户直接把等级升到 write 了事。
+    非交互同样 fail-close。
+    """
+    if not sys.stdin.isatty():
+        if on_auto_deny is not None:
+            on_auto_deny()
+        return GRANT_DENY
+    try:
+        answer = input(question).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return GRANT_DENY
+    if answer in ("a", "all", "always", "session"):
+        return GRANT_SESSION
+    if answer in ("y", "yes"):
+        return GRANT_ONCE
+    return GRANT_DENY
+
+
 def resolve_plan(el: "ExecutionLayer", approved: bool) -> str:
     """落定计划审批结果，返回下一轮要喂给模型的提示"""
     if approved:
@@ -432,13 +461,14 @@ def resolve_plan(el: "ExecutionLayer", approved: bool) -> str:
     return PROMPT_PLAN_REJECTED
 
 
-def resolve_permission(el: "ExecutionLayer", granted: bool) -> str:
-    """落定临时授权结果，返回下一轮要喂给模型的提示"""
-    if granted:
-        el.grant_pending_permission()
+def resolve_permission(el: "ExecutionLayer", decision: str) -> str:
+    """落定授权结果（once / session / deny），返回下一轮要喂给模型的提示"""
+    if decision in (GRANT_ONCE, GRANT_SESSION):
+        el.grant_pending_permission(session=decision == GRANT_SESSION)
         return PROMPT_PERM_GRANTED
     el.reject_pending_permission()
     return PROMPT_PERM_DENIED
+
 
 
 
@@ -488,8 +518,8 @@ def run_conversation(provider: ModelProvider, el: ExecutionLayer,
             print(f"\n🔑 Agent 请求临时授权工具: {result.get('tool')}")
             if result.get("reason"):
                 print(f"   原因: {result['reason']}")
-            next_prompt = resolve_permission(el, ask_yes_no(
-                "  是否临时授权？[y/N]: ",
+            next_prompt = resolve_permission(el, ask_grant(
+                "  是否授权？[y 本次 / a 本会话 / N 拒绝]: ",
                 lambda: print("  非交互模式：自动拒绝授权。")))
             continue
 

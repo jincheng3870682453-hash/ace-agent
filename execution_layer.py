@@ -305,10 +305,19 @@ class PermissionManager:
 
     def __init__(self, level: str = "readonly"):
         self.level = level
-        self.temp_grants: set = set()  # 临时授权（单次）
+        self.temp_grants: set = set()     # 临时授权（单次，用后即焚）
+        self.session_grants: set = set()  # 会话级授权（本次会话内长期有效）
 
     def can_execute(self, tool_name: str) -> bool:
-        """判断当前权限是否允许执行该工具（临时授权单次有效，用后即焚）"""
+        """判断当前权限是否允许执行该工具
+
+        三级来源，从宽到严：
+          1. session_grants —— 用户明确说过"本次会话都允许"，不消耗
+          2. temp_grants    —— 单次授权，命中即焚
+          3. 权限等级本身
+        """
+        if tool_name in self.session_grants:
+            return True
         if tool_name in self.temp_grants:
             self.temp_grants.discard(tool_name)
             return True
@@ -318,9 +327,23 @@ class PermissionManager:
         """临时授权单个工具（单次有效，使用一次后自动撤销）"""
         self.temp_grants.add(tool_name)
 
+    def grant_session(self, tool_name: str) -> bool:
+        """会话级授权：本次会话内不再重复询问。返回是否真的授予。
+
+        CONFIRM_TOOLS 里的工具（terminal_exec）拒绝会话级授权——它的危险命令
+        黑名单本身可被绕过，"逐次由人看一眼命令"就是它唯一有效的防线，一旦允许
+        一次性放行整场会话，这道防线等于没有。这里是唯一入口，所以在此处把门。
+        """
+        if tool_name in CONFIRM_TOOLS:
+            self.grant_temp(tool_name)
+            return False
+        self.session_grants.add(tool_name)
+        return True
+
     def revoke_temp(self, tool_name: str):
-        """撤销临时授权"""
+        """撤销临时授权（含会话级）"""
         self.temp_grants.discard(tool_name)
+        self.session_grants.discard(tool_name)
 
     def upgrade(self, new_level: str):
         """升级权限等级"""
@@ -333,7 +356,9 @@ class PermissionManager:
             "description": self.PERMISSION_LEVELS.get(self.level, {}).get("description", "未知"),
             "allowed_tools": sorted(self.allowed_tools(self.level)),
             "temp_grants": list(self.temp_grants),
+            "session_grants": sorted(self.session_grants),
         }
+
 
 
 # ============================================================
@@ -826,15 +851,24 @@ class ExecutionLayer:
             **route_meta,
         }
 
-    def grant_pending_permission(self) -> bool:
-        """用户批准权限申请：授予目标工具一次临时权限"""
+    def grant_pending_permission(self, session: bool = False) -> bool:
+        """用户批准权限申请
+
+        session=True 表示用户选了"本次会话都允许"：本会话内不再重复询问。
+        terminal_exec 这类 CONFIRM_TOOLS 会被 grant_session 降级回单次授权，
+        所以这里不需要额外判断。
+        """
         if not self.pending_permission:
             return False
         target = self.pending_permission.get("tool", "")
         if target:
-            self.permission.grant_temp(target)
+            if session:
+                self.permission.grant_session(target)
+            else:
+                self.permission.grant_temp(target)
         self.pending_permission = None
         return True
+
 
     def reject_pending_permission(self) -> bool:
         had = self.pending_permission is not None
