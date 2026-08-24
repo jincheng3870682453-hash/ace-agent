@@ -837,7 +837,13 @@ check("terminal_view 支持 Windows dir /b *.py",
 r = run_agent(el_h, "terminal_view", command="ls ~")
 check("terminal_view ls ~ 展开主目录", r["status"] == "SUCCESS", r.get("message"))
 r = run_agent(el_h, "terminal_view", command='cat "' + str(FOLDER / "README.md") + '"')
-check("terminal_view cat 绝对路径可读", r["status"] == "SUCCESS" and "ACE" in r["data"]["stdout"], r.get("message"))
+check("terminal_view cat 项目外绝对路径 403（与 file_read/grep 同口径）",
+      r["status"] == "403" and "路径越界" in r.get("message", ""), r.get("message"))
+r = run_agent(el_h, "terminal_view", command="cat a.py")
+check("terminal_view cat 项目内可读", r["status"] == "SUCCESS" and "x = 1" in r["data"]["stdout"], r.get("message"))
+r = run_agent(el_h, "terminal_view", command='tree "' + str(FOLDER) + '"')
+check("terminal_view 外部命令的项目外路径参数 403", r["status"] == "403", r.get("message"))
+
 if os.name == "nt":
     r = run_agent(el_h, "terminal_view", command="dir C:\\Users\\69215\\Desktop")
     check("terminal_view Windows 反斜杠路径", r["status"] == "SUCCESS", r.get("message"))
@@ -883,7 +889,7 @@ r = run_agent(el_h, "file_move", source="moved.txt",
               dest=str(Path.home() / ".ai_code.json"))
 check("file_move 拒绝覆盖 ~/.ai_code.json", r["status"] == "403", r.get("message"))
 r = run_agent(el_h, "terminal_view", command=f'cat "{Path.home() / ".ai_code.json"}"')
-check("terminal_view 拒绝读凭据文件（readonly 也拿不到 API key）",
+check("terminal_view 拒绝读凭据文件（readonly 也拿不到 API key；先命中越界，confine_files=False 时由 sensitive_target 兜底）",
       r["status"] == "403", r.get("message"))
 # —— terminal_exec 逐次确认闸门：权限等级够也要人点头 ——
 r = run_agent(el_h, "terminal_exec", command="echo hi")

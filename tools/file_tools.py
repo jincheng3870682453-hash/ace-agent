@@ -572,9 +572,31 @@ class FileTools:
             "truncated": truncated, "root": self._rel(root) or ".",
         })
 
+    # Windows 开关（tree /F、where /R）会被 os.path.isabs 误判成绝对路径
+    _NT_SWITCH_RE = re.compile(r"^/[A-Za-z]+$")
+
+    def _escapes_project(self, token: str) -> bool:
+        """这个命令行 token 是一个指向项目目录外的路径吗？不像路径、或在项目内则 False。"""
+        if token.startswith("-"):
+            return False
+        if os.name == "nt" and self._NT_SWITCH_RE.match(token):
+            return False
+        expanded = os.path.expanduser(token)
+        looks_like_path = (os.path.isabs(expanded)
+                           or re.match(r"^[a-zA-Z]:[\\/]", expanded)
+                           or ".." in Path(expanded).parts)
+        if not looks_like_path:
+            return False
+        return self._confined(Path(expanded)) is None
+
     def _exec_terminal_view(self, params: Dict) -> ExecutionResult:
 
-        """只读终端查看：白名单命令 + 无 shell 执行（修复：readonly 不再能执行任意命令）"""
+        """只读终端查看：白名单命令 + 无 shell 执行（修复：readonly 不再能执行任意命令）
+
+        越界口径：读"目录名单"允许越界，读"文件内容"不允许。目录名单泄露的是文件名，
+        文件内容泄露的是凭据本身，量级不同；ls 的越界是本文件 60-62 行记录的产品决定
+        （"帮我看看桌面"不该因为工具选择而失败），cat 的越界只是漏检。
+        """
         cmd = (params.get("command") or "").strip()
         if not cmd:
             # 小模型常漏 command 参数：缺省列出项目目录，避免 400 死循环
@@ -643,8 +665,15 @@ class FileTools:
             p = Path(os.path.expanduser(parts[1]))
             if not p.is_absolute():
                 p = self.project_root / p
-            # readonly 权限也能走到这里：必须挡住凭据文件，否则 ~/.ai_code.json
-            # 里的明文 API key 会被只读会话读走。
+            # 读文件内容一律限项目内，与 grep / file_read 同口径。这里以前只查
+            # sensitive_target，等于用黑名单当边界：名单外的项目外文件（别人的源码、
+            # 浏览器 profile、随手记的 token）readonly 会话照样读得走。
+            if self.confine_files and self._confined(p) is None:
+                return ExecutionResult(status="error", error_code="403",
+                                       message=f"路径越界：cat/type 只能读项目目录内的文件: {p}"
+                                               "（列目录可用 ls）")
+            # confine_files=False 时仍要挡住凭据文件，否则 ~/.ai_code.json 里的
+            # 明文 API key 会被只读会话读走。
             reason = sensitive_target(p)
             if reason:
                 return ExecutionResult(status="error", error_code="403",
@@ -682,6 +711,13 @@ class FileTools:
         elif base not in READ_ONLY_COMMANDS:
             return ExecutionResult(status="error", error_code="403",
                                    message=f"命令 '{base}' 不在 terminal_view 白名单中（只读工具）")
+        # 白名单挡的是"命令名"，挡不住"参数指向哪"：tree C:\\Users 会递归列出主目录，
+        # git diff --no-index A B 会直接打印两个项目外文件的内容。参数级检查在这里补。
+        if self.confine_files:
+            escaping = next((p for p in parts[1:] if self._escapes_project(p)), None)
+            if escaping is not None:
+                return ExecutionResult(status="error", error_code="403",
+                                       message=f"路径越界：terminal_view 的路径参数必须在项目目录内: {escaping}")
         import subprocess
         try:
             result = subprocess.run(parts, capture_output=True, text=True, timeout=30,

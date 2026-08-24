@@ -219,7 +219,8 @@ ace --install-ui                # 一键安装 / 实时补全依赖（多镜像�
 - `terminal_view` 白名单只读命令（内建实现 + 元字符拦截 + 版本参数严格校验），readonly 不再能执行任意 shell
 - `code_execute` 策略层沙箱：AST 拦截危险模块（os/subprocess/socket/pickle/importlib...）、内建逃逸链（`__builtins__`/`__class__`）、open 全禁 → 环境变量清洗 → 临时目录 + 30s 超时
 - `math_calc` 白名单 AST 求值：仅纯算术，幂运算限 100^1000，杜绝 eval 逃逸与指数 DoS
-- 路径穿越防护：文件工具与 ls/cat 默认限制在项目目录内（`confine_files`，含跨盘符检查）；`grep`/`glob` 无条件限制在项目目录内（只读检索不放开项目外，避免全盘扫凭据）
+- 路径穿越防护：文件工具默认限制在项目目录内（`confine_files`，含跨盘符检查）；`grep`/`glob` 无条件限制在项目目录内（只读检索不放开项目外，避免全盘扫凭据）
+- 读越界的口径按"泄露什么"分档：**读文件内容一律限项目内**（`cat`/`type`、外部命令的路径参数、`file_read` 均返回 403），**列目录名单允许越界**（`ls`/`dir`、`file_read` 指向目录时），因为前者泄露的是凭据本身，后者只是文件名
 
 - `api_get/api_post` 仅 http/https，且 **DNS 解析后拦截内网/回环/链路本地地址**（防 SSRF）；未实现工具返回 501 而非假成功
 - 快照 HMAC-SHA256 签名（`signing_key`）防元信息伪造；快照上限自动清理防备份爆炸
