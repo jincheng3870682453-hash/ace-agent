@@ -62,13 +62,13 @@ docker compose -f docker/docker-compose.yml up vlm-server ace-lite
 
 ## VLM 工具使用
 
-内置 VLM 后，ACE 会多一个 `vision_analyze` 工具：
-
-```json
-{"tool": "vision_analyze", "image_path": "screenshot.png", "prompt": "描述这张图片"}
-```
-
-Agent 会自动调用本地 Qwen2.5-VL-3B 分析图片，无需联网。
+> **尚未实现。** `vision_analyze` 工具目前不在代码里 —— 它没有注册到 `tools/registry.py`，
+> 也没有对应的 `_exec_` 实现。上面的 vlm-server 只是把模型服务跑起来，Agent 还调用不到它。
+> 之前 `docker/vision_tool_patch.py` 里放着一份手工粘贴用的代码片段，因为从未被应用、
+> 且不是合法的 Python 模块（会让 CI 语法检查失败），已删除。
+>
+> 要接上，需要：注册 ToolSpec（读工具权限档）、在 ToolExecutor 里加 `_exec_vision_analyze`
+> 分支、用 `urllib` 而非 `requests` 调 `${VLM_URL}/chat/completions`（本项目核心零依赖）。
 
 ## 体积优化技巧
 

@@ -621,9 +621,12 @@ class FileTools:
 
         # —— 原生实现的只读内建命令（完全不经过 shell）——
         if base in ("ls", "dir"):
-            # 忽略常见列表参数（-l/-a/-la/--all、Windows 的 /b 等），支持 ~ 展开
+            # 忽略常见列表参数（-l/-a/-la/--all、Windows 的 /b 等），支持 ~ 展开。
+            # /b 这类开关只在 Windows 存在；POSIX 下 "/" 开头是绝对路径，不能当开关丢掉，
+            # 否则 ls /etc 会静默退化成 ls 项目根目录（曾导致不存在的目录返回 SUCCESS）。
             target_args = [p for p in parts[1:]
-                           if not p.startswith("-") and not p.startswith("/")]
+                           if not p.startswith("-")
+                           and not (os.name == "nt" and self._NT_SWITCH_RE.match(p))]
             target = target_args[0] if target_args else "."
             target = os.path.expanduser(target)
             # 支持通配符：ls *.py / dir /b *.py
@@ -718,7 +721,6 @@ class FileTools:
             if escaping is not None:
                 return ExecutionResult(status="error", error_code="403",
                                        message=f"路径越界：terminal_view 的路径参数必须在项目目录内: {escaping}")
-        import subprocess
         try:
             result = subprocess.run(parts, capture_output=True, text=True, timeout=30,
                                     cwd=str(self.project_root), shell=False,
@@ -786,7 +788,6 @@ class FileTools:
         if denied:
             return ExecutionResult(status="error", error_code="403",
                                    message=f"{denied}，已拦截。如确需执行请在终端手动操作。")
-        import subprocess
         try:
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                                     timeout=30, cwd=str(self.project_root),
@@ -830,7 +831,6 @@ class FileTools:
             return ExecutionResult(status="success", data={
                 "path": str(p), "opened": False, "link": p.as_uri(),
                 "hint": "已生成可点击链接，用户点击后即可全屏查看"})
-        import subprocess
         try:
             if os.name == "nt":
                 os.startfile(str(p))
@@ -876,7 +876,6 @@ class FileTools:
             return ExecutionResult(status="success", data={
                 "path": str(p), "opened": True, "is_dir": True,
                 "hint": "已在系统文件管理器中打开该文件夹"})
-        import subprocess
         code = shutil.which("code")
         if code:
             try:
