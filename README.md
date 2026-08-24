@@ -306,7 +306,8 @@ python demo/record_demo.py                  # 重录 README 顶部的演示动�
 python demo/record_demo.py --check          # 只校验动画是否还和当前输出一致
 ```
 
-测试是单文件、纯 stdlib、无框架的端到端断言，`check(名称, 条件, 详情)` 逐条打印。用例总数随平台浮动（Windows 上 357 项，Linux 上 346 项——差额是 Windows 专有的路径/编码用例），所以这里不写死一个数字。CI 在 Python 3.10 / 3.11 / 3.12 三个版本上跑编译检查 + 全量测试 + ruff。
+测试是单文件、纯 stdlib、无框架的端到端断言，`check(名称, 条件, 详情)` 逐条打印。用例总数随平台浮动（Windows 上比 Linux 多十来项，差额是 Windows 专有的路径/编码用例），所以这里不写死一个数字——看退出码和失败列表就够了。CI 在 Python 3.10 / 3.11 / 3.12 三个版本上跑编译检查 + 全量测试 + ruff。
+
 
 
 改动前请读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（环境 / 测试 / 风格 / 提交流程）。改了行为的话，把断言旧行为的用例一起改掉——不要只加新用例。

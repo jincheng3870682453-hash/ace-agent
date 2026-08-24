@@ -574,6 +574,10 @@ class FileTools:
 
     # Windows 开关（tree /F、where /R）会被 os.path.isabs 误判成绝对路径
     _NT_SWITCH_RE = re.compile(r"^/[A-Za-z]+$")
+    # DOS 版 dir 的开关白名单。用白名单而不是 "^/字母+$"：后者会把 Linux 上的
+    # `dir /tmp` 当成开关吃掉。单字母开关可带 :参数（/a:d、/o:-s）。
+    _DOS_DIR_SWITCH_RE = re.compile(r"^/[bsaopwdlnqrtxc4](?:[:\-]\w+)?$", re.IGNORECASE)
+
 
     def _escapes_project(self, token: str) -> bool:
         """这个命令行 token 是一个指向项目目录外的路径吗？不像路径、或在项目内则 False。"""
@@ -621,12 +625,16 @@ class FileTools:
 
         # —— 原生实现的只读内建命令（完全不经过 shell）——
         if base in ("ls", "dir"):
-            # 忽略常见列表参数（-l/-a/-la/--all、Windows 的 /b 等），支持 ~ 展开。
-            # /b 这类开关只在 Windows 存在；POSIX 下 "/" 开头是绝对路径，不能当开关丢掉，
-            # 否则 ls /etc 会静默退化成 ls 项目根目录（曾导致不存在的目录返回 SUCCESS）。
+            # 忽略常见列表参数（ls 的 -l/-a/--all、dir 的 /b 等），支持 ~ 展开。
+            # "/x" 是不是开关取决于命令方言、而不是当前系统：dir 是 DOS 风格，/b 是开关；
+            # ls 是 POSIX 风格，"/" 开头就是绝对路径。按系统判会两头都错 ——
+            # 之前按 "只要以 / 开头就丢掉" 处理，POSIX 上 ls /etc 会静默退化成 ls 项目根目录；
+            # 改成按系统判又会让 Linux 上的 dir /b 把 /b 当成目录去列。
+            dos_dialect = base == "dir"
             target_args = [p for p in parts[1:]
                            if not p.startswith("-")
-                           and not (os.name == "nt" and self._NT_SWITCH_RE.match(p))]
+                           and not (dos_dialect and self._DOS_DIR_SWITCH_RE.match(p))]
+
             target = target_args[0] if target_args else "."
             target = os.path.expanduser(target)
             # 支持通配符：ls *.py / dir /b *.py

@@ -834,6 +834,20 @@ check("terminal_view 支持通配符 ls *.py",
 r = run_agent(el_h, "terminal_view", command="dir /b *.py")
 check("terminal_view 支持 Windows dir /b *.py",
       r["status"] == "SUCCESS" and "a.py" in r["data"]["stdout"], r.get("message"))
+# "/x" 是开关还是路径，看命令方言而不是看当前系统：dir 的 /b 永远是开关，
+# ls 的 "/tmp" 永远是路径。这两条断言在 Windows 和 Linux 上结论都一样，
+# 挡住"按 os.name 判断"这类会在另一个平台上翻车的写法。
+from tools.file_tools import FileTools as _FT  # noqa: E402
+_dos_sw = _FT._DOS_DIR_SWITCH_RE
+
+
+check("dir 开关白名单只认单字母开关，不吃 /tmp 这种路径",
+      bool(_dos_sw.match("/b")) and bool(_dos_sw.match("/a:d"))
+      and not _dos_sw.match("/tmp") and not _dos_sw.match("/etc"))
+r = run_agent(el_h, "terminal_view", command="ls /b")
+check("ls 的 /b 按路径处理（POSIX 方言无开关），不存在则 404",
+      r["status"] == "404", r.get("message"))
+
 r = run_agent(el_h, "terminal_view", command="ls ~")
 check("terminal_view ls ~ 展开主目录", r["status"] == "SUCCESS", r.get("message"))
 r = run_agent(el_h, "terminal_view", command='cat "' + str(FOLDER / "README.md") + '"')
