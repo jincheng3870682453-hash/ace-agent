@@ -54,10 +54,13 @@ FOLDER = Path(__file__).resolve().parent
 sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
-from agent_runner import (ModelProvider, TOOLS, content_to_tool_protocol,  # noqa: E402
+from agent_runner import (ERROR_STATUSES, PROMPT_EXEC_EXCEPTION,  # noqa: E402
+                          PROMPT_ERROR_RETRY, PROMPT_PLAN_APPROVED,
+                          PROMPT_TOOL_RESULT, ModelProvider, TOOLS,
+                          ask_yes_no, content_to_tool_protocol,
                           final_reply_protocol, load_system_prompt,
-                          render_result, sanitize_plain_content,
-                          tool_calls_to_protocol)
+                          render_result, resolve_permission, resolve_plan,
+                          sanitize_plain_content, tool_calls_to_protocol)
 from i18n import set_language, t  # noqa: E402
 
 CONFIG_PATH = Path.home() / ".ai_code.json"
@@ -1121,7 +1124,7 @@ class AgentCLI:
                 if exec_spinner:
                     exec_spinner.stop(newline=True)
                 print(c("yellow", t("exec_layer_error", err=e)))
-                next_user = f"执行层抛出异常: {e}\n请调整输出格式后重新输出。"
+                next_user = PROMPT_EXEC_EXCEPTION.format(err=e)
                 continue
             if exec_spinner:
                 exec_spinner.stop(newline=True)
@@ -1150,31 +1153,16 @@ class AgentCLI:
 
             if result["status"] == "PLAN_PROPOSED":
                 print(c("cyan", f"\n  {result.get('plan') or result.get('message', '')}"))
-                if sys.stdin.isatty():
-                    try:
-                        answer = input(c("yellow", t("plan_approve_q"))).strip().lower()
-                    except (EOFError, KeyboardInterrupt):
-                        print()
-                        answer = "n"
-                else:
-                    # 非交互（管道/CI）下 fail-close：与下方 PERMISSION_REQUEST 口径一致。
-                    # 无人确认时自动批准计划等于把审批环节变成空过场。
-                    print(c("dim", t("auto_reject_plan")))
-                    answer = "n"
-                if answer in ("y", "yes"):
-                    self.el.approve_plan()
-                    print(c("green", t("plan_approved_msg")))
-                    next_user = ("计划已批准，不要再调用 plan_propose。"
-                                 "请直接按计划逐步执行，每步调用相应工具，最后给出总结。")
-                else:
-                    self.el.reject_plan()
-                    print(c("yellow", t("plan_rejected_msg")))
-                    next_user = "用户拒绝了该计划，请调整方案或直接回答。"
+                next_user = resolve_plan(self.el, ask_yes_no(
+                    c("yellow", t("plan_approve_q")),
+                    lambda: print(c("dim", t("auto_reject_plan")))))
+                print(c("green", t("plan_approved_msg"))
+                      if next_user == PROMPT_PLAN_APPROVED
+                      else c("yellow", t("plan_rejected_msg")))
                 continue
 
             if result["status"] == "PLAN_ALREADY_APPROVED":
-                next_user = ("计划已批准，不要再调用 plan_propose。"
-                             "请直接按计划逐步执行，每步调用相应工具，最后给出总结。")
+                next_user = PROMPT_PLAN_APPROVED
                 continue
 
             if result["status"] == "PERMISSION_REQUEST":
@@ -1182,24 +1170,13 @@ class AgentCLI:
                                            tool=result.get("tool"))))
                 if result.get("reason"):
                     print(c("dim", t("perm_reason", reason=result["reason"])))
-                if sys.stdin.isatty():
-                    try:
-                        answer = input(c("yellow", t("perm_approve_q"))).strip().lower()
-                    except (EOFError, KeyboardInterrupt):
-                        print()
-                        answer = "n"
-                else:
-                    print(c("dim", t("auto_deny_perm")))
-                    answer = "n"
-                if answer in ("y", "yes"):
-                    self.el.grant_pending_permission()
-                    print(c("green", t("perm_granted_msg")))
-                    next_user = "用户已授权，请重试刚才被拦截的工具。"
-                else:
-                    self.el.reject_pending_permission()
-                    print(c("yellow", t("perm_denied_msg")))
-                    next_user = "用户拒绝授权，请换一种不需要该工具的方式完成任务。"
+                granted = ask_yes_no(c("yellow", t("perm_approve_q")),
+                                     lambda: print(c("dim", t("auto_deny_perm"))))
+                next_user = resolve_permission(self.el, granted)
+                print(c("green", t("perm_granted_msg")) if granted
+                      else c("yellow", t("perm_denied_msg")))
                 continue
+
 
             if result["status"] == "FINAL_REPLY":
                 if disp["state"]["reply_printed"] < len(result["message"]):
@@ -1210,14 +1187,11 @@ class AgentCLI:
                                    sec=time.time() - t0)))
                 return
 
-            if result["status"] in ("FORMAT_ERROR", "GUARD_VIOLATION",
-                                    "BAIT_TRIGGERED", "AST_FAILED", "403",
-                                    "TOOL_BANNED"):
+            if result["status"] in ERROR_STATUSES:
                 self.session["violations"] += 1
                 print(c("red", t("error_line", status=result["status"],
                                  msg=result.get("message", "")[:80])))
-                next_user = (f"执行层返回了错误，请修正后继续：\n{render_result(result)}\n"
-                             f"注意：必须严格按 <INTERNAL>/<EXTERNAL> 格式输出。")
+                next_user = PROMPT_ERROR_RETRY.format(rendered=render_result(result))
             else:
                 self.session["tools"] += 1
                 status_mark = c("green", "✓") if result["status"] == "SUCCESS" else c("yellow", "⚠")
@@ -1239,8 +1213,7 @@ class AgentCLI:
                     data = result.get("data") or {}
                     self.client._mock_provider.mock_tool_result = (
                         data.get("datetime") or json.dumps(data, ensure_ascii=False))
-                next_user = (f"工具执行结果：\n{render_result(result)}\n"
-                             f"请根据结果继续（输出下一条工具调用，或最终回复）。")
+                next_user = PROMPT_TOOL_RESULT.format(rendered=render_result(result))
         print(c("yellow", t("max_rounds")))
 
     # ---------- 斜杠命令 ----------

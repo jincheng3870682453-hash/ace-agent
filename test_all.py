@@ -1228,6 +1228,42 @@ check("权限等级为现算并单调包含",
       _PM.allowed_tools("readonly") < _PM.allowed_tools("write") < _PM.allowed_tools("full")
       and "grep" in _PM.allowed_tools("readonly"))
 
+# —— 会话状态机单源：两个前端（CLI / agent_runner）必须共用同一套审批口径 ——
+# 曾经各写一份，结果 agent_runner 在非交互下自动批准计划、CLI 侧却是拒绝。
+import agent_runner as _ar  # noqa: E402
+import ai_code as _ac  # noqa: E402
+
+
+class _NoTTY:
+    """伪造非交互 stdin：isatty() 为假"""
+    @staticmethod
+    def isatty():
+        return False
+
+
+_saved_stdin = _ar.sys.stdin
+_ar.sys.stdin = _NoTTY()
+try:
+    _auto = []
+    _denied = _ar.ask_yes_no("不该被问到: ", lambda: _auto.append(1))
+finally:
+    _ar.sys.stdin = _saved_stdin
+check("非交互模式 ask_yes_no 一律 fail-close 拒绝", _denied is False and _auto == [1])
+
+check("CLI 与 agent_runner 共用同一个确认入口",
+      _ac.ask_yes_no is _ar.ask_yes_no
+      and _ac.resolve_plan is _ar.resolve_plan
+      and _ac.resolve_permission is _ar.resolve_permission)
+
+_loop_src = (Path(__file__).parent / "ai_code.py").read_text(encoding="utf-8")
+_inlined = [s for s in ("执行层返回了错误，请修正后继续", "工具执行结果",
+                        "计划已批准，不要再调用 plan_propose")
+            if s in _loop_src]
+check("CLI 不再内联复制状态机提示词（防再次漂移）", not _inlined, _inlined)
+check("错误态清单单源且含 TOOL_BANNED",
+      "TOOL_BANNED" in _ar.ERROR_STATUSES and _ac.ERROR_STATUSES is _ar.ERROR_STATUSES)
+
+
 # —— 只读代码检索 grep/glob：修复 readonly 默认下"只能 ls 和 cat"的退化 ——
 _search_root = mktemp()
 (_search_root / "pkg").mkdir()

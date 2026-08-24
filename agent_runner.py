@@ -380,6 +380,68 @@ def render_result(r: Dict) -> str:
     return json.dumps(d, ensure_ascii=False, default=str)
 
 
+# ============================================================
+# 会话状态机（run_conversation 与 ai_code.AgentCLI.converse 共用）
+#
+# 两个前端的呈现层差别很大（一个 emoji 直打，一个 i18n + spinner + 流式），
+# 但「执行层返回什么状态 → 下一轮该喂模型什么 / 该问用户什么」是同一套规则。
+# 这套规则以前在两处各写一份，已经漂移出真实后果：agent_runner 在非交互模式下
+# 自动批准计划（answer="y"），而 CLI 侧是 fail-close 拒绝——同一个二进制里
+# 两种安全口径。所以这里只抽「决策」，不抽「渲染」。
+# ============================================================
+
+PROMPT_PLAN_APPROVED = ("计划已批准，不要再调用 plan_propose。"
+                        "请直接按计划逐步执行，每步调用相应工具，最后给出总结。")
+PROMPT_PLAN_REJECTED = "用户拒绝了该计划，请调整方案或直接回答。"
+PROMPT_PERM_GRANTED = "用户已授权，请重试刚才被拦截的工具。"
+PROMPT_PERM_DENIED = "用户拒绝授权，请换一种不需要该工具的方式完成任务。"
+PROMPT_EXEC_EXCEPTION = "执行层抛出异常: {err}\n请调整输出格式后重新输出。"
+PROMPT_ERROR_RETRY = ("执行层返回了错误，请修正后继续：\n{rendered}\n"
+                      "注意：必须严格按 <INTERNAL>/<EXTERNAL> 格式输出。")
+PROMPT_TOOL_RESULT = ("工具执行结果：\n{rendered}\n"
+                      "请根据结果继续（输出下一条工具调用，或最终回复）。")
+
+# 需要回喂模型让它自行修正的错误态
+ERROR_STATUSES = ("FORMAT_ERROR", "GUARD_VIOLATION", "BAIT_TRIGGERED",
+                  "AST_FAILED", "403", "TOOL_BANNED")
+
+
+def ask_yes_no(question: str, on_auto_deny=None) -> bool:
+    """y/N 确认；非交互（管道 / CI / 无 tty）一律判否。
+
+    fail-close 是这里唯一正确的默认：没人能点头时自动批准，等于把审批环节
+    变成空过场。计划审批与临时授权都必须走这一个入口。
+    """
+    if not sys.stdin.isatty():
+        if on_auto_deny is not None:
+            on_auto_deny()
+        return False
+    try:
+        return input(question).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def resolve_plan(el: "ExecutionLayer", approved: bool) -> str:
+    """落定计划审批结果，返回下一轮要喂给模型的提示"""
+    if approved:
+        el.approve_plan()
+        return PROMPT_PLAN_APPROVED
+    el.reject_plan()
+    return PROMPT_PLAN_REJECTED
+
+
+def resolve_permission(el: "ExecutionLayer", granted: bool) -> str:
+    """落定临时授权结果，返回下一轮要喂给模型的提示"""
+    if granted:
+        el.grant_pending_permission()
+        return PROMPT_PERM_GRANTED
+    el.reject_pending_permission()
+    return PROMPT_PERM_DENIED
+
+
+
 def run_conversation(provider: ModelProvider, el: ExecutionLayer,
                      user_input: str, verbose: bool = False) -> None:
     print(f"\n🧑 用户: {user_input}")
@@ -403,7 +465,7 @@ def run_conversation(provider: ModelProvider, el: ExecutionLayer,
             result = el.process_agent_output(output, user_input)
         except Exception as e:
             print(f"\n⚠ 执行层异常: {e}（已要求模型调整输出格式）")
-            next_prompt = f"执行层抛出异常: {e}\n请调整输出格式后重新输出。"
+            next_prompt = PROMPT_EXEC_EXCEPTION.format(err=e)
             continue
         provider.history.append({"role": "user", "content": next_prompt})
         provider.history.append({"role": "assistant", "content": output})
@@ -413,69 +475,40 @@ def run_conversation(provider: ModelProvider, el: ExecutionLayer,
 
         if result["status"] == "PLAN_PROPOSED":
             print(f"\n📋 {result.get('plan') or result.get('message', '')}")
-            if sys.stdin.isatty():
-                try:
-                    answer = input("  批准该计划并执行？[y/N]: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    answer = "n"
-            else:
-                print("  非交互模式：自动批准计划。")
-                answer = "y"
-            if answer in ("y", "yes"):
-                el.approve_plan()
-                next_prompt = ("计划已批准，不要再调用 plan_propose。"
-                               "请直接按计划逐步执行，每步调用相应工具，最后给出总结。")
-            else:
-                el.reject_plan()
-                next_prompt = "用户拒绝了该计划，请调整方案或直接回答。"
+            next_prompt = resolve_plan(el, ask_yes_no(
+                "  批准该计划并执行？[y/N]: ",
+                lambda: print("  非交互模式：自动拒绝计划。")))
             continue
 
         if result["status"] == "PLAN_ALREADY_APPROVED":
-            next_prompt = ("计划已批准，不要再调用 plan_propose。"
-                           "请直接按计划逐步执行，每步调用相应工具，最后给出总结。")
+            next_prompt = PROMPT_PLAN_APPROVED
             continue
 
         if result["status"] == "PERMISSION_REQUEST":
             print(f"\n🔑 Agent 请求临时授权工具: {result.get('tool')}")
             if result.get("reason"):
                 print(f"   原因: {result['reason']}")
-            if sys.stdin.isatty():
-                try:
-                    answer = input("  是否临时授权？[y/N]: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    answer = "n"
-            else:
-                print("  非交互模式：自动拒绝授权。")
-                answer = "n"
-            if answer in ("y", "yes"):
-                el.grant_pending_permission()
-                next_prompt = "用户已授权，请重试刚才被拦截的工具。"
-            else:
-                el.reject_pending_permission()
-                next_prompt = "用户拒绝授权，请换一种不需要该工具的方式完成任务。"
+            next_prompt = resolve_permission(el, ask_yes_no(
+                "  是否临时授权？[y/N]: ",
+                lambda: print("  非交互模式：自动拒绝授权。")))
             continue
 
         if result["status"] == "FINAL_REPLY":
             print(f"\n🤖 Agent: {result['message']}")
             return
 
-        if result["status"] in ("FORMAT_ERROR", "GUARD_VIOLATION",
-                                "BAIT_TRIGGERED", "AST_FAILED", "403"):
+        if result["status"] in ERROR_STATUSES:
             # 把错误反馈给模型，让它修正后继续
-            next_prompt = (
-                f"执行层返回了错误，请修正后继续：\n{render_result(result)}\n"
-                f"注意：必须严格按 <INTERNAL>/<EXTERNAL> 格式输出。")
+            next_prompt = PROMPT_ERROR_RETRY.format(rendered=render_result(result))
             continue
 
         # 工具执行成功：结果回填模型，继续下一轮
         if provider.mode == "mock" and result["status"] == "SUCCESS":
             data = result.get("data") or {}
             provider.mock_tool_result = data.get("datetime") or json.dumps(data, ensure_ascii=False)
-        next_prompt = (f"工具执行结果：\n{render_result(result)}\n"
-                       f"请根据结果继续（输出下一条工具调用，或最终回复）。")
+        next_prompt = PROMPT_TOOL_RESULT.format(rendered=render_result(result))
     print("\n⚠️ 达到最大轮数，Agent 未给出最终回复。")
+
 
 
 def main() -> None:
