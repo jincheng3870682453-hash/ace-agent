@@ -112,6 +112,8 @@ READ_TOOLS: set = set()
 HIGH_RISK_TOOLS: set = set()
 # 控制类工具：由执行层直接处理（计划提议 / 权限申请），不走真实工具执行
 CONTROL_TOOLS: set = set()
+# 每次调用都需用户确认的工具：权限等级放行也不例外（见 ToolSpec.confirm）
+CONFIRM_TOOLS: set = set()
 
 # 参数报错时给模型的具体示例（小模型常漏参数，示例能显著提升修正成功率）
 TOOL_EXAMPLES = {}
@@ -127,12 +129,13 @@ def refresh_tool_sets() -> None:
     （见 PermissionManager.allowed_tools），所以这里无需再回填它。
     """
     from tools.registry import (PERM_HIGH_RISK, PERM_READ, PERM_WRITE,
-                               control_tool_names, names_with_permission,
-                               tool_examples)
+                               confirm_tool_names, control_tool_names,
+                               names_with_permission, tool_examples)
     for target, names in ((READ_TOOLS, names_with_permission(PERM_READ)),
                           (WRITE_TOOLS, names_with_permission(PERM_WRITE)),
                           (HIGH_RISK_TOOLS, names_with_permission(PERM_HIGH_RISK)),
-                          (CONTROL_TOOLS, control_tool_names())):
+                          (CONTROL_TOOLS, control_tool_names()),
+                          (CONFIRM_TOOLS, confirm_tool_names())):
         target.clear()
         target.update(names)
     TOOL_EXAMPLES.clear()
@@ -554,6 +557,26 @@ class ExecutionLayer:
             }
 
         # 5. 权限裁决（执行层说了算）
+        # 5.0 逐次确认闸门：CONFIRM_TOOLS 里的工具即使权限等级放行，也必须每次由人点头。
+        #     terminal_exec 属于这一类——它的危险命令黑名单可被引号 / 长选项 /
+        #     $HOME 展开 / PowerShell 别名 / python -c 绕过，策略层拦不住，最终防线是人。
+        #     临时授权用后即焚，所以"已在 temp_grants 里"= 用户刚刚已确认过本次调用，
+        #     不再重复问；等级本身不够时留给下面的 403 走常规 request_permission 流程。
+        if (tool_name in CONFIRM_TOOLS
+                and tool_name not in self.permission.temp_grants
+                and tool_name in self.permission.allowed_tools(self.permission.level)):
+            preview = str(tool_call.get("command") or tool_call.get("code") or "")
+            if len(preview) > 300:
+                preview = preview[:300] + " …（已截断）"
+            self.pending_permission = {"tool": tool_name, "reason": preview}
+            return {
+                "status": "PERMISSION_REQUEST",
+                "tool": tool_name,
+                "reason": preview,
+                "message": f"'{tool_name}' 需要用户逐次确认: {preview}",
+                "instruction": "等待用户确认结果，不要重复调用，也不要改用其他工具绕过确认",
+                **route_meta,
+            }
         if not self.permission.can_execute(tool_name):
             return {
                 "status": "403",

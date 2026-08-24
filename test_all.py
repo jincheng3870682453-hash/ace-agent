@@ -63,6 +63,18 @@ def run_agent(el, tool: str, user: str = "测试输入", **params):
     return el.process_agent_output(out, user)
 
 
+def run_confirmed(el, tool: str, user: str = "测试输入", **params):
+    """模拟「用户已点头确认」后的那一次调用。
+
+    CONFIRM_TOOLS（terminal_exec）即使权限等级放行也要逐次确认，真实链路是
+    PERMISSION_REQUEST → 用户 y → grant_temp → 模型重发。要测闸门背后的黑名单 /
+    守门 / 回滚逻辑就得先跨过这道闸，否则断言到的只是闸门自己。
+    """
+    el.permission.grant_temp(tool)
+    return run_agent(el, tool, user, **params)
+
+
+
 # ============================================================
 print("[1] gateway_v2 —— L1-L5 五层网关")
 # ============================================================
@@ -323,7 +335,7 @@ check("file_read 守门拦截", r["status"] == "GUARD_VIOLATION"
 check("读工具违规不回滚历史写入", (el_w.project_root / "snap_test.txt").read_text(encoding="utf-8") == "version-two")
 
 # 写工具违规 → 回滚本轮快照（用 && 而非 &：POSIX sh 下 & 是后台执行会产生竞态）
-r = run_agent(el_w, "terminal_exec", command='echo x > created.txt && echo api_key="abcdef1234567890"')
+r = run_confirmed(el_w, "terminal_exec", command='echo x > created.txt && echo api_key="abcdef1234567890"')
 check("写工具违规触发守门", r["status"] == "GUARD_VIOLATION"
       and r["rule"] == "no_hardcoded_secrets", r)
 check("违规自动回滚（仅本轮快照）", not (el_w.project_root / "created.txt").exists())
@@ -871,14 +883,18 @@ check("file_move 拒绝覆盖 ~/.ai_code.json", r["status"] == "403", r.get("mes
 r = run_agent(el_h, "terminal_view", command=f'cat "{Path.home() / ".ai_code.json"}"')
 check("terminal_view 拒绝读凭据文件（readonly 也拿不到 API key）",
       r["status"] == "403", r.get("message"))
-# —— terminal_exec 前置筛查：拦根删除/凭据，放行正常清理 ——
-r = run_agent(el_h, "terminal_exec", command="rm -rf /")
+# —— terminal_exec 逐次确认闸门：权限等级够也要人点头 ——
+r = run_agent(el_h, "terminal_exec", command="echo hi")
+check("terminal_exec 即使 full 权限也要逐次确认",
+      r["status"] == "PERMISSION_REQUEST" and r["tool"] == "terminal_exec", r.get("message"))
+# —— terminal_exec 前置筛查：拦根删除/凭据，放行正常清理（均先跨过确认闸）——
+r = run_confirmed(el_h, "terminal_exec", command="rm -rf /")
 check("terminal_exec 拦 rm -rf /", r["status"] == "403", r.get("message"))
-r = run_agent(el_h, "terminal_exec", command="type %USERPROFILE%\\.ai_code.json")
+r = run_confirmed(el_h, "terminal_exec", command="type %USERPROFILE%\\.ai_code.json")
 check("terminal_exec 拦读凭据文件", r["status"] == "403", r.get("message"))
-r = run_agent(el_h, "terminal_exec", command="git commit -m \"fix reboot bug\"")
+r = run_confirmed(el_h, "terminal_exec", command="git commit -m \"fix reboot bug\"")
 check("terminal_exec 不误伤含 reboot 的提交信息", r["status"] == "SUCCESS", r.get("message"))
-r = run_agent(el_h, "terminal_exec", command="rm -rf __no_such_build_dir__")
+r = run_confirmed(el_h, "terminal_exec", command="rm -rf __no_such_build_dir__")
 check("terminal_exec 放行普通目录清理", r["status"] == "SUCCESS", r.get("message"))
 # —— 沙箱黑名单补齐：os 的等价物与绕过 open() 的写入路径 ——
 r = run_agent(el_h, "code_execute", language="python", code="import nt\nnt.system('echo x')")

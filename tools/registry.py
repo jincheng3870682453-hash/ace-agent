@@ -30,6 +30,10 @@ class ToolSpec:
                     file_read/file_write/file_delete/file_move 共用 _exec_file_ops。
     control:        由执行层直接处理，不走真实工具执行（plan_propose / request_permission）。
     expose:         是否暴露给模型（function calling / 提示词清单）。
+    confirm:        每次调用都必须由用户确认，权限等级放行也不例外。
+                    用于 terminal_exec 这类"策略层拦不住"的工具：它的危险命令黑名单
+                    可被引号/长选项/变量展开/解释器旁路绕过，所以最终防线交给人。
+                    复用 PERMISSION_REQUEST 流程，临时授权用后即焚 → 天然逐次确认。
     """
     name: str
     permission: str
@@ -40,6 +44,7 @@ class ToolSpec:
     pass_tool_name: bool = False
     control: bool = False
     expose: bool = True
+    confirm: bool = False
 
 
 def _obj(properties: Dict, required: Optional[List[str]] = None) -> Dict:
@@ -166,9 +171,10 @@ TOOL_SPECS: List[ToolSpec] = [
     # —— 写入 ——
     ToolSpec(
         name="terminal_exec", permission=PERM_WRITE, handler="_exec_terminal_exec",
-        description="执行修改性 shell 命令（写入权限，自动快照）",
+        description="执行修改性 shell 命令（写入权限，自动快照；每次执行都需用户确认）",
         parameters=_obj({"command": {"type": "string"}}, ["command"]),
         example='{"tool":"terminal_exec","command":"mkdir test"}',
+        confirm=True,
     ),
     ToolSpec(
         name="str_replace", permission=PERM_WRITE, handler="_exec_str_replace",
@@ -285,6 +291,11 @@ def names_with_permission(permission: str) -> set:
 
 def control_tool_names() -> set:
     return {s.name for s in TOOL_SPECS if s.control}
+
+
+def confirm_tool_names() -> set:
+    """每次调用都需用户确认的工具（权限等级放行也不例外）"""
+    return {s.name for s in TOOL_SPECS if s.confirm}
 
 
 def tool_examples() -> Dict[str, str]:

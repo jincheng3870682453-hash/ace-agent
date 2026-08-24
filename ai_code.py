@@ -1651,7 +1651,7 @@ class AgentCLI:
         print()
         print(t("banner_model", desc=self.client.describe()))
         print(t("banner_permission",
-                perm=self.cfg.get("permission", "write"),
+                perm=self.cfg.get("permission", "readonly"),
                 root=self.cfg.get("project_root", ".")))
         if not self.cfg.get("api_key") and not self.client.mock:
             print(c("yellow", t("banner_missing_key")))
