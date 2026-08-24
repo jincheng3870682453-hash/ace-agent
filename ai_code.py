@@ -795,82 +795,11 @@ def _sanitize_display_text(text: str) -> str:
 # Agent CLI 主类
 # ============================================================
 
-class AgentCLI:
-    def __init__(self, cfg: Dict, mock: bool = False) -> None:
-        self.cfg = cfg
-        self.client = ModelClient(cfg, mock=mock)
-        self.max_history = int(cfg.get("max_history", 0) or 0)
-        self.lang = str(cfg.get("lang", "zh"))
-        set_language(self.lang)  # 界面语言跟随配置/@lang
-        self.skill = str(cfg.get("skill", "general"))
-        self.context_refs: List[str] = []
-        self.messages: List[Dict] = []
-        self.session = {"rounds": 0, "tools": 0, "violations": 0, "start": time.time()}
-        self._init_execution_layer()
+class _AtCommands:
+    """@ 快捷方式：@lang / @skill / @file / @folder / @refs
 
-    def _init_execution_layer(self) -> None:
-        self.el = ExecutionLayer(
-            project_root=self.cfg["project_root"],
-            permission_level=self.cfg["permission"],
-            config={
-                "bait": {"enabled": bool(self.cfg.get("bait", True)), "frequency": 0},
-                "sandbox_base": str(Path(self.cfg["project_root"]).resolve() / ".sandbox_tmp"),
-            },
-        )
-
-    @staticmethod
-    def _clickable_uri(path: str) -> str:
-        """路径 → file:// URI（Windows Terminal 等现代终端支持点击）"""
-        return "file:///" + Path(path).as_posix()
-
-    @staticmethod
-    def _print_clickables(result: Dict) -> None:
-        """把文件/截图/图片结果渲染成可点击链接：默认收起，用户点击才全屏查看"""
-        data = result.get("data")
-        if not isinstance(data, dict):
-            return
-        tool = result.get("tool")
-        candidates = []
-        if tool == "open_file":
-            candidates.append((t("click_open"), data.get("link") or data.get("path")))
-        elif tool in ("browser_screenshot", "image_generate"):
-            candidates.append((t("click_view"), data.get("image_path")))
-        for label, val in candidates:
-            if not val:
-                continue
-            val = str(val)
-            uri = val if val.startswith("file:///") else AgentCLI._clickable_uri(val)
-            if USE_COLOR:
-                click = f"\x1b]8;;{uri}\x1b\\{val}\x1b]8;;\x1b\\"
-            else:
-                click = val
-            print(c("dim", f"  🔗 {label}: {click}"))
-
-    # ---------- 对话循环 ----------
-
-    def _build_system_prompt(self) -> str:
-        """组装系统提示词：基础提示词 + 语言指令 + 技能 + 已引用文件/文件夹"""
-        base = load_system_prompt(tools_mode=bool(self.client.tools_ok))
-        parts = [base]
-        if self.lang != "zh":
-            parts.append(f"【语言指令】请始终使用 {LANG_NAMES.get(self.lang, self.lang)} 回答用户。")
-        parts.append(f"【工作目录】{os.path.abspath(self.cfg['project_root'])}。"
-                     f"文件操作请使用该目录下的相对路径或该绝对路径，不要臆造路径。")
-        # 用户环境：让模型知道"桌面/主目录"在哪，避免把工作目录当成用户桌面
-        _home = os.path.expanduser("~")
-        _desktop = os.path.join(_home, "Desktop")
-        if not os.path.isdir(_desktop):
-            _desktop = os.path.join(_home, "桌面")
-        parts.append(f"【用户环境】用户主目录: {_home}；用户桌面目录: {_desktop}。"
-                     f"当用户问'桌面/桌面上有什么/我的文件'等时，请列出 {_desktop} 的内容，"
-                     f"而不是工作目录；路径可用 ~ 展开（如 ls {os.path.join('~', 'Desktop')}）。")
-        skill = SKILLS.get(self.skill)
-        if skill and self.skill != "general":
-            parts.append(f"【当前技能】{skill['name']}：{skill['desc']}。"
-                         f"推荐工具：{', '.join(skill['tools'])}。")
-        if self.context_refs:
-            parts.append("【已引用上下文】\n" + "\n".join(self.context_refs))
-        return "\n\n".join(parts)
+    只负责解析 @ 输入并落到 self.context_refs / 配置上，不碰会话循环。
+    """
 
     # ---------- @ 快捷方式 ----------
 
@@ -978,252 +907,12 @@ class AgentCLI:
         for ref in self.context_refs:
             print(f"    {ref.splitlines()[0]}")
 
-    @staticmethod
-    def _make_display(tools_mode: bool = False,
-                      spinner: Optional["_Spinner"] = None) -> Dict:
-        """智能展示回调：隐藏 <INTERNAL> 内部思考，◈ 状态行实时反馈过程
 
-        状态流转：思考中… → 正在调用工具… → 回复正文流式输出
-        用户只会看到 EXTERNAL 的最终内容，内部推理不泄漏。
-        tools_mode=True 时模型直接输出纯文本（无 EXTERNAL 标签），流式内容本身就是回复。
-        spinner 提供动效：思考/工具阶段持续加点动画，回复正文出现时自动停掉。
-        """
-        st = {"state": "thinking", "reply_printed": 0}
+class _SlashCommands:
+    """斜杠命令表与各命令实现（/help /model /provider /open ...）
 
-        def on_delta(full: str) -> None:
-            state = "thinking"
-            has_protocol = "<INTERNAL>" in full or "<EXTERNAL>" in full
-            if has_protocol:
-                # 模型按协议输出：隐藏 INTERNAL 思考，只展示 EXTERNAL 内容
-                if "<EXTERNAL>" not in full:
-                    # INTERNAL 已到但 EXTERNAL 未到：继续等待，不泄漏任何思考片段
-                    st["state"] = state
-                    return
-                ext = full.split("<EXTERNAL>", 1)[1]
-                if "answer." in ext:
-                    after = ext.split("answer.", 1)[1]
-                    if after.lstrip().startswith("{"):
-                        state = "tool"
-                    else:
-                        state = "reply"
-                        if spinner is not None:
-                            spinner.stop()
-                        visible = after.lstrip()
-                        # 清理结尾 </EXTERNAL>（含残缺的 </EXTERNAL 无 > 变体）与裸 </ 残标签
-                        for _tag in ("</EXTERNAL>", "</EXTERNAL"):
-                            if _tag in visible:
-                                visible = visible.split(_tag)[0]
-                                break
-                        visible = re.sub(r"</?[A-Za-z]*$", "", visible)
-                        if len(visible) > st["reply_printed"]:
-                            if st["state"] != "reply":
-                                print()   # 状态行 → 正文换行
-                            delta = visible[st["reply_printed"]:]
-                            print(delta, end="", flush=True)
-                            st["reply_printed"] = len(visible)
-                        st["state"] = state
-                        return
-            elif tools_mode and full.strip():
-                stripped = full.strip()
-                # 工具调用 JSON 特征：含 name/tool/arguments 键 + {；
-                # 或 thinking 阶段以 ``` / { 开头（流式分片时第一个 delta
-                # 可能只有 ```json 和 {，还没出现 "name" 键，也要隐藏）
-                tool_like = ('"name"' in stripped or '"tool"' in stripped
-                             or '"arguments"' in stripped) and "{" in stripped
-                json_head = (st["state"] == "thinking"
-                             and (stripped.startswith("```") or stripped.startswith("{")))
-                if tool_like or json_head:
-                    state = "tool"
-                    if spinner is not None:
-                        spinner.set_label(t("calling_tool"))
-                    st["state"] = state
-                    return
-                # 原生工具模式：纯文本内容即最终回复（清洗思考标记后显示）
-                state = "reply"
-                if spinner is not None:
-                    spinner.stop()
-                if st["state"] != "reply":
-                    print()
-                visible = _sanitize_display_text(full)
-                delta = visible[st["reply_printed"]:]
-                if delta:
-                    print(delta, end="", flush=True)
-                    st["reply_printed"] = len(visible)
-                st["state"] = state
-                return
-            if state == "tool" and spinner is not None:
-                spinner.set_label(t("calling_tool"))
-            if spinner is None:
-                # 无 spinner（如测试禁用）时退化为静态状态行
-                if st["state"] == "reply":
-                    print()
-                label = (t("thinking") + "…" if state == "thinking"
-                         else t("calling_tool") + "…")
-                sys.stdout.write(f"\r◈ {label}   ")
-                sys.stdout.flush()
-            st["state"] = state
-
-        return {"state": st, "on_delta": on_delta}
-
-    def converse(self, user_input: str, echo_input: bool = True) -> None:
-        if echo_input:
-            # 单次对话（--input）没有终端回显，打印聊天标题
-            print(f"\n{c('magenta', '❯')} {user_input}")
-        else:
-            # 交互模式：输入已由终端回显，只留一个空行分隔，避免重复显示
-            print()
-        t0 = time.time()
-        # 记忆预注入：模型生成前把相关历史记忆放进 prompt（无记忆时原样返回）
-        next_user = self.el.prepare_context(user_input)
-        fail_streak = 0
-        for _round in range(1, MAX_ROUNDS + 1):
-            msgs = self.messages + [{"role": "user", "content": next_user}]
-            spinner = _Spinner(t("thinking"))
-            disp = self._make_display(tools_mode=bool(self.client.tools),
-                                      spinner=spinner)
-            spinner.start()
-            try:
-                # 基础提示词 + 语言/技能/引用上下文
-                system = self._build_system_prompt()
-                output = self.client.stream_generate(system, msgs,
-                                                     on_delta=disp["on_delta"])
-            except KeyboardInterrupt:
-                spinner.stop(newline=True)
-                print("\n" + t("interrupted"))
-                return
-            except Exception as e:
-                spinner.stop(newline=True)
-                hint = _model_error_hint(e)
-                print(c("red", "\n" + t("model_call_failed", err=e)
-                        + (f"\n  💡 {hint}" if hint else "")))
-                return
-            # 状态行/流式正文收尾换行
-            if disp["state"]["state"] in ("thinking", "tool"):
-                spinner.stop(newline=True)
-            elif disp["state"]["reply_printed"]:
-                spinner.stop()
-                print()
-            else:
-                spinner.stop()
-            self.messages = self.client.trim_messages(
-                msgs + [{"role": "assistant", "content": output}],
-                self.max_history)
-
-            # 工具执行阶段动画（仅当本轮确实是工具调用）
-            exec_spinner = (_Spinner(t("calling_tool"))
-                            if disp["state"]["state"] == "tool" else None)
-            if exec_spinner:
-                exec_spinner.start()
-            try:
-                result = self.el.process_agent_output(output, user_input)
-            except KeyboardInterrupt:
-                if exec_spinner:
-                    exec_spinner.stop(newline=True)
-                print("\n" + t("interrupted"))
-                return
-            except Exception as e:
-                if exec_spinner:
-                    exec_spinner.stop(newline=True)
-                print(c("yellow", t("exec_layer_error", err=e)))
-                next_user = PROMPT_EXEC_EXCEPTION.format(err=e)
-                continue
-            if exec_spinner:
-                exec_spinner.stop(newline=True)
-            self.session["rounds"] += 1
-
-            # 连续失败/无进展熔断：工具反复失败说明模型已死循环，不再浪费轮数。
-            # 查看类工具（terminal_view/file_read/search/browser_screenshot）成功不算进展，
-            # 防止模型靠反复 ls 假装干活、绕过熔断。
-            _status = result["status"]
-            _VIEW_TOOLS = {"terminal_view", "file_read", "search", "browser_screenshot"}
-            if _status == "FINAL_REPLY":
-                fail_streak = 0
-            elif _status == "SUCCESS":
-                if result.get("tool") in _VIEW_TOOLS:
-                    pass  # 查看类成功不重置（不视为实质进展）
-                else:
-                    fail_streak = 0
-            elif _status in ("PLAN_PROPOSED", "PLAN_ALREADY_APPROVED",
-                             "PERMISSION_REQUEST", "PLAN_PENDING"):
-                pass  # 计划/权限交互是正常流程，不计数也不重置
-            else:
-                fail_streak += 1
-                if fail_streak >= STALL_ABORT_ROUNDS:
-                    print(c("red", "\n" + t("stall_abort", n=fail_streak)))
-                    return
-
-            if result["status"] == "PLAN_PROPOSED":
-                print(c("cyan", f"\n  {result.get('plan') or result.get('message', '')}"))
-                next_user = resolve_plan(self.el, ask_yes_no(
-                    c("yellow", t("plan_approve_q")),
-                    lambda: print(c("dim", t("auto_reject_plan")))))
-                print(c("green", t("plan_approved_msg"))
-                      if next_user == PROMPT_PLAN_APPROVED
-                      else c("yellow", t("plan_rejected_msg")))
-                continue
-
-            if result["status"] == "PLAN_ALREADY_APPROVED":
-                next_user = PROMPT_PLAN_APPROVED
-                continue
-
-            if result["status"] == "PERMISSION_REQUEST":
-                tool_name = result.get("tool")
-                print(c("yellow", "\n" + t("perm_request_title", tool=tool_name)))
-                if result.get("reason"):
-                    print(c("dim", t("perm_reason", reason=result["reason"])))
-                decision = ask_grant(c("yellow", t("perm_approve_q")),
-                                     lambda: print(c("dim", t("auto_deny_perm"))))
-                next_user = resolve_permission(self.el, decision)
-                if decision == GRANT_DENY:
-                    print(c("yellow", t("perm_denied_msg")))
-                elif tool_name in self.el.permission.session_grants:
-                    print(c("green", t("perm_granted_session_msg")))
-                else:
-                    # 选了"本会话"但被 grant_session 降级回单次（terminal_exec 这类）
-                    if decision == GRANT_SESSION:
-                        print(c("yellow", t("perm_session_refused", tool=tool_name)))
-                    print(c("green", t("perm_granted_msg")))
-                continue
-
-
-
-            if result["status"] == "FINAL_REPLY":
-                if disp["state"]["reply_printed"] < len(result["message"]):
-                    # 兜底：流式展示未覆盖时补打完整回复
-                    print()
-                    print(result["message"], end="", flush=True)
-                print(c("green", t("done", round=_round,
-                                   sec=time.time() - t0)))
-                return
-
-            if result["status"] in ERROR_STATUSES:
-                self.session["violations"] += 1
-                print(c("red", t("error_line", status=result["status"],
-                                 msg=result.get("message", "")[:80])))
-                next_user = PROMPT_ERROR_RETRY.format(rendered=render_result(result))
-            else:
-                self.session["tools"] += 1
-                status_mark = c("green", "✓") if result["status"] == "SUCCESS" else c("yellow", "⚠")
-                line = t("tool_line", tool=result.get("tool"),
-                         mark=status_mark, status=result["status"])
-                if result["status"] == "SUCCESS":
-                    elapsed = result.get("elapsed")
-                    if isinstance(elapsed, (int, float)):
-                        line += c("dim", t("elapsed", sec=elapsed))
-                    if result.get("snapshot_id"):
-                        line += c("dim", t("snapshotted"))
-                print(line)
-                if result["status"] == "SUCCESS":
-                    self._print_clickables(result)
-                if result.get("memory_injected"):
-                    print(c("dim", t("memory_injected",
-                                     n=len(result["memory_injected"]))))
-                if self.client.mock and result["status"] == "SUCCESS":
-                    data = result.get("data") or {}
-                    self.client._mock_provider.mock_tool_result = (
-                        data.get("datetime") or json.dumps(data, ensure_ascii=False))
-                next_user = PROMPT_TOOL_RESULT.format(rendered=render_result(result))
-        print(c("yellow", t("max_rounds")))
+    COMMANDS 是命令名 → i18n 描述键的映射，补全器与 /help 都从它派生。
+    """
 
     # ---------- 斜杠命令 ----------
 
@@ -1566,6 +1255,13 @@ class AgentCLI:
         print(c("yellow", f"“{line.strip()}” 看起来是 ACE 的命令行参数/系统命令，不是发给 Agent 的话。"))
         print(c("dim", "  请先输入 exit 退出 ACE，再在 cmd 里直接运行它。"))
 
+
+class _LandingUI:
+    """登录页：ANSI 绘制 + 键盘导航 + 菜单动作
+
+    纯呈现与输入层，动作最终都委托回 AgentCLI 上的方法。
+    """
+
     # ---------- 登录页 / 首页（参考 AI-CLI 启动平台主菜单） ----------
 
     LANDING_ITEMS = [
@@ -1718,6 +1414,331 @@ class AgentCLI:
             elif key.isdigit() and 1 <= int(key) <= len(self.LANDING_ITEMS):
                 if self._run_landing_action(self.LANDING_ITEMS[int(key) - 1][2]):
                     return
+
+
+class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
+    def __init__(self, cfg: Dict, mock: bool = False) -> None:
+        self.cfg = cfg
+        self.client = ModelClient(cfg, mock=mock)
+        self.max_history = int(cfg.get("max_history", 0) or 0)
+        self.lang = str(cfg.get("lang", "zh"))
+        set_language(self.lang)  # 界面语言跟随配置/@lang
+        self.skill = str(cfg.get("skill", "general"))
+        self.context_refs: List[str] = []
+        self.messages: List[Dict] = []
+        self.session = {"rounds": 0, "tools": 0, "violations": 0, "start": time.time()}
+        self._init_execution_layer()
+
+    def _init_execution_layer(self) -> None:
+        self.el = ExecutionLayer(
+            project_root=self.cfg["project_root"],
+            permission_level=self.cfg["permission"],
+            config={
+                "bait": {"enabled": bool(self.cfg.get("bait", True)), "frequency": 0},
+                "sandbox_base": str(Path(self.cfg["project_root"]).resolve() / ".sandbox_tmp"),
+            },
+        )
+
+    @staticmethod
+    def _clickable_uri(path: str) -> str:
+        """路径 → file:// URI（Windows Terminal 等现代终端支持点击）"""
+        return "file:///" + Path(path).as_posix()
+
+    @staticmethod
+    def _print_clickables(result: Dict) -> None:
+        """把文件/截图/图片结果渲染成可点击链接：默认收起，用户点击才全屏查看"""
+        data = result.get("data")
+        if not isinstance(data, dict):
+            return
+        tool = result.get("tool")
+        candidates = []
+        if tool == "open_file":
+            candidates.append((t("click_open"), data.get("link") or data.get("path")))
+        elif tool in ("browser_screenshot", "image_generate"):
+            candidates.append((t("click_view"), data.get("image_path")))
+        for label, val in candidates:
+            if not val:
+                continue
+            val = str(val)
+            uri = val if val.startswith("file:///") else AgentCLI._clickable_uri(val)
+            if USE_COLOR:
+                click = f"\x1b]8;;{uri}\x1b\\{val}\x1b]8;;\x1b\\"
+            else:
+                click = val
+            print(c("dim", f"  🔗 {label}: {click}"))
+
+    # ---------- 对话循环 ----------
+
+    def _build_system_prompt(self) -> str:
+        """组装系统提示词：基础提示词 + 语言指令 + 技能 + 已引用文件/文件夹"""
+        base = load_system_prompt(tools_mode=bool(self.client.tools_ok))
+        parts = [base]
+        if self.lang != "zh":
+            parts.append(f"【语言指令】请始终使用 {LANG_NAMES.get(self.lang, self.lang)} 回答用户。")
+        parts.append(f"【工作目录】{os.path.abspath(self.cfg['project_root'])}。"
+                     f"文件操作请使用该目录下的相对路径或该绝对路径，不要臆造路径。")
+        # 用户环境：让模型知道"桌面/主目录"在哪，避免把工作目录当成用户桌面
+        _home = os.path.expanduser("~")
+        _desktop = os.path.join(_home, "Desktop")
+        if not os.path.isdir(_desktop):
+            _desktop = os.path.join(_home, "桌面")
+        parts.append(f"【用户环境】用户主目录: {_home}；用户桌面目录: {_desktop}。"
+                     f"当用户问'桌面/桌面上有什么/我的文件'等时，请列出 {_desktop} 的内容，"
+                     f"而不是工作目录；路径可用 ~ 展开（如 ls {os.path.join('~', 'Desktop')}）。")
+        skill = SKILLS.get(self.skill)
+        if skill and self.skill != "general":
+            parts.append(f"【当前技能】{skill['name']}：{skill['desc']}。"
+                         f"推荐工具：{', '.join(skill['tools'])}。")
+        if self.context_refs:
+            parts.append("【已引用上下文】\n" + "\n".join(self.context_refs))
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _make_display(tools_mode: bool = False,
+                      spinner: Optional["_Spinner"] = None) -> Dict:
+        """智能展示回调：隐藏 <INTERNAL> 内部思考，◈ 状态行实时反馈过程
+
+        状态流转：思考中… → 正在调用工具… → 回复正文流式输出
+        用户只会看到 EXTERNAL 的最终内容，内部推理不泄漏。
+        tools_mode=True 时模型直接输出纯文本（无 EXTERNAL 标签），流式内容本身就是回复。
+        spinner 提供动效：思考/工具阶段持续加点动画，回复正文出现时自动停掉。
+        """
+        st = {"state": "thinking", "reply_printed": 0}
+
+        def on_delta(full: str) -> None:
+            state = "thinking"
+            has_protocol = "<INTERNAL>" in full or "<EXTERNAL>" in full
+            if has_protocol:
+                # 模型按协议输出：隐藏 INTERNAL 思考，只展示 EXTERNAL 内容
+                if "<EXTERNAL>" not in full:
+                    # INTERNAL 已到但 EXTERNAL 未到：继续等待，不泄漏任何思考片段
+                    st["state"] = state
+                    return
+                ext = full.split("<EXTERNAL>", 1)[1]
+                if "answer." in ext:
+                    after = ext.split("answer.", 1)[1]
+                    if after.lstrip().startswith("{"):
+                        state = "tool"
+                    else:
+                        state = "reply"
+                        if spinner is not None:
+                            spinner.stop()
+                        visible = after.lstrip()
+                        # 清理结尾 </EXTERNAL>（含残缺的 </EXTERNAL 无 > 变体）与裸 </ 残标签
+                        for _tag in ("</EXTERNAL>", "</EXTERNAL"):
+                            if _tag in visible:
+                                visible = visible.split(_tag)[0]
+                                break
+                        visible = re.sub(r"</?[A-Za-z]*$", "", visible)
+                        if len(visible) > st["reply_printed"]:
+                            if st["state"] != "reply":
+                                print()   # 状态行 → 正文换行
+                            delta = visible[st["reply_printed"]:]
+                            print(delta, end="", flush=True)
+                            st["reply_printed"] = len(visible)
+                        st["state"] = state
+                        return
+            elif tools_mode and full.strip():
+                stripped = full.strip()
+                # 工具调用 JSON 特征：含 name/tool/arguments 键 + {；
+                # 或 thinking 阶段以 ``` / { 开头（流式分片时第一个 delta
+                # 可能只有 ```json 和 {，还没出现 "name" 键，也要隐藏）
+                tool_like = ('"name"' in stripped or '"tool"' in stripped
+                             or '"arguments"' in stripped) and "{" in stripped
+                json_head = (st["state"] == "thinking"
+                             and (stripped.startswith("```") or stripped.startswith("{")))
+                if tool_like or json_head:
+                    state = "tool"
+                    if spinner is not None:
+                        spinner.set_label(t("calling_tool"))
+                    st["state"] = state
+                    return
+                # 原生工具模式：纯文本内容即最终回复（清洗思考标记后显示）
+                state = "reply"
+                if spinner is not None:
+                    spinner.stop()
+                if st["state"] != "reply":
+                    print()
+                visible = _sanitize_display_text(full)
+                delta = visible[st["reply_printed"]:]
+                if delta:
+                    print(delta, end="", flush=True)
+                    st["reply_printed"] = len(visible)
+                st["state"] = state
+                return
+            if state == "tool" and spinner is not None:
+                spinner.set_label(t("calling_tool"))
+            if spinner is None:
+                # 无 spinner（如测试禁用）时退化为静态状态行
+                if st["state"] == "reply":
+                    print()
+                label = (t("thinking") + "…" if state == "thinking"
+                         else t("calling_tool") + "…")
+                sys.stdout.write(f"\r◈ {label}   ")
+                sys.stdout.flush()
+            st["state"] = state
+
+        return {"state": st, "on_delta": on_delta}
+
+    def converse(self, user_input: str, echo_input: bool = True) -> None:
+        if echo_input:
+            # 单次对话（--input）没有终端回显，打印聊天标题
+            print(f"\n{c('magenta', '❯')} {user_input}")
+        else:
+            # 交互模式：输入已由终端回显，只留一个空行分隔，避免重复显示
+            print()
+        t0 = time.time()
+        # 记忆预注入：模型生成前把相关历史记忆放进 prompt（无记忆时原样返回）
+        next_user = self.el.prepare_context(user_input)
+        fail_streak = 0
+        for _round in range(1, MAX_ROUNDS + 1):
+            msgs = self.messages + [{"role": "user", "content": next_user}]
+            spinner = _Spinner(t("thinking"))
+            disp = self._make_display(tools_mode=bool(self.client.tools),
+                                      spinner=spinner)
+            spinner.start()
+            try:
+                # 基础提示词 + 语言/技能/引用上下文
+                system = self._build_system_prompt()
+                output = self.client.stream_generate(system, msgs,
+                                                     on_delta=disp["on_delta"])
+            except KeyboardInterrupt:
+                spinner.stop(newline=True)
+                print("\n" + t("interrupted"))
+                return
+            except Exception as e:
+                spinner.stop(newline=True)
+                hint = _model_error_hint(e)
+                print(c("red", "\n" + t("model_call_failed", err=e)
+                        + (f"\n  💡 {hint}" if hint else "")))
+                return
+            # 状态行/流式正文收尾换行
+            if disp["state"]["state"] in ("thinking", "tool"):
+                spinner.stop(newline=True)
+            elif disp["state"]["reply_printed"]:
+                spinner.stop()
+                print()
+            else:
+                spinner.stop()
+            self.messages = self.client.trim_messages(
+                msgs + [{"role": "assistant", "content": output}],
+                self.max_history)
+
+            # 工具执行阶段动画（仅当本轮确实是工具调用）
+            exec_spinner = (_Spinner(t("calling_tool"))
+                            if disp["state"]["state"] == "tool" else None)
+            if exec_spinner:
+                exec_spinner.start()
+            try:
+                result = self.el.process_agent_output(output, user_input)
+            except KeyboardInterrupt:
+                if exec_spinner:
+                    exec_spinner.stop(newline=True)
+                print("\n" + t("interrupted"))
+                return
+            except Exception as e:
+                if exec_spinner:
+                    exec_spinner.stop(newline=True)
+                print(c("yellow", t("exec_layer_error", err=e)))
+                next_user = PROMPT_EXEC_EXCEPTION.format(err=e)
+                continue
+            if exec_spinner:
+                exec_spinner.stop(newline=True)
+            self.session["rounds"] += 1
+
+            # 连续失败/无进展熔断：工具反复失败说明模型已死循环，不再浪费轮数。
+            # 查看类工具（terminal_view/file_read/search/browser_screenshot）成功不算进展，
+            # 防止模型靠反复 ls 假装干活、绕过熔断。
+            _status = result["status"]
+            _VIEW_TOOLS = {"terminal_view", "file_read", "search", "browser_screenshot"}
+            if _status == "FINAL_REPLY":
+                fail_streak = 0
+            elif _status == "SUCCESS":
+                if result.get("tool") in _VIEW_TOOLS:
+                    pass  # 查看类成功不重置（不视为实质进展）
+                else:
+                    fail_streak = 0
+            elif _status in ("PLAN_PROPOSED", "PLAN_ALREADY_APPROVED",
+                             "PERMISSION_REQUEST", "PLAN_PENDING"):
+                pass  # 计划/权限交互是正常流程，不计数也不重置
+            else:
+                fail_streak += 1
+                if fail_streak >= STALL_ABORT_ROUNDS:
+                    print(c("red", "\n" + t("stall_abort", n=fail_streak)))
+                    return
+
+            if result["status"] == "PLAN_PROPOSED":
+                print(c("cyan", f"\n  {result.get('plan') or result.get('message', '')}"))
+                next_user = resolve_plan(self.el, ask_yes_no(
+                    c("yellow", t("plan_approve_q")),
+                    lambda: print(c("dim", t("auto_reject_plan")))))
+                print(c("green", t("plan_approved_msg"))
+                      if next_user == PROMPT_PLAN_APPROVED
+                      else c("yellow", t("plan_rejected_msg")))
+                continue
+
+            if result["status"] == "PLAN_ALREADY_APPROVED":
+                next_user = PROMPT_PLAN_APPROVED
+                continue
+
+            if result["status"] == "PERMISSION_REQUEST":
+                tool_name = result.get("tool")
+                print(c("yellow", "\n" + t("perm_request_title", tool=tool_name)))
+                if result.get("reason"):
+                    print(c("dim", t("perm_reason", reason=result["reason"])))
+                decision = ask_grant(c("yellow", t("perm_approve_q")),
+                                     lambda: print(c("dim", t("auto_deny_perm"))))
+                next_user = resolve_permission(self.el, decision)
+                if decision == GRANT_DENY:
+                    print(c("yellow", t("perm_denied_msg")))
+                elif tool_name in self.el.permission.session_grants:
+                    print(c("green", t("perm_granted_session_msg")))
+                else:
+                    # 选了"本会话"但被 grant_session 降级回单次（terminal_exec 这类）
+                    if decision == GRANT_SESSION:
+                        print(c("yellow", t("perm_session_refused", tool=tool_name)))
+                    print(c("green", t("perm_granted_msg")))
+                continue
+
+
+
+            if result["status"] == "FINAL_REPLY":
+                if disp["state"]["reply_printed"] < len(result["message"]):
+                    # 兜底：流式展示未覆盖时补打完整回复
+                    print()
+                    print(result["message"], end="", flush=True)
+                print(c("green", t("done", round=_round,
+                                   sec=time.time() - t0)))
+                return
+
+            if result["status"] in ERROR_STATUSES:
+                self.session["violations"] += 1
+                print(c("red", t("error_line", status=result["status"],
+                                 msg=result.get("message", "")[:80])))
+                next_user = PROMPT_ERROR_RETRY.format(rendered=render_result(result))
+            else:
+                self.session["tools"] += 1
+                status_mark = c("green", "✓") if result["status"] == "SUCCESS" else c("yellow", "⚠")
+                line = t("tool_line", tool=result.get("tool"),
+                         mark=status_mark, status=result["status"])
+                if result["status"] == "SUCCESS":
+                    elapsed = result.get("elapsed")
+                    if isinstance(elapsed, (int, float)):
+                        line += c("dim", t("elapsed", sec=elapsed))
+                    if result.get("snapshot_id"):
+                        line += c("dim", t("snapshotted"))
+                print(line)
+                if result["status"] == "SUCCESS":
+                    self._print_clickables(result)
+                if result.get("memory_injected"):
+                    print(c("dim", t("memory_injected",
+                                     n=len(result["memory_injected"]))))
+                if self.client.mock and result["status"] == "SUCCESS":
+                    data = result.get("data") or {}
+                    self.client._mock_provider.mock_tool_result = (
+                        data.get("datetime") or json.dumps(data, ensure_ascii=False))
+                next_user = PROMPT_TOOL_RESULT.format(rendered=render_result(result))
+        print(c("yellow", t("max_rounds")))
 
     # ---------- 无感回滚 ----------
 

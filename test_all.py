@@ -1325,6 +1325,23 @@ r = run_agent(_el_s, "terminal_exec", command="echo hi")
 check("会话级授权不外溢到 terminal_exec（仍逐次确认）",
       r["status"] in ("PERMISSION_REQUEST", "403"), r.get("message"))
 
+# —— AgentCLI 分层：呈现/命令层拆进 mixin，核心类只留会话循环 ——
+check("AgentCLI 由三个 mixin 组合",
+      [b.__name__ for b in _ac.AgentCLI.__bases__]
+      == ["_AtCommands", "_SlashCommands", "_LandingUI"])
+_own = set(vars(_ac.AgentCLI))
+_should_be_in_mixin = [n for n in ("_handle_at_command", "_at_file", "COMMANDS",
+                                   "run_command", "_config_wizard", "LANDING_ITEMS",
+                                   "_draw_landing", "landing")
+                       if n in _own]
+check("@ / 斜杠命令 / 登录页方法不再挂在 AgentCLI 自身上",
+      not _should_be_in_mixin, _should_be_in_mixin)
+check("组合后对外接口不变（补全器与调度仍能拿到）",
+      callable(_ac.AgentCLI.run_command) and callable(_ac.AgentCLI.landing)
+      and isinstance(_ac.AgentCLI.COMMANDS, dict)
+      and isinstance(_ac.AgentCLI.LANDING_ITEMS, list))
+
+
 
 
 # —— 只读代码检索 grep/glob：修复 readonly 默认下"只能 ls 和 cat"的退化 ——
