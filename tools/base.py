@@ -38,16 +38,26 @@ _WIN_PATH_BACKSLASH_RE = re.compile(r'\\([^"\\/bfnrtu])')
 _SENSITIVE_BASENAMES = {
     ".ai_code.json", ".agent_cli.json", ".netrc", "_netrc",
     ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile",
+    ".zshenv", ".zlogin", ".bash_aliases", ".bash_logout",
     "authorized_keys", "known_hosts", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
     "credentials", "shadow", "sudoers",
+    # 各类工具链的凭据存放点：都是明文 token，且不存在"agent 需要改它"的正常场景
+    ".git-credentials", ".npmrc", ".pypirc", ".dockercfg",
+    ".pgpass", ".my.cnf", ".htpasswd", ".terraformrc",
 }
+# 私钥 / 证书材料按后缀拦（.env 故意不在此列：项目内 .env 是正常开发对象，
+# 一律拦死会让"帮我建个 .env"这类请求失败。它的防线是"不出项目目录"）
+_SENSITIVE_SUFFIXES = (".pem", ".key", ".ppk", ".p12", ".pfx", ".keystore", ".jks")
 _SENSITIVE_DIRNAMES = {
     ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker", ".config/gcloud",
+    # 用户级自启动 / 定时任务：写这里等于装持久化后门
+    ".config/autostart", ".config/systemd", ".local/share/systemd",
 }
-# 目录整体不可写（系统 / 自启动）
+# 目录整体不可写（系统 / 自启动 / 定时任务）
 _SENSITIVE_DIR_PREFIXES = (
-    "c:/windows", "c:/program files", "c:/program files (x86)",
+    "c:/windows", "c:/program files", "c:/program files (x86)", "c:/programdata",
     "/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/boot", "/sys", "/proc",
+    "/var/spool/cron",
 )
 _STARTUP_FRAGMENTS = ("start menu/programs/startup", "currentversion/run")
 
@@ -65,6 +75,8 @@ def sensitive_target(path: "Path | str") -> Optional[str]:
 
     if name in _SENSITIVE_BASENAMES:
         return f"敏感文件（凭据/启动脚本）: {name}"
+    if name.endswith(_SENSITIVE_SUFFIXES):
+        return f"私钥/证书文件: {name}"
     for d in _SENSITIVE_DIRNAMES:
         if d in parts or (("/" in d) and d in low):
             return f"敏感目录: {d}"

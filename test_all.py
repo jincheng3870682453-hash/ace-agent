@@ -1180,6 +1180,36 @@ check("TOOL_EXAMPLES 由注册表 example 字段派生",
 check("已登记未实现的高危工具不暴露给模型",
       "terminal_dangerous" not in {t["function"]["name"] for t in _oai()})
 
+# 注册表自检：handler 用字符串引用，拼错不会报 ImportError 而是运行期"未知工具 400"，
+# 是最难查的一类静默失效。这里在测试期一次性把全部 handler 解析一遍。
+from tools import ToolExecutor as _TE_CLS  # noqa: E402
+_te_probe = _TE_CLS(project_root=str(FOLDER))
+_bad_handlers = [s.name for s in _SPECS.values()
+                 if s.handler and not callable(getattr(_te_probe, s.handler, None))]
+check("每个 ToolSpec.handler 都能在 ToolExecutor 上解析", not _bad_handlers, _bad_handlers)
+_no_handler = [s.name for s in _SPECS.values()
+               if s.expose and not s.control and not s.handler]
+check("暴露给模型的非控制工具都有 handler", not _no_handler, _no_handler)
+
+# agent_runner.TOOLS 是导入期快照，必须与注册表派生结果一致
+from agent_runner import TOOLS as _AR_TOOLS  # noqa: E402
+check("agent_runner.TOOLS 与注册表一致",
+      {t["function"]["name"] for t in _AR_TOOLS} == {t["function"]["name"] for t in _oai()},
+      len(_AR_TOOLS))
+
+# 提示词是模型看到的第二份清单：漏登记的工具模型永远不会调
+_v8_prompt = (Path(__file__).parent / "agent_system_prompt_v8.md").read_text(encoding="utf-8")
+_missing_in_prompt = [t["function"]["name"] for t in _oai()
+                      if t["function"]["name"] not in _v8_prompt]
+check("暴露的工具都出现在 v8 提示词里（防提示词与注册表漂移）",
+      not _missing_in_prompt, _missing_in_prompt)
+
+# 权限等级现算而非快照：注册表新增只读工具后，readonly 立刻可用
+from execution_layer import PermissionManager as _PM  # noqa: E402
+check("权限等级为现算并单调包含",
+      _PM.allowed_tools("readonly") < _PM.allowed_tools("write") < _PM.allowed_tools("full")
+      and "grep" in _PM.allowed_tools("readonly"))
+
 # —— 只读代码检索 grep/glob：修复 readonly 默认下"只能 ls 和 cat"的退化 ——
 _search_root = mktemp()
 (_search_root / "pkg").mkdir()

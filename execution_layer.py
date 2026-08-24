@@ -102,25 +102,16 @@ except ImportError:
 # 常量配置
 # ============================================================
 
-WRITE_TOOLS = {
-    "terminal_exec", "file_write", "file_delete", "file_move",
-    "api_post", "code_execute", "browser_click", "browser_type",
-    "db_write", "notify_send", "image_generate"
-}
-
-READ_TOOLS = {
-    "terminal_view", "file_read", "api_get", "db_query", "search",
-    "browser_screenshot", "math_calc", "datetime_now", "browser_open",
-    "parse_document", "open_file", "edit_file",
-    "plan_propose", "request_permission",
-}
-
-HIGH_RISK_TOOLS = {
-    "terminal_dangerous", "db_drop"
-}
-
+# 权限集合与控制工具集：内容由 tools/registry.py 的 TOOL_SPECS 派生，
+# 见下方 refresh_tool_sets()。这里只创建空集合对象占位——外部模块
+# `from execution_layer import READ_TOOLS` 拿到的是这几个对象的引用，
+# 刷新时就地更新（clear+update），引用保持有效。
+# 不要在这里写死工具名：写死的那份一定会和注册表漂移。
+WRITE_TOOLS: set = set()
+READ_TOOLS: set = set()
+HIGH_RISK_TOOLS: set = set()
 # 控制类工具：由执行层直接处理（计划提议 / 权限申请），不走真实工具执行
-CONTROL_TOOLS = {"plan_propose", "request_permission"}
+CONTROL_TOOLS: set = set()
 
 # 参数报错时给模型的具体示例（小模型常漏参数，示例能显著提升修正成功率）
 TOOL_EXAMPLES = {}
@@ -132,7 +123,8 @@ def refresh_tool_sets() -> None:
     权限分级与工具清单的唯一来源是注册表；这里只做同步。
     运行时注册工具（MCP / 插件）后需再调用一次，否则新工具会被权限门当成未知工具。
     集合就地更新（clear+update）而非重新赋值，保证外部 `from execution_layer import
-    READ_TOOLS` 拿到的引用同步生效；PERMISSION_LEVELS 里的并集是快照，所以一并重建。
+    READ_TOOLS` 拿到的引用同步生效。PermissionManager 不缓存并集快照
+    （见 PermissionManager.allowed_tools），所以这里无需再回填它。
     """
     from tools.registry import (PERM_HIGH_RISK, PERM_READ, PERM_WRITE,
                                control_tool_names, names_with_permission,
@@ -145,12 +137,6 @@ def refresh_tool_sets() -> None:
         target.update(names)
     TOOL_EXAMPLES.clear()
     TOOL_EXAMPLES.update(tool_examples())
-    pm = globals().get("PermissionManager")
-    if pm is not None:
-        pm.PERMISSION_LEVELS["readonly"]["tools"] = set(READ_TOOLS)
-        pm.PERMISSION_LEVELS["write"]["tools"] = READ_TOOLS | WRITE_TOOLS
-        pm.PERMISSION_LEVELS["full"]["tools"] = READ_TOOLS | WRITE_TOOLS | HIGH_RISK_TOOLS
-
 
 
 refresh_tool_sets()
@@ -290,11 +276,29 @@ class AgentOutputParser:
 class PermissionManager:
     """权限裁决：执行层说了算，不让 AI 预判"""
 
+    # 只存描述。允许的工具集不缓存快照，每次从模块级 READ_TOOLS / WRITE_TOOLS /
+    # HIGH_RISK_TOOLS 现算——这三个集合由 refresh_tool_sets() 就地刷新，
+    # 所以运行时注册工具（MCP / 插件）后无需回填本类。
     PERMISSION_LEVELS = {
-        "readonly": {"tools": READ_TOOLS, "description": "只读权限"},
-        "write": {"tools": READ_TOOLS | WRITE_TOOLS, "description": "写入修改权限"},
-        "full": {"tools": READ_TOOLS | WRITE_TOOLS | HIGH_RISK_TOOLS, "description": "全部权限"},
+        "readonly": {"description": "只读权限"},
+        "write": {"description": "写入修改权限"},
+        "full": {"description": "全部权限"},
     }
+
+    _LEVEL_SOURCES = {
+        "readonly": ("read",),
+        "write": ("read", "write"),
+        "full": ("read", "write", "high_risk"),
+    }
+
+    @classmethod
+    def allowed_tools(cls, level: str) -> set:
+        """现算某等级允许的工具全集（不缓存，避免与注册表漂移）"""
+        buckets = {"read": READ_TOOLS, "write": WRITE_TOOLS, "high_risk": HIGH_RISK_TOOLS}
+        allowed: set = set()
+        for key in cls._LEVEL_SOURCES.get(level, ()):
+            allowed |= buckets[key]
+        return allowed
 
     def __init__(self, level: str = "readonly"):
         self.level = level
@@ -305,8 +309,7 @@ class PermissionManager:
         if tool_name in self.temp_grants:
             self.temp_grants.discard(tool_name)
             return True
-        allowed = self.PERMISSION_LEVELS.get(self.level, {}).get("tools", set())
-        return tool_name in allowed
+        return tool_name in self.allowed_tools(self.level)
 
     def grant_temp(self, tool_name: str):
         """临时授权单个工具（单次有效，使用一次后自动撤销）"""
@@ -325,7 +328,7 @@ class PermissionManager:
         return {
             "current_level": self.level,
             "description": self.PERMISSION_LEVELS.get(self.level, {}).get("description", "未知"),
-            "allowed_tools": list(self.PERMISSION_LEVELS.get(self.level, {}).get("tools", set())),
+            "allowed_tools": sorted(self.allowed_tools(self.level)),
             "temp_grants": list(self.temp_grants),
         }
 
@@ -780,8 +783,7 @@ class ExecutionLayer:
                 **route_meta,
             }
         # 当前权限已允许该工具：直接掐断，防止模型盲目申请权限死循环
-        allowed_tools = self.permission.PERMISSION_LEVELS.get(
-            self.permission.level, {}).get("tools", set())
+        allowed_tools = self.permission.allowed_tools(self.permission.level)
         if target in allowed_tools:
             return {
                 "status": "SUCCESS",
