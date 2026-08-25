@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+import ace_execpolicy as execpolicy
 from tools.base import (GIT_READONLY_SUBCOMMANDS, MAX_COMMAND_LENGTH,
                         READ_ONLY_COMMANDS, SHELL_META_RE,
                         VERSION_ONLY_COMMANDS, VERSION_SUBCOMMANDS,
@@ -18,6 +19,12 @@ from tools.base import (GIT_READONLY_SUBCOMMANDS, MAX_COMMAND_LENGTH,
 from tools.docker_sandbox import DockerUnavailable
 from tools.result import ExecutionResult
 
+
+# Windows cmd 的内建命令：不是磁盘上的可执行文件，argv + shell=False 调不起来。
+# terminal_exec 的 allow 档据此决定走 argv 还是走 shell（见 _exec_terminal_exec）。
+_CMD_BUILTIN_BASES = {"echo", "dir", "type", "cd", "copy", "move", "ren", "rename",
+                      "md", "mkdir", "rd", "rmdir", "del", "erase", "ver",
+                      "time", "date", "cls", "set"}
 
 # Windows 无默认打开程序时，文本类扩展名回退记事本打开（.py 常无关联程序）
 _TEXT_EXTENSIONS = {".py", ".txt", ".md", ".json", ".log", ".csv", ".ini", ".cfg",
@@ -745,63 +752,114 @@ class FileTools:
         except Exception as e:
             return ExecutionResult(status="error", error_code="500", message=str(e))
 
-    # terminal_exec 破坏性/持久化命令模式。
-    # 说明：shell 无法用白名单覆盖（编程场景要跑任意构建命令），所以这里只做
-    # "已知高危动作"拦截，属于减小误伤面的止血层，不是完备边界。
-    # 真正的隔离依赖两点：默认 readonly 权限 + 容器/低权限账户运行（见 README）。
-    _DANGEROUS_CMD_PATTERNS = (
-        # 递归删除只在目标是"根本身"时拦。
-        # 拦：rm -rf /  rm -rf ~  rm -rf *  rm -rf .  rm -rf D:\
-        # 放行：rm -rf node_modules / rm -rf D:\学习\build / rm -rf ~/proj/dist
-        #       —— 这些是正常清理，误伤它们等于工具不可用。
-        (r"\brm\s+(-[a-z]+\s+)*-[a-z]*[rf][a-z]*\s+(/|~|\*|\.|[a-z]:[\\/]?)(\s*$|\s|[\\/]?\*)",
-         "递归删除根目录/主目录/通配目标"),
-        (r"\b(del|rd)\s+(/[a-z]\s+)*([a-z]:[\\/]?\s*$|[a-z]:[\\/]\*)", "删除盘符根目录"),
-        (r"\bformat\s+[a-z]:", "格式化磁盘"),
-        (r"\bmkfs\b", "格式化文件系统"),
-        (r"\bdd\s+.*\bof=/dev/", "裸设备写入"),
-        # 要求处于命令位置，否则 git commit -m "fix reboot bug" 会被误伤
-        (r"(^|&&|;|\|)\s*(shutdown|reboot|halt|poweroff)\b", "关机/重启"),
-        (r"\breg\s+add\b.*currentversion.{0,2}run", "注册表自启动"),
-        (r"\bschtasks\s+/create\b", "计划任务持久化"),
-        (r"\b(curl|wget|iwr|invoke-webrequest)\b[^|]*\|\s*(sh|bash|zsh|python|powershell)",
-         "下载后直接执行"),
-        (r"\bpowershell\b[^|]*\s-e(nc|ncoded|ncodedcommand)?\s", "编码后的 PowerShell 命令"),
-        (r"\bchmod\s+(-r\s+)?777\s+/(\s|$)", "放开根目录权限"),
-        (r":\(\)\s*\{.*\}\s*;", "fork bomb"),
-    )
+    # terminal_exec 的判定整体搬到了 ace_execpolicy（三值判定 + 纯函数），
+    # 原来那张 _DANGEROUS_CMD_PATTERNS 表已被它的 _FORBIDDEN_RULES 覆盖并扩展
+    # （多了卷影副本删除、bcdedit、账户/ACL 变更、certutil/bitsadmin/mshta 下载器、
+    # 服务与 crontab 持久化、关闭 Defender/防火墙、注册表 hive 删除）。
+    # 留在这里的只有 execpolicy 没有的那一层：敏感目标扫描，见 _evaluate_exec_command。
 
-    def _screen_exec_command(self, cmd: str) -> Optional[str]:
-        """terminal_exec 前置筛查：命中敏感目标或已知破坏性动作时返回拒绝原因"""
-        low = cmd.lower()
-        for pattern, label in self._DANGEROUS_CMD_PATTERNS:
-            if re.search(pattern, low):
-                return f"命令包含高危动作（{label}）"
-        # 敏感目标（凭据/自启动/系统目录）：逐 token 判定，覆盖未展开的
-        # %USERPROFILE%\.ai_code.json、~/.ssh/authorized_keys 这类写法
+
+    def _evaluate_exec_command(self, cmd: str) -> "execpolicy.Verdict":
+        """terminal_exec 判定：execpolicy 三值判定 + 敏感目标扫描
+
+        两层是**互补**的，不是重复：
+
+        - `ace_execpolicy` 管"这个动作本身有多坏"——不可逆删除、格式化、持久化、
+          下载即执行、关闭防御。它是纯函数，所以每条拒绝路径都能被单测覆盖，
+          不必真的把 `format C:` 跑起来。
+        - `sensitive_target()` 管"这条命令碰的是什么"——凭据文件、私钥、自启动
+          目录、系统目录。execpolicy 里**没有**这一层。
+
+        所以不能整份换过去。`type %USERPROFILE%\\.ai_code.json` 在 execpolicy 眼里
+        只是"含 shell 元字符"（`%`）→ prompt 档，人点一下 y 凭据就出去了；
+        而它在这里必须是 forbidden —— 无论谁点头都不执行。
+        """
+        verdict = execpolicy.evaluate_command(cmd, str(self.project_root),
+                                              sandbox=self.sandbox_policy)
+        if verdict.forbidden:
+            return verdict
+        # 逐 token 判定，覆盖未展开的 %USERPROFILE%\.ai_code.json、
+        # ~/.ssh/authorized_keys 这类写法（展开后再看就晚了）
         for token in re.split(r"[\s'\"=]+", cmd):
             if not token or len(token) < 3:
                 continue
             reason = sensitive_target(token)
             if reason:
-                return f"命令触及敏感目标（{reason}）: {token}"
-        return None
+                return execpolicy.Verdict(
+                    execpolicy.DECISION_FORBIDDEN,
+                    f"命令触及敏感目标（{reason}）: {token}",
+                    "sensitive_target",
+                    normalized=verdict.normalized,
+                    hits=list(verdict.hits) + [
+                        ("sensitive_target", execpolicy.DECISION_FORBIDDEN, reason)])
+        return verdict
+
 
     def _exec_terminal_exec(self, params: Dict) -> ExecutionResult:
-        """写入权限下的真实终端执行（受权限门 + 前置筛查 + 快照回滚保护）"""
+        """写入权限下的真实终端执行（受权限门 + 三值判定 + 快照回滚保护）
+
+        三条出口：
+            forbidden → 403，任何审批都覆盖不了
+            allow     → argv + shell=False 执行（不经 shell，元字符天然失效）
+            prompt    → 问 approval_hook；无 hook 或被拒 → 403
+        """
         cmd = (params.get("command") or "").strip()
         if not cmd:
             return ExecutionResult(status="error", error_code="400", message="command 参数为空")
         if len(cmd) > MAX_COMMAND_LENGTH:
             return ExecutionResult(status="error", error_code="400", message="命令过长")
-        denied = self._screen_exec_command(cmd)
-        if denied:
-            return ExecutionResult(status="error", error_code="403",
-                                   message=f"{denied}，已拦截。如确需执行请在终端手动操作。")
+
+        # 判定先行，且传的是原始 cmd：任何"先展开再判定"的顺序都会让判定看到的
+        # 字符串与实际执行的不一致。
+        verdict = self._evaluate_exec_command(cmd)
+        if verdict.forbidden:
+            return ExecutionResult(
+                status="error", error_code="403",
+                message=(f"命令被安全策略拒绝（{verdict.reason}），已拦截。"
+                         f"如确需执行请在终端手动操作。"),
+                metadata={"policy": {"decision": verdict.decision, "rule": verdict.rule}})
+
+        approved = False
+        if verdict.needs_approval:
+            if self.approval_hook is None:
+                # 无人可问 → 拒绝。方向必须朝安全：把非交互场景的默认答案写成 "y"
+                # 正是 SEC-004 那类事故的成因。
+                return ExecutionResult(
+                    status="error", error_code="403",
+                    message=(f"命令需要人工确认但当前无审批通道：{verdict.reason}。"
+                             f"可改用只读的 terminal_view，或拆成不含 shell 元字符的单条命令。"),
+                    metadata={"policy": {"decision": verdict.decision, "rule": verdict.rule,
+                                         "approval": "unavailable"}})
+            try:
+                approved = bool(self.approval_hook(verdict))
+            except Exception as e:
+                # 只把异常**类型**给模型：hook 由上层注入，它的异常文本不受本层控制，
+                # 完全可能把路径甚至凭据带进来（FileNotFoundError 的 str 就带路径）。
+                return ExecutionResult(
+                    status="error", error_code="500",
+                    message=f"审批回调异常（{type(e).__name__}），按拒绝处理",
+                    metadata={"error": {"action": "approval_hook",
+                                        "type": type(e).__name__, "detail": str(e)},
+                              "policy": {"decision": verdict.decision, "rule": verdict.rule}})
+            if not approved:
+                return ExecutionResult(
+                    status="error", error_code="403",
+                    message=f"用户拒绝执行：{verdict.reason}",
+                    metadata={"policy": {"decision": verdict.decision, "rule": verdict.rule,
+                                         "approval": "denied"}})
+
+        ok, why = execpolicy.should_execute(verdict, self.approval_policy,
+                                           user_approved=approved)
+        if not ok:
+            return ExecutionResult(
+                status="error", error_code="403", message=f"命令未获执行许可：{why}",
+                metadata={"policy": {"decision": verdict.decision, "rule": verdict.rule}})
+
         # docker 沙箱：启用后命令跑在一次性容器里，宿主拿不到。这是这个工具唯一
-        # 真正的边界——shell=True 的宿主分支靠 cwd 和正则黑名单是拦不住的。
+        # 真正的边界——shell=True 的宿主分支靠判定层是拦不住一切的。
         # 注意不做静默回退：沙箱开了但 docker 挂了就报 503，绝不偷偷改回宿主执行，
         # 否则用户以为在容器里跑，实际在自己机器上跑，而且毫无提示。
+        # 容器只接受 shell 字符串，所以这里不分 allow / prompt 档。
         if self.docker_sandbox is not None:
             try:
                 out = self.docker_sandbox.run_shell(cmd)
@@ -821,8 +879,22 @@ class FileTools:
                             "network": self.docker_sandbox.network,
                             "mount": "/work"},
             })
+
+        # allow 档走 argv + shell=False：判定已经保证整条字符串里没有 shell 元字符，
+        # 不经 shell 则连"万一漏了一个元字符"的余地也没有。
+        # 例外是 Windows 的 cmd 内建命令（echo / dir / type / copy / md ...）——
+        # 它们不是可执行文件，argv + shell=False 会得到 FileNotFoundError。
+        # 这类命令交给 shell 是安全的：元字符在第 2 关就已经被排除干净了。
+        target: Any = cmd
+        use_shell = True
+        if verdict.allowed and verdict.argv:
+            base = verdict.argv[0].lower()
+            if base.endswith(".exe"):
+                base = base[:-4]
+            if not (os.name == "nt" and base in _CMD_BUILTIN_BASES):
+                target, use_shell = verdict.argv, False
         try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+            result = subprocess.run(target, shell=use_shell, capture_output=True, text=True,
                                     timeout=30, cwd=str(self.project_root),
                                     stdin=subprocess.DEVNULL)
             return ExecutionResult(status="success", data={
@@ -834,6 +906,7 @@ class FileTools:
             return ExecutionResult(status="error", error_code="504", message="命令执行超时（30 秒）")
         except Exception as e:
             return ExecutionResult(status="error", error_code="500", message=str(e))
+
 
 
     def _exec_open_file(self, params: Dict) -> ExecutionResult:

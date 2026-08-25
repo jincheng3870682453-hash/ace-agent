@@ -13,6 +13,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import ace_execpolicy as execpolicy
 from tools.registry import SPEC_BY_NAME
 from tools.result import ExecutionResult
 from tools.docker_sandbox import build_sandbox
@@ -111,7 +112,10 @@ def repair_backslash_json(text: str) -> str:
 class ToolExecutorBase:
     def __init__(self, project_root: str = ".", sandbox_base: Optional[str] = None,
                  confine_files: bool = True, email_smtp: Optional[Dict] = None,
-                 sandbox: Optional[Dict] = None):
+                 sandbox: Optional[Dict] = None,
+                 approval_policy: Optional[str] = None,
+                 sandbox_policy: Optional[str] = None,
+                 approval_hook=None):
         self.project_root = Path(project_root).resolve()
         self.sandbox_base = sandbox_base  # code_execute 沙箱临时目录基路径（None = 系统临时目录）
         self.confine_files = confine_files  # 文件工具是否强制限制在项目目录内
@@ -120,6 +124,20 @@ class ToolExecutorBase:
         # 只有 terminal_exec / code_execute 走它——那两个才是真正需要内核边界的地方。
         self.docker_sandbox = build_sandbox(sandbox, str(self.project_root))
         self.execution_log: List[Dict] = []
+        # —— 审批 / 沙箱双闸门（见 ace_execpolicy）——
+        # 两者正交，不是同一件事的两种说法：
+        #   approval_policy 管"要不要问人"，sandbox_policy 管"允许它碰什么"。
+        # 再叠加 PermissionManager（管"这个工具准不准用"），共三个维度。
+        # 注意 sandbox_policy 和上面的 docker_sandbox 也不是一回事：前者是判定用的
+        # 策略档位，后者是真正的内核边界。判定收紧不等于有了边界，有边界也不代表
+        # 判定可以放松。
+        self.approval_policy = approval_policy or execpolicy.ApprovalPolicy.DEFAULT
+        self.sandbox_policy = sandbox_policy or execpolicy.SandboxPolicy.DEFAULT
+        # approval_hook(verdict) -> bool：由上层注入的"人是否点头"实现。
+        # 为 None 表示无人可问 —— 此时判定为 prompt 的命令一律拒绝，而不是放行。
+        # 这个默认方向很重要：非交互场景把默认答案写成 "y" 就是 SEC-004 那类事故。
+        self.approval_hook = approval_hook
+
 
 
     def _confined(self, path: Path) -> Optional[Path]:

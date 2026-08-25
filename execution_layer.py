@@ -387,7 +387,13 @@ class ExecutionLayer:
             confine_files=bool((config or {}).get("confine_files", True)),
             email_smtp=(config or {}).get("email_smtp"),
             sandbox=(config or {}).get("sandbox"),
+            approval_policy=(config or {}).get("approval_policy"),
+            sandbox_policy=(config or {}).get("sandbox_policy"),
+            approval_hook=self._exec_approval_hook,
         )
+        # 逐次确认闸门是否已就本轮调用放行；供 _exec_approval_hook 读取。
+        self._round_confirmed = False
+
 
         self.parser = AgentOutputParser()
 
@@ -447,7 +453,27 @@ class ExecutionLayer:
         self.last_route: Optional[Dict] = None
         self.last_route_input: Optional[str] = None
 
+    # ---------- 命令审批（接 ace_execpolicy 的 prompt 档） ----------
+
+    def _exec_approval_hook(self, verdict) -> bool:
+        """把 ace_execpolicy 判定出的 prompt 档接到本层已有的逐次确认闸门上。
+
+        这里刻意**不**问人。上游那份实现是"在工具内部同步弹框问"，照搬到这边是错的：
+        本项目的确认是一次**往返**（返回 PERMISSION_REQUEST → 人答 y → grant_temp →
+        模型重发同一个调用），位置比工具内部更靠前，而且不跟流式渲染抢终端。
+        再加一条同步询问通道，等于有两个地方能问、也有两个地方能被绕过。
+
+        所以这个 hook 只回答一件事："人是否已经就本次调用点过头"——也就是 5.0 闸门
+        刚刚放行的那一次。判定层拿它当 `user_approved`。
+
+        为什么不干脆在工具里直接当成已批准：ToolExecutor 是公开类，可以脱离执行层
+        单独构造（测试和嵌入方都这么用）。那种情况下 approval_hook 是 None，
+        prompt 档一律拒绝——方向朝安全。
+        """
+        return self._round_confirmed
+
     # ---------- 记忆预注入（在模型生成前调用） ----------
+
 
     def prepare_context(self, user_input: str) -> str:
         """在模型生成前调用：记录用户输入到记忆库、检测主题切换，并返回可注入上下文的 prompt。
@@ -594,7 +620,13 @@ class ExecutionLayer:
         #     $HOME 展开 / PowerShell 别名 / python -c 绕过，策略层拦不住，最终防线是人。
         #     临时授权用后即焚，所以"已在 temp_grants 里"= 用户刚刚已确认过本次调用，
         #     不再重复问；等级本身不够时留给下面的 403 走常规 request_permission 流程。
+        #
+        #     这个标记必须在 can_execute() 之前取：它会消费掉 temp_grants，之后再读
+        #     永远是 False。ace_execpolicy 的 prompt 档就靠它判断"人已经点过头"。
+        self._round_confirmed = (tool_name in self.permission.temp_grants
+                                 or tool_name in self.permission.session_grants)
         if (tool_name in CONFIRM_TOOLS
+
                 and tool_name not in self.permission.temp_grants
                 and tool_name in self.permission.allowed_tools(self.permission.level)):
             preview = str(tool_call.get("command") or tool_call.get("code") or "")
