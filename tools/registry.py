@@ -303,20 +303,17 @@ def tool_examples() -> Dict[str, str]:
 
 
 def openai_tools() -> List[Dict]:
-    """生成 OpenAI 兼容 function calling 的 tools 数组"""
+    """生成 OpenAI 兼容 function calling 的 tools 数组。
+
+    `parameters` 深拷贝出去：ToolSpec 是 frozen dataclass，但 frozen 只冻住字段绑定，
+    冻不住字段指向的那个 dict。不拷贝的话，调用方随手改一下返回的 schema
+    （补个字段、删个 required）就改到了注册表本体，而且是全进程可见 —— 这种改动
+    没有任何一处看起来像在改注册表。
+    """
+    from copy import deepcopy
     return [{"type": "function",
              "function": {"name": s.name,
                           "description": s.description,
-                          "parameters": s.parameters}}
+                          "parameters": deepcopy(s.parameters)}}
             for s in TOOL_SPECS if s.expose]
 
-
-def prompt_tool_lines() -> List[str]:
-    """给提示词用的工具清单行（只含暴露给模型的工具）"""
-    lines = []
-    for s in TOOL_SPECS:
-        if not s.expose:
-            continue
-        suffix = f"  {s.example}" if s.example else ""
-        lines.append(f"- {s.name}（{s.permission}）{s.description}{suffix}")
-    return lines

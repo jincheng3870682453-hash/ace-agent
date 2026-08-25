@@ -497,9 +497,25 @@ def merge_config(args) -> Dict:
 
 
 def save_cli_config(cfg: Dict) -> None:
-    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-    # 配置里有明文 api_key：收紧到仅所有者可读写。
-    # Windows 上 os.chmod 只影响只读位，真正的 ACL 收紧需要 icacls，这里尽力而为。
+    # 配置里有明文 api_key，所以先建文件再 chmod 是不够的：那两步之间有一个窗口，
+    # 文件以默认权限（umask 决定，常见是 0644）躺在主目录里。用 O_CREAT|O_EXCL
+    # 带 mode 创建，权限从第一个字节就是对的。
+    #
+    # 已存在时退回 write_text + chmod —— 这条路上文件权限本来就已经是上次收紧过的，
+    # 没有新窗口。
+    payload = json.dumps(cfg, ensure_ascii=False, indent=2)
+    try:
+        fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        CONFIG_PATH.write_text(payload, encoding="utf-8")
+    except OSError:
+        CONFIG_PATH.write_text(payload, encoding="utf-8")
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+    # Windows 上 os.chmod 只影响只读位（真正的 ACL 收紧需要 icacls），
+    # O_CREAT 的 mode 也基本被忽略 —— 这一档在 Windows 上就是尽力而为，
+    # 不要因为这里写了 0o600 就以为主目录里那份明文 key 有 OS 级保护。
     try:
         os.chmod(CONFIG_PATH, 0o600)
     except OSError:

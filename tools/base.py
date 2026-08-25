@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import ace_execpolicy as execpolicy
 from tools.registry import SPEC_BY_NAME
@@ -222,6 +222,30 @@ class ToolExecutorBase:
             return path.read_text(encoding=locale.getpreferredencoding(False), errors="ignore")
 
     @staticmethod
+    def _read_text_exact(path: Path) -> Tuple[str, str]:
+        """严格解码并回报实际用的编码，返回 (text, encoding)；两种编码都解不开就抛。
+
+        这是给**读-改-写**路径用的，和 `_read_text_any` 分开是故意的：
+
+        - `_read_text_any` 服务于"只是看看"（grep / file_read）。那里 `errors="ignore"`
+          丢几个字节只影响这一次展示，比整条调用失败划算。
+        - 读-改-写不一样。用有损解码读进来、再按 UTF-8 写回去，等于把用户的文件
+          **重新编码了一遍**，而且解码时丢掉的字节永久消失 —— 这不是显示瑕疵，是数据损坏，
+          而且模型只会看到"替换成功"。
+
+        所以这里宁可失败：解不开的文件不碰，让调用方报错，人自己去处理编码。
+        """
+        try:
+            return path.read_text(encoding="utf-8"), "utf-8"
+        except UnicodeDecodeError:
+            pass
+        import locale
+        enc = locale.getpreferredencoding(False)
+        # 注意不带 errors=：解不开就让 UnicodeDecodeError 抛出去。
+        return path.read_text(encoding=enc), enc
+
+
+    @staticmethod
     def _split_cmd_windows(cmd: str) -> List[str]:
         """Windows 风格命令分词：空白分割 + 双引号分组，保留反斜杠路径（如 C:\\Users\\...）"""
         parts: List[str] = []
@@ -260,6 +284,12 @@ class ToolExecutorBase:
         """出站目的地是否被白名单拒绝：放行返回 None，否则返回给模型看的原因。"""
         from ace_net import egress_reject_reason
         return egress_reject_reason(url, self.egress_allowlist)
+
+    def _egress_host_reason(self, host: str) -> Optional[str]:
+        """同上，但按主机名判 —— 给不走 URL 的出站用（notify_send 的 SMTP）。"""
+        from ace_net import egress_host_reject_reason
+        return egress_host_reject_reason(host, self.egress_allowlist)
+
 
     def _egress_hop_gate(self):
         """给 `safe_request(on_hop=...)` 的回调；闸门关着时返回 None（不加回调开销）。

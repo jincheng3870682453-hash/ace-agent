@@ -632,21 +632,36 @@ def main() -> None:
     parser.add_argument("--max-history", type=int, default=0,
                         help="保留最近 N 轮对话历史（0 = 不裁剪）")
     parser.add_argument("--input", help="直接传入一条用户消息（非交互模式）")
+    # 与 ai_code.py 的 --sandbox 同一套档位。之前这里只有 sandbox_base（沙箱临时目录），
+    # 没有档位开关 —— 也就是说从这个入口进来永远是 off 档，用户以为两个前端一致，
+    # 实际上没有任何边界。档位不一致比没有档位更糟：它是个错误的心理预期。
+    parser.add_argument("--sandbox", default="off", choices=["off", "job", "docker"],
+                        help="执行位置档位：off=宿主直跑 / job=Job Object / docker=一次性容器")
+    parser.add_argument("--egress-allowlist", default="",
+                        help="出站域名白名单，逗号分隔（缺省 = 闸门关闭）")
     args = parser.parse_args()
+
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     provider = ModelProvider(args)
+    _egress = [s.strip() for s in (args.egress_allowlist or "").split(",") if s.strip()]
     el = ExecutionLayer(
         project_root=args.project_root,
         permission_level=args.permission,
         config={"bait": {"enabled": not args.no_bait, "frequency": 0},
+                "sandbox": {"mode": args.sandbox},
+                # 没给 --egress-allowlist 时传 None（闸门关），而不是空列表 ——
+                # 空列表的含义是"配了，但除内置端点外全拦"，两者不能混。
+                "egress_allowlist": _egress or None,
                 "sandbox_base": str(Path(args.project_root).resolve() / ".sandbox_tmp")},
     )
     print(f"Agent 已启动 | 模型: {provider.mode} | 权限: {args.permission} | "
+          f"沙箱: {args.sandbox} | "
           f"工作目录: {args.project_root} | 原生工具: {'开' if provider.tools else '关'}")
+
     if args.permission != "readonly":
         print("⚠ 当前为写权限：terminal_exec 可执行任意 shell 命令。生产环境建议 readonly 起步。")
     stats = el.get_stats()

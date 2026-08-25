@@ -46,6 +46,14 @@ class NotifyTools:
                 return ExecutionResult(
                     status="error", error_code="501",
                     message="email 通知需要 SMTP 配置（config: email_smtp={host,port,user,password,use_tls}）")
+            # SMTP 也过出站白名单。这条路不是 SSRF 面（host 来自宿主配置，模型改不了），
+            # 但它是**模型可控内容**的外发通道：正文是模型写的，收件人是模型给的。
+            # 白名单的口径是"能把数据带到哪个站点去"，那就该管到这里，
+            # 否则"配了白名单"这句话在这条路上是假的。
+            egress_err = self._egress_host_reason(host)
+            if egress_err:
+                return ExecutionResult(status="error", error_code="403", message=egress_err)
+
             try:
                 import smtplib
                 from email.mime.text import MIMEText

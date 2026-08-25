@@ -388,20 +388,42 @@ def egress_reject_reason(url: Any,
     """
     if allowlist is None:
         return None
+    host = url_host(url)
+    if not host:
+        # 主机名取不出来先答这一条，而不是走到下面报"不在清单里"：
+        # 后者会让模型以为改配置就能通，而实际问题是这个 URL 本身没法判。
+        entries = effective_allowlist(allowlist)
+        if any(normalize_entry(e) in _WILDCARD_ALL for e in entries):
+            return None
+        return "ACE 出站拦截：URL 里取不出主机名"
+    return egress_host_reject_reason(host, allowlist)
+
+
+def egress_host_reject_reason(host: Any,
+                              allowlist: Optional[Sequence[str]] = None) -> Optional[str]:
+    """按**主机名**判出站白名单，语义与 `egress_reject_reason` 完全一致（None = 闸门关）。
+
+    单独留一个主机版入口，是因为不是所有出站都长成 URL：`notify_send` 的 email 渠道
+    直接用 `smtplib.SMTP(host, port)`，凑一个假 URL 再解析回主机名只是绕远路，
+    而且多一步解析就多一处"判定看的是 A、连上去的是 B"的可能。
+    """
+    if allowlist is None:
+        return None
     entries = effective_allowlist(allowlist)
     if any(normalize_entry(e) in _WILDCARD_ALL for e in entries):
         return None
-    host = url_host(url)
-    if not host:
-        return "ACE 出站拦截：URL 里取不出主机名"
-    if host_in_allowlist(host, entries):
+    h = normalize_host(host)
+    if not h:
+        return "ACE 出站拦截：主机名为空"
+    if host_in_allowlist(h, entries):
         return None
     shown = ", ".join(str(e) for e in allowlist) or "（空）"
-    return (f"ACE 出站拦截：{host} 不在出站白名单里。"
+    return (f"ACE 出站拦截：{h} 不在出站白名单里。"
             f"当前清单: {shown}（另含内置端点 "
             f"{', '.join(DEFAULT_EGRESS_ALLOWLIST)}）。"
             "这不是网络故障，重试同一个地址不会变。要么改用清单内的地址，"
             "要么请用户把该域名加进配置 egress_allowlist —— 你自己加不了。")
+
 
 
 

@@ -40,6 +40,10 @@ _SEARCH_SKIP_DIRS = {".git", ".hg", ".svn", "__pycache__", "node_modules",
 _SEARCH_MAX_FILE_BYTES = 2_000_000   # 超过 2MB 视为非源码，跳过
 _SEARCH_MAX_FILES = 5_000            # 遍历文件数上限，防止指到巨大目录时卡死
 _SEARCH_MAX_LINE_CHARS = 300         # 单条匹配行截断长度（避免压缩后的长行吃满上下文）
+# 单行参与正则匹配的字符上限。和上面那个是两件事：那个管"回给模型多长"，
+# 这个管"让模型的正则最多啃多长" —— re 没有超时，输入长度是唯一能收的那道界。
+_SEARCH_MAX_MATCH_CHARS = 4_000
+
 GREP_DEFAULT_MAX_RESULTS = 200
 GLOB_DEFAULT_MAX_RESULTS = 200
 # file_read 未显式传 limit 时的默认行数上限：整读大文件会吃满上下文
@@ -68,8 +72,16 @@ class FileTools:
                 path = confined
             elif tool_name == "file_read" and path.is_dir():
                 # 只读目录列表允许越界（与 terminal_view ls 口径一致），
-                # 防止"帮我看看桌面/主目录"这类问题因工具选择而失败
-                pass
+                # 防止"帮我看看桌面/主目录"这类问题因工具选择而失败。
+                # 但"允许列目录"不等于"允许列任何目录"：~/.ssh 的**文件名单**本身就是
+                # 情报（哪些主机有密钥、密钥叫什么），所以敏感目录连名单都不给。
+                reason = sensitive_target(path)
+                if reason:
+                    return None, ExecutionResult(
+                        status="error", error_code="403",
+                        message=f"拒绝列出敏感目录（{reason}）: {path}。"
+                                "目录名单本身也是凭据情报，如确需查看请在终端手动操作。")
+
             elif path.is_absolute() and tool_name in self._ABS_PATH_WRITE_TOOLS:
                 # 绝对路径（含 ~ 展开后） = 用户明确意图（如"放到桌面/主目录"），写工具放行；
                 # 相对路径仍严格限项目内，防止穿越。读文件仍限项目内。
@@ -93,7 +105,21 @@ class FileTools:
                     status="error", error_code="403",
                     message=f"拒绝写入/删除敏感目标（{reason}）: {path}。"
                             "如确需修改，请在终端手动操作。")
+        elif self._confined(path) is None:
+            # 读工具走到这里只有一种情况：confine_files=False（项目边界被关掉了）。
+            # 那道边界一关，`~/.ai_code.json` 里的明文 API key 就成了一次 file_read
+            # 的距离 —— 所以边界没了也要留这道敏感目标检查，和 terminal_view 的 cat
+            # 分支同一个理由、同一个口径。
+            # 只对**项目外**的路径查：项目内还查的话，仓库里一个叫 credentials 的
+            # 普通文件会被 `_SENSITIVE_BASENAMES` 误伤。
+            reason = sensitive_target(path)
+            if reason:
+                return None, ExecutionResult(
+                    status="error", error_code="403",
+                    message=f"拒绝读取敏感目标（{reason}）: {path}。"
+                            "即便关闭了 confine_files，凭据文件仍不经由工具读取。")
         return path, None
+
 
     def _exec_file_ops(self, tool_name: str, params: Dict) -> ExecutionResult:
         """文件操作（相对路径限制在项目目录内；绝对路径 = 用户明确意图，防路径穿越）"""
@@ -375,9 +401,17 @@ class FileTools:
                     status="error", error_code="400",
                     message=f"文件过大（>{_STR_REPLACE_MAX_BYTES // 1_000_000}MB），"
                             f"str_replace 不处理: {path}")
-            content = self._read_text_any(path)
+            # 读-改-写必须用严格解码：`_read_text_any` 的 errors="ignore" 兜底会丢字节，
+            # 而这条路径会把结果写回磁盘 —— 丢掉的字节就永久没了，且模型只看到"替换成功"。
+            content, src_encoding = self._read_text_exact(path)
+        except UnicodeDecodeError as e:
+            return ExecutionResult(
+                status="error", error_code="400",
+                message=f"无法确定文件编码，拒绝改写（避免有损重编码）: {path}（{e}）。"
+                        "请先把文件转成 UTF-8，或在终端手动修改。")
         except OSError as e:
             return ExecutionResult(status="error", error_code="500", message=str(e))
+
 
         replace_all = bool(params.get("replace_all", False))
         # 换行风格：统一到 \n 比较，写回时还原，避免把 CRLF 文件整体改成 LF
@@ -431,15 +465,19 @@ class FileTools:
             diff = diff[:_STR_REPLACE_MAX_DIFF_LINES] + ["... [diff 已截断]"]
 
         try:
+            # 用读进来时的那个编码写回去。硬写 utf-8 等于顺手把用户的 GBK 源码
+            # 转了码 —— 那是模型没被要求做、也没在 diff 里体现的改动。
             path.write_text(result_text.replace("\n", "\r\n") if crlf else result_text,
-                            encoding="utf-8")
-        except OSError as e:
+                            encoding=src_encoding)
+        except (OSError, UnicodeEncodeError) as e:
             return ExecutionResult(status="error", error_code="500", message=str(e))
         return ExecutionResult(status="success", data={
             "path": str(path), "replaced": replaced, "matched_by": matched_by,
+            "encoding": src_encoding,
             "diff": "\n".join(diff),
             "content": (f"已替换 {replaced} 处（匹配方式: {matched_by}）\n" + "\n".join(diff)),
         })
+
 
     # ------------------------------------------------------------------
     # grep / glob：只读代码检索（原生实现，不经过 shell）
@@ -469,10 +507,36 @@ class FileTools:
         except ValueError:
             return path.as_posix()
 
-    def _iter_search_files(self, root: Path, name_filters: List[str]) -> Iterator[Path]:
-        """遍历检索范围内的候选文件（跳过依赖/构建目录，限制总数）"""
+    def _search_visible(self, path: Path) -> bool:
+        """这条检索命中可以交出去吗？
+
+        `_search_root` 只约束了**起点**，约束不了**落点**，而检索有两条绕过它的路：
+
+        - `glob` 的 pattern 里带 `..`（`glob("../*.py")`）—— 起点合法，命中在项目外；
+        - 项目内的软链接指向项目外（`link → ~/.ssh/id_rsa`）—— `os.walk` 不会下降到
+          目录软链接，但文件软链接会被当成普通文件产出。
+
+        两条都能让 readonly 会话把项目外的东西读走，而 grep/glob 属于 READ_TOOLS。
+        所以每条命中都要在**解析软链接之后**重新确认落点（`_confined` 内部会 resolve）。
+
+        项目内也可能躺着凭据（误提交的 .pem、复制进来的 .ai_code.json），所以还要过
+        一遍 `sensitive_target` —— 与 terminal_view 的 cat 分支保持同一口径。
+        """
+        if self._confined(path) is None:
+            return False
+        return sensitive_target(path) is None
+
+    def _iter_search_files(self, root: Path, name_filters: List[str],
+                           stats: Optional[Dict] = None) -> Iterator[Path]:
+        """遍历检索范围内的候选文件（跳过依赖/构建目录，限制总数）
+
+        `stats` 是给调用方回传"为什么停下来"的出口：命中 `_SEARCH_MAX_FILES` 上限时
+        置 `stats["file_cap"] = True`。没有这个出口的话，扫了一半就返回和扫完了在
+        调用方看来一模一样，模型会把"没搜到"读成"这个符号不存在"。
+        """
         if root.is_file():
-            yield root
+            if self._search_visible(root):
+                yield root
             return
         seen = 0
         for dirpath, dirnames, filenames in os.walk(root):
@@ -482,8 +546,14 @@ class FileTools:
                     continue
                 seen += 1
                 if seen > _SEARCH_MAX_FILES:
+                    if stats is not None:
+                        stats["file_cap"] = True
                     return
-                yield Path(dirpath) / name
+                f = Path(dirpath) / name
+                if not self._search_visible(f):
+                    continue
+                yield f
+
 
     def _exec_grep(self, params: Dict) -> ExecutionResult:
         """按正则检索文件内容，返回 相对路径:行号: 内容"""
@@ -509,7 +579,8 @@ class FileTools:
         matches: List[str] = []
         files_scanned = 0
         truncated = False
-        for f in self._iter_search_files(root, filters):
+        stats: Dict[str, Any] = {}
+        for f in self._iter_search_files(root, filters, stats):
             try:
                 if f.stat().st_size > _SEARCH_MAX_FILE_BYTES:
                     continue
@@ -521,7 +592,11 @@ class FileTools:
             files_scanned += 1
             rel = self._rel(f)
             for lineno, line in enumerate(text.splitlines(), 1):
-                if regex.search(line):
+                # 只在行首 _SEARCH_MAX_MATCH_CHARS 个字符里匹配。这是给模型自带正则
+                # 上的一道时间界：Python 的 re 没有超时，灾难性回溯（`(a+)+$` 撞上长行）
+                # 会把整个工具调用挂死，而 pattern 完全由模型给。限住输入长度不能消除
+                # 回溯，但能把它的上界从"行有多长"压到一个常数。
+                if regex.search(line[:_SEARCH_MAX_MATCH_CHARS]):
                     matches.append(f"{rel}:{lineno}: {line.strip()[:_SEARCH_MAX_LINE_CHARS]}")
                     if len(matches) >= max_results:
                         truncated = True
@@ -529,14 +604,22 @@ class FileTools:
             if truncated:
                 break
 
+        # 两种截断要分开说：撞 max_results 是"结果太多"，撞文件数上限是"根本没扫完"。
+        # 后者尤其要如实回报 —— 否则模型看到"（无匹配）"会得出"这个符号不存在"。
+        file_cap = bool(stats.get("file_cap"))
         body = "\n".join(matches) if matches else f"（无匹配：{pattern}）"
         if truncated:
             body += f"\n... [已截断：达到 max_results={max_results}，请缩小范围或加 glob 过滤]"
+        if file_cap:
+            body += (f"\n... [扫描未完成：遍历文件数达到上限 {_SEARCH_MAX_FILES}，"
+                     "本次结果不完整。请用 path 缩小起点或加 glob 过滤后重试]")
         return ExecutionResult(status="success", data={
             "content": body, "matches": matches, "match_count": len(matches),
-            "files_scanned": files_scanned, "truncated": truncated,
+            "files_scanned": files_scanned, "truncated": truncated or file_cap,
+            "scan_incomplete": file_cap,
             "root": self._rel(root) or ".",
         })
+
 
     def _exec_glob(self, params: Dict) -> ExecutionResult:
         """按通配符查找文件路径（定位文件用，搜内容用 grep）"""
@@ -549,6 +632,12 @@ class FileTools:
             return ExecutionResult(status="error", error_code="400",
                                    message="glob 的 pattern 必须是相对通配符（如 **/*.py）；"
                                            "起点目录请用 path 参数")
+        # `..` 直接拒绝，不靠后面的落点复检兜着。复检会把越界命中静静丢掉，模型看到的
+        # 是"没匹配到"，然后它会换个写法再试一次 —— 与其让它猜，不如告诉它这条路不通。
+        if ".." in Path(pattern.replace("\\", "/")).parts:
+            return ExecutionResult(status="error", error_code="403",
+                                   message="glob 的 pattern 不允许包含 ..（检索不给越界能力）；"
+                                           "起点目录请用 path 参数，且必须在项目目录内")
         root, err = self._search_root(params.get("path"))
         if err:
             return err
@@ -565,10 +654,15 @@ class FileTools:
                     continue
                 if not p.is_file():
                     continue
+                # 落点复检：pattern 里的 `..` 已经在上面挡掉了，但软链接还能把命中带到
+                # 项目外，而且 `_rel()` 越界时会退化成绝对路径原样输出。
+                if not self._search_visible(p):
+                    continue
                 results.append(self._rel(p))
                 if len(results) >= max_results:
                     truncated = True
                     break
+
         except (ValueError, IndexError, NotImplementedError, OSError) as e:
             return ExecutionResult(status="error", error_code="400",
                                    message=f"通配符无效: {e}")

@@ -764,15 +764,22 @@ class ExecutionLayer:
         fail_key = f"{tool_name}:{error_code or 'ERROR'}"
         self.repeat_fail[fail_key] = self.repeat_fail.get(fail_key, 0) + 1
         count = self.repeat_fail[fail_key]
-        if count >= self.repeat_fail_threshold:
+        # 409（str_replace 定位不唯一）用更宽的阈值：上面的 instruction 明确要求
+        # "补足上下文后重试同一工具"，而正常的消歧本来就要两三轮。按同一阈值算的话，
+        # 照指令做事的模型会在第 3 次把这个工具用没了 —— 那是我们自己把路堵死。
+        # 但也不能完全不计数：真死循环还是得掐，所以只是放宽到两倍。
+        threshold = (self.repeat_fail_threshold * 2 if error_code == "409"
+                     else self.repeat_fail_threshold)
+        if count >= threshold:
             self.banned_tools.add(tool_name)
             return (f" ⚠ 工具 {tool_name} 已连续失败 {count} 次，已被熔断："
                     "本次对话禁止再次调用它。请换用其他工具完成目标，"
                     "或直接向用户说明无法完成的原因。")
-        if count >= 2:
+        if count >= threshold - 1:
             return (f"（注意：{tool_name} 已连续失败 {count} 次，"
                     "再失败一次将被熔断，请换用其他工具或直接回复用户）")
         return None
+
 
     # ---------- Plan Mode（计划提议与批准） ----------
 
