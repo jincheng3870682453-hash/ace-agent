@@ -73,7 +73,9 @@ class DockerSandbox:
         self.pids_limit = int(pids_limit)
         self.network = network
         self._available: Optional[bool] = None   # 探测结果缓存
+        self._image_ok: Optional[bool] = None    # 镜像存在性缓存（与探测同理，挡在每条命令前）
         self._detail = ""
+
 
     # ---------- 可用性 ----------
 
@@ -105,14 +107,37 @@ class DockerSandbox:
         """最近一次探测的说明，用于把失败原因原样告诉用户。"""
         return self._detail
 
-    def image_present(self) -> bool:
+    def image_present(self, force: bool = False) -> bool:
+        """沙箱镜像在本地。结果缓存，理由和 probe 一样：它挡在每条命令前面。"""
+        if self._image_ok is not None and not force:
+            return self._image_ok
         try:
             r = subprocess.run(["docker", "image", "inspect", self.image],
                                capture_output=True, text=True,
                                timeout=PROBE_TIMEOUT, stdin=subprocess.DEVNULL)
-            return r.returncode == 0
+            self._image_ok = (r.returncode == 0)
         except (subprocess.TimeoutExpired, OSError):
-            return False
+            self._image_ok = False
+        return self._image_ok
+
+    def _ensure_ready(self) -> None:
+        """跑之前把"能不能跑"问清楚，不能跑就抛 DockerUnavailable（调用方会转成 503）。
+
+        镜像缺失单独判一次，而不是让 `docker run` 自己去撞，原因是撞出来的错不对：
+        本地找不到 `ace-sandbox:latest` 时 docker 会先当它是远端镜像去 registry 拉，
+        于是用户等一个网络超时，然后拿到一句 "pull access denied / not found" ——
+        听起来像是仓库配错了或者要登录，而真正要做的只是本地 build 一次。
+
+        这个镜像是故意不发布到 registry 的：它是执行边界，内容得由部署方自己掌握。
+        所以"拉不到"不是故障，是**本来就要你构建**。
+        """
+        if not self.probe():
+            raise DockerUnavailable(self._detail)
+        if not self.image_present():
+            raise DockerUnavailable(
+                f"本地没有沙箱镜像 {self.image}（它不发布到 registry，需要自己构建）：\n"
+                f"    docker build -t {self.image} -f docker/Dockerfile.sandbox .\n"
+                "已有镜像可用 --sandbox-image 指定；不想要容器边界就用 --sandbox off。")
 
     # ---------- 执行 ----------
 
@@ -167,16 +192,14 @@ class DockerSandbox:
 
     def run_shell(self, command: str) -> Dict:
         """在容器里跑一条 shell 命令。命令原文经 argv 传给 sh -c，不经宿主 shell。"""
-        if not self.probe():
-            raise DockerUnavailable(self._detail)
+        self._ensure_ready()
         name = f"ace-sbx-{uuid.uuid4().hex[:10]}"
         args = self._base_args(name) + [self.image, "sh", "-c", command]
         return self._run(args, name)
 
     def run_python(self, code: str) -> Dict:
         """在容器里跑一段 Python。代码经 stdin 喂给 `python -`，不落宿主磁盘。"""
-        if not self.probe():
-            raise DockerUnavailable(self._detail)
+        self._ensure_ready()
         name = f"ace-sbx-{uuid.uuid4().hex[:10]}"
         args = self._base_args(name) + [
             "-e", "PYTHONIOENCODING=utf-8",

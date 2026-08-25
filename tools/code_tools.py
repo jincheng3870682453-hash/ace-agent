@@ -132,9 +132,6 @@ class CodeTools:
                             "timeout": self.docker_sandbox.timeout},
             })
 
-        import subprocess
-
-        import uuid
         base = Path(self.sandbox_base) if self.sandbox_base else Path(tempfile.gettempdir())
         sandbox_dir = base / f"agent_sandbox_{uuid.uuid4().hex[:8]}"
         try:

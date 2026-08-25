@@ -1751,6 +1751,34 @@ check("docker 不可用时命令没有在宿主执行（无静默回退）",
 r = run_agent(el_sbx, "code_execute", code="print(1)")
 check("docker 不可用时 code_execute 同样返回 503", r["status"] == "503", r.get("message"))
 
+# 镜像缺失是另一种失败，必须自己判、自己报。让 docker run 去撞的话，本地找不到
+# ace-sandbox 时 docker 会当它是远端镜像去 registry 拉，用户先等一个网络超时，
+# 再拿到 "pull access denied" —— 听起来像仓库配错了或要登录，而真正要做的
+# 只是本地 build 一次。这个镜像故意不发布：它是执行边界，内容得由部署方掌握。
+el_img = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False},
+                                "sandbox_base": str(TEST_TMP),
+                                "sandbox": {"mode": "docker"}})
+el_img.executor.docker_sandbox._available = True     # daemon 正常
+el_img.executor.docker_sandbox._image_ok = False     # 但镜像没构建
+_img_file = Path(el_img.project_root) / "image_missing_probe.txt"
+r = run_confirmed(el_img, "terminal_exec", command=f"echo hi > {_img_file.name}")
+check("镜像缺失时 terminal_exec 返回 503", r["status"] == "503", r.get("message"))
+check("镜像缺失的报错给出 build 命令（而不是让用户去查 pull 权限）",
+      "docker build" in (r.get("message") or "")
+      and "Dockerfile.sandbox" in (r.get("message") or ""), r.get("message"))
+check("镜像缺失时也不回退宿主", not _img_file.exists(), str(_img_file))
+r = run_agent(el_img, "code_execute", code="print(1)")
+check("镜像缺失时 code_execute 同样 503 且给出 build 命令",
+      r["status"] == "503" and "docker build" in (r.get("message") or ""), r.get("message"))
+# 这两个入口都必须过 _ensure_ready：只查 probe() 的话镜像缺失又漏回 docker run 了
+_sbx_src = (FOLDER / "tools" / "docker_sandbox.py").read_text(encoding="utf-8")
+check("run_shell / run_python 都走 _ensure_ready（不各自只 probe）",
+      _sbx_src.count("self._ensure_ready()") == 2
+      and _sbx_src.count("def run_shell") == 1
+      and _sbx_src.count("def run_python") == 1, _sbx_src.count("self._ensure_ready()"))
+
+
 # ============================================================
 print("[17] 外部内容隔离 —— 定界 + 来源标注 + 提示词约定")
 # ============================================================

@@ -274,6 +274,9 @@ python ai_code.py --sandbox docker
 
 两点要知道：容器共享内核，容器逃逸漏洞仍然是逃逸，更强的边界得上虚拟机；**开了沙箱但 Docker 不可用时直接返回 503，不会静默回退宿主执行**——回退会让你以为命令跑在容器里而实际跑在自己机器上。
 
+镜像必须自己 build，它不会发布到任何 registry：它就是执行边界，里面装了什么得由部署方掌握。所以"镜像没构建"是单独判、单独报的一档 503，直接把上面那条 `docker build` 给你——而不是让 `docker run` 去 registry 找 `ace-sandbox`，先等一个网络超时、再回一句 `pull access denied` 让你以为是要登录。
+
+
 **Job Object 隔离（`--sandbox job`，Windows）**
 
 Docker 没装、或者装了但不想为一条 `dir` 起容器时，还有一档更轻的边界。它由 `executor/` 下的 Go 执行器提供，是项目里唯一需要编译的部分：
