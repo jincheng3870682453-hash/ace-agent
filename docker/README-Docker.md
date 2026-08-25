@@ -75,6 +75,14 @@ docker build -t ace-sandbox:latest -f docker/Dockerfile.sandbox .
 python ai_code.py --sandbox docker
 ```
 
+构建卡在 `load metadata for docker.io/library/python` 是拉不到 Docker Hub，不是 Dockerfile 的问题。
+用任一可达的镜像源先取基础镜像、再打成 Dockerfile 里写的名字，构建命令本身不用改：
+
+```bash
+docker pull <镜像源>/library/python:3.12-slim-bookworm
+docker tag  <镜像源>/library/python:3.12-slim-bookworm python:3.12-slim-bookworm
+```
+
 容器参数（每一条都对应一类具体威胁，改之前想清楚）：
 
 - `--network none` —— 没有网卡。凭据传不出去，也下载不了第二阶段载荷
