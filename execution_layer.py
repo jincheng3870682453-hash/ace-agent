@@ -40,6 +40,7 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 
 from tools import ExecutionResult, ToolExecutor, repair_backslash_json
+from ace_isolation import wrap_untrusted
 
 # ============================================================
 # 导入用户代码库（V1 + V2）
@@ -469,7 +470,11 @@ class ExecutionLayer:
         for m in self._last_memory_list:
             mark = "⚑" if m.get("urgent") else "·"
             lines.append(f"{mark} {m['text']}")
-        return "\n".join(lines) + "\n\n" + user_input
+        # SEC-011：记忆条目是从**过去的对话**里摘出来的，而过去的对话里可能已经混进过
+        # 网页正文、命令输出。不隔离的话，一次注入可以在会话之间存活 —— 攻击文本被记进
+        # archive，下次自动预注入到 prompt 最前面，且位置比用户本轮输入更靠前。
+        return wrap_untrusted("\n".join(lines), source="历史对话记忆",
+                              origin="memory_archive") + "\n\n" + user_input
 
     def process_agent_output(self, agent_output: str, user_input: str) -> Dict[str, Any]:
         """

@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -61,9 +62,10 @@ from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E4
                           ModelProvider, TOOLS, ask_grant, ask_yes_no,
                           claims_completed_action,
                           content_to_tool_protocol, final_reply_protocol,
-                          load_system_prompt, render_result,
+                          load_system_prompt, render_tool_result,
                           resolve_permission, resolve_plan,
                           sanitize_plain_content, tool_calls_to_protocol)
+from ace_isolation import wrap_untrusted  # noqa: E402
 from i18n import set_language, t  # noqa: E402
 
 CONFIG_PATH = Path.home() / ".ai_code.json"
@@ -1475,6 +1477,9 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         set_language(self.lang)  # 界面语言跟随配置/@lang
         self.skill = str(cfg.get("skill", "general"))
         self.context_refs: List[str] = []
+        # SEC-011：隔离块的 id 按会话固定。每轮换 id 会让系统提示词逐轮变化，
+        # 白费上游 KV 缓存；要防的是引用文件的作者猜中 id，不是同会话内的重放。
+        self._ctx_nonce = secrets.token_hex(4)
         self.messages: List[Dict] = []
         self.session = {"rounds": 0, "tools": 0, "violations": 0, "start": time.time()}
         self._init_execution_layer()
@@ -1543,7 +1548,14 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             parts.append(f"【当前技能】{skill['name']}：{skill['desc']}。"
                          f"推荐工具：{', '.join(skill['tools'])}。")
         if self.context_refs:
-            parts.append("【已引用上下文】\n" + "\n".join(self.context_refs))
+            # SEC-011：@file / @folder 的内容进的是**系统提示词**，比工具结果那条路径更
+            # 危险 —— 系统 role 天然被模型当成最高权威。文件正文可能来自任何地方
+            # （克隆的仓库、收到的附件），所以逐条包进隔离块并标注来源。
+            # context_refs 本身保持原样，因为 _at_refs 要拿首行当标题显示。
+            parts.append("【已引用上下文】\n" + "\n".join(
+                wrap_untrusted(ref, source="用户 @ 引用的文件/目录内容",
+                               origin="at_ref", nonce=self._ctx_nonce)
+                for ref in self.context_refs))
         return "\n\n".join(parts)
 
     @staticmethod
@@ -1784,7 +1796,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 self.session["violations"] += 1
                 print(c("red", t("error_line", status=result["status"],
                                  msg=result.get("message", "")[:80])))
-                next_user = PROMPT_ERROR_RETRY.format(rendered=render_result(result))
+                next_user = PROMPT_ERROR_RETRY.format(rendered=render_tool_result(result))
             else:
                 self.session["tools"] += 1
                 status_mark = c("green", "✓") if result["status"] == "SUCCESS" else c("yellow", "⚠")
@@ -1806,7 +1818,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     data = result.get("data") or {}
                     self.client._mock_provider.mock_tool_result = (
                         data.get("datetime") or json.dumps(data, ensure_ascii=False))
-                next_user = PROMPT_TOOL_RESULT.format(rendered=render_result(result))
+                next_user = PROMPT_TOOL_RESULT.format(rendered=render_tool_result(result))
         print(c("yellow", t("max_rounds")))
 
     # ---------- 无感回滚 ----------

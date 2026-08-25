@@ -47,6 +47,7 @@ FOLDER = Path(__file__).resolve().parent
 sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
+from ace_isolation import untrusted_source, wrap_untrusted  # noqa: E402
 from tools.base import repair_backslash_json  # noqa: E402
 from tools.registry import openai_tools  # noqa: E402
 
@@ -409,6 +410,24 @@ def render_result(r: Dict) -> str:
 
 
 # ============================================================
+# 外部内容隔离（SEC-011）
+# ============================================================
+# 定界 + 来源标注的实现在 ace_isolation.py —— 那里不 import 项目内任何模块，
+# 因为 execution_layer（记忆预注入）也要用它，而 execution_layer 不能反向依赖入口。
+#
+# 分成两个函数而不是直接改 render_result：render_result 还被人类可读的展示通道
+# 和测试用，往里塞隔离块会把"给模型看"和"给人看"两件事又搅在一起。
+
+
+def render_tool_result(r: Dict) -> str:
+    """给模型看的工具结果：序列化 + 隔离标记 + 来源标注"""
+    tool = r.get("tool")
+    return wrap_untrusted(render_result(r), source=untrusted_source(tool),
+                          origin=f"tool:{tool}" if tool else "")
+
+
+
+# ============================================================
 # 会话状态机（run_conversation 与 ai_code.AgentCLI.converse 共用）
 #
 # 两个前端的呈现层差别很大（一个 emoji 直打，一个 i18n + spinner + 流式），
@@ -568,14 +587,14 @@ def run_conversation(provider: ModelProvider, el: ExecutionLayer,
 
         if result["status"] in ERROR_STATUSES:
             # 把错误反馈给模型，让它修正后继续
-            next_prompt = PROMPT_ERROR_RETRY.format(rendered=render_result(result))
+            next_prompt = PROMPT_ERROR_RETRY.format(rendered=render_tool_result(result))
             continue
 
         # 工具执行成功：结果回填模型，继续下一轮
         if provider.mode == "mock" and result["status"] == "SUCCESS":
             data = result.get("data") or {}
             provider.mock_tool_result = data.get("datetime") or json.dumps(data, ensure_ascii=False)
-        next_prompt = PROMPT_TOOL_RESULT.format(rendered=render_result(result))
+        next_prompt = PROMPT_TOOL_RESULT.format(rendered=render_tool_result(result))
     print("\n⚠️ 达到最大轮数，Agent 未给出最终回复。")
 
 
