@@ -1839,6 +1839,224 @@ check("隔离标记与 <EXTERNAL> 协议不冲突",
       "EXTERNAL>" not in _iso.UNTRUSTED_BEGIN and "<INTERNAL" not in _iso.UNTRUSTED_BEGIN)
 
 # ============================================================
+print("[18] 出站请求闸门（SSRF）—— 全记录校验 + 解析失败拒绝 + pin-to-IP + 逐跳复检")
+# ============================================================
+import socket as _socket  # noqa: E402
+import ace_net as _net  # noqa: E402
+
+# 这一整段不碰真实网络：主机名一律用 IP 字面量（不触发 DNS）或注入假解析器，
+# 请求层用假的 requests 模块。安全测试依赖外网就等于没有测试。
+
+# —— 地址判定：每一类都要拦，并且原因要说得准 ——
+for _ip in ("127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.0.1", "169.254.169.254",
+            "100.64.0.1", "0.0.0.0", "::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1",
+            "fd00::1", "224.0.0.1", "not-an-ip"):
+    check(f"拒绝 {_ip}", _net.ip_reject_reason(_ip) is not None)
+check("回环的原因说的是回环，不是笼统的内网",
+      "回环" in (_net.ip_reject_reason("127.0.0.1") or ""), _net.ip_reject_reason("127.0.0.1"))
+check("::ffff:127.0.0.1 剥掉包装后仍认得是回环",
+      "回环" in (_net.ip_reject_reason("::ffff:127.0.0.1") or ""),
+      _net.ip_reject_reason("::ffff:127.0.0.1"))
+check("云元数据端点在原因里点名",
+      "169.254.169.254" in (_net.ip_reject_reason("169.254.169.254") or ""))
+for _ip in ("8.8.8.8", "93.184.216.34", "2001:4860:4860::8888"):
+    check(f"放行公网 {_ip}", _net.ip_reject_reason(_ip) is None, _net.ip_reject_reason(_ip))
+
+# —— URL 层：协议 + 字面量地址（都不需要 DNS） ——
+check("file:// 被拒", "仅支持 http/https" in (_net.check_url("file:///etc/passwd") or ""))
+check("缺协议被拒", "缺少协议" in (_net.check_url("//example.com/a") or ""))
+check("http://127.0.0.1:8080/admin 被拒",
+      "回环" in (_net.check_url("http://127.0.0.1:8080/admin") or ""))
+check("IPv6 字面量 http://[::1]/ 被拒", _net.check_url("http://[::1]/") is not None)
+check("十进制形式 IP 也走同一套判定",
+      _net.check_url("http://2130706433/") is not None)   # = 127.0.0.1
+check("缺主机名被拒", "缺少主机名" in (_net.check_url("http://") or ""))
+check("端口非法被拒", "端口非法" in (_net.check_url("http://example.com:99999/") or ""))
+check("主机部分含反斜杠被拒（浏览器与解析器理解不一致）",
+      "反斜杠" in (_net.check_url("http://127.0.0.1\\@ok.tld/x") or ""),
+      _net.check_url("http://127.0.0.1\\@ok.tld/x"))
+check("公网字面量放行", _net.check_url("http://93.184.216.34/a") is None,
+      _net.check_url("http://93.184.216.34/a"))
+
+
+def _stub_resolver(ips):
+    """假 DNS：返回给定地址列表，或抛出给定异常。"""
+    def _r(host, port=0, *a, **kw):
+        if isinstance(ips, Exception):
+            raise ips
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", (ip, port or 0)) for ip in ips]
+    return _r
+
+
+# 缺口 1：多 A 记录只查第一条。旧实现 for 循环里带 break，第一条是公网就放行。
+_multi = _stub_resolver(["93.184.216.34", "127.0.0.1"])
+try:
+    _net.resolve_host("multi.test", 80, resolver=_multi)
+    _multi_blocked = False
+except _net.UrlBlocked as e:
+    _multi_blocked, _multi_why = True, str(e)
+check("多 A 记录中夹一条回环 → 整体拒绝", _multi_blocked, "第一条是公网就放行了")
+check("拒绝原因点明是解析结果之一", _multi_blocked and "解析结果之一" in _multi_why, _multi_why)
+try:
+    _net.resolve_host("multi2.test", 80, resolver=_stub_resolver(["10.0.0.5", "93.184.216.34"]))
+    _first_bad = False
+except _net.UrlBlocked:
+    _first_bad = True
+check("第一条就是内网时同样拒绝", _first_bad)
+
+# 缺口 2：解析失败 fail-open。旧实现 except Exception 后返回错误串还算好，
+# 但 ace_net 这条路必须抛 UrlBlocked —— 解析不出来就不该连。
+try:
+    _net.resolve_host("nx.test", 80, resolver=_stub_resolver(_socket.gaierror("no such host")))
+    _dns_fail_open = True
+except _net.UrlBlocked as e:
+    _dns_fail_open, _dns_why = False, str(e)
+check("DNS 解析失败 → 拒绝（不是放行）", _dns_fail_open is False, "解析失败仍然放行")
+check("解析失败的原因写明拒绝了谁", "nx.test" in _dns_why, _dns_why)
+try:
+    _net.resolve_host("empty.test", 80, resolver=_stub_resolver([]))
+    _empty_ok = True
+except _net.UrlBlocked:
+    _empty_ok = False
+check("DNS 返回空列表 → 拒绝", _empty_ok is False)
+check("全部公网记录 → 原样返回供 pin 使用",
+      _net.resolve_host("ok.test", 80, resolver=_stub_resolver(["93.184.216.34", "1.1.1.1"]))
+      == ["93.184.216.34", "1.1.1.1"])
+
+
+class _FakeResp:
+    def __init__(self, status_code=200, headers=None, text="ok"):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.text = text
+
+
+class _FakeRequests:
+    """假 requests：记录每次调用，按脚本依次返回响应。"""
+
+    def __init__(self, script=None):
+        self.script = list(script or [])
+        self.calls = []
+
+    def request(self, method, url, **kw):
+        self.calls.append({"method": method, "url": url, "kw": kw})
+        return self.script.pop(0) if self.script else _FakeResp()
+
+
+# 缺口 3（最稳的利用路径）：公网 URL 302 到 127.0.0.1，旧实现只关掉了自动重定向，
+# 但那只是"不跟"，模型换成两次调用照样能走到内网 —— 这里是"跟，但每一跳都复检"。
+_fr = _FakeRequests([_FakeResp(302, {"Location": "http://127.0.0.1:8080/admin"})])
+try:
+    _net.safe_request("GET", "http://93.184.216.34/start", requests_mod=_fr)
+    _redir_blocked = False
+except _net.UrlBlocked as e:
+    _redir_blocked, _redir_why = True, str(e)
+check("302 到 127.0.0.1 被拦住", _redir_blocked, "重定向目标没复检")
+check("被拦时原因是回环", _redir_blocked and "回环" in _redir_why, _redir_why)
+check("内网那一跳一个字节都没发出去", len(_fr.calls) == 1, _fr.calls)
+check("每一跳都关掉自动重定向",
+      all(c["kw"].get("allow_redirects") is False for c in _fr.calls), _fr.calls)
+
+# 正常重定向要照跟，否则防护就变成了功能墙
+_fr2 = _FakeRequests([_FakeResp(301, {"Location": "http://1.1.1.1/moved"}), _FakeResp(200)])
+_resp, _trail = _net.safe_request("GET", "http://93.184.216.34/a", requests_mod=_fr2)
+check("公网之间的重定向正常跟随", _resp.status_code == 200 and len(_trail) == 2, _trail)
+check("跳转链如实记录", _trail[-1] == "http://1.1.1.1/moved", _trail)
+_fr3 = _FakeRequests([_FakeResp(302, {"Location": "/rel/path"}), _FakeResp(200)])
+_net.safe_request("GET", "http://93.184.216.34/a/b", requests_mod=_fr3)
+check("相对 Location 按基址补全", _fr3.calls[1]["url"] == "http://93.184.216.34/rel/path",
+      _fr3.calls[1]["url"])
+
+# 303/302 把 POST 降级成 GET 并丢掉请求体：顺带保证外发数据不被转投第二个站点
+_fr4 = _FakeRequests([_FakeResp(303, {"Location": "http://1.1.1.1/next"}), _FakeResp(200)])
+_net.safe_request("POST", "http://93.184.216.34/p", requests_mod=_fr4,
+                  json_body={"secret": "x"})
+check("303 后方法降级为 GET", _fr4.calls[1]["method"] == "GET", _fr4.calls)
+check("303 后请求体不再转发", "json" not in _fr4.calls[1]["kw"], _fr4.calls[1]["kw"])
+_fr5 = _FakeRequests([_FakeResp(307, {"Location": "http://1.1.1.1/next"}), _FakeResp(200)])
+_net.safe_request("POST", "http://93.184.216.34/p", requests_mod=_fr5, json_body={"a": 1})
+check("307 保留方法与请求体",
+      _fr5.calls[1]["method"] == "POST" and _fr5.calls[1]["kw"].get("json") == {"a": 1})
+
+# 重定向环不能把进程拖住
+_loop_fr = _FakeRequests([_FakeResp(302, {"Location": "http://93.184.216.34/a"})] * 12)
+try:
+    _net.safe_request("GET", "http://93.184.216.34/a", requests_mod=_loop_fr)
+    _loop_stopped = False
+except _net.UrlBlocked as e:
+    _loop_stopped, _loop_why = True, str(e)
+check("重定向环在上限处中止", _loop_stopped and "重定向超过" in _loop_why, _loop_why)
+check("中止前不超过上限+1 次请求",
+      len(_loop_fr.calls) == _net.MAX_REDIRECTS + 1, len(_loop_fr.calls))
+
+
+# 缺口 4：校验结果没 pin 到实际连接。请求期间对目标主机的解析必须返回已校验的那几个 IP，
+# 而不是再去问一次 DNS —— DNS rebinding 就活在这"再问一次"里。
+class _PinProbe:
+    def __init__(self, host):
+        self.host = host
+        self.seen = None
+
+    def request(self, method, url, **kw):
+        self.seen = _socket.getaddrinfo(self.host, 80)
+        return _FakeResp()
+
+
+_orig_gai = _socket.getaddrinfo
+_pin_probe = _PinProbe("pin.test")
+_net.safe_request("GET", "http://pin.test/x", requests_mod=_pin_probe,
+                  resolver=_stub_resolver(["93.184.216.34"]))
+check("请求期间目标主机解析被钉死在已校验 IP",
+      _pin_probe.seen and [e[4][0] for e in _pin_probe.seen] == ["93.184.216.34"],
+      _pin_probe.seen)
+check("请求期间解析结果带正确端口",
+      _pin_probe.seen and _pin_probe.seen[0][4][1] == 80, _pin_probe.seen)
+check("请求结束后全局解析函数被还原", _socket.getaddrinfo is _orig_gai)
+# pin 只管被 pin 的主机：同进程里别人（比如指向 127.0.0.1 的本地模型网关）不该被牵连
+with _net.pin_host("pin.test", ["93.184.216.34"]):
+    _other = _socket.getaddrinfo("127.0.0.1", 80)
+    _pinned = _socket.getaddrinfo("pin.test", 443)
+check("pin 期间未被 pin 的主机照常解析", bool(_other))
+check("pin 支持不同端口", _pinned[0][4][1] == 443, _pinned)
+check("pin_host 退出后恢复", _socket.getaddrinfo is _orig_gai)
+
+# —— 出站目的地清单（判定层已就位，接审批闸门是下一阶段的事） ——
+check("默认清单含工具自己要访问的端点",
+      all(_net.host_in_allowlist(h) for h in ("duckduckgo.com", "html.duckduckgo.com",
+                                              "www.bing.com", "image.pollinations.ai")))
+check("清单外的域名不匹配", not _net.host_in_allowlist("evil.tld"))
+check("只在标签边界后缀匹配（notexample 不命中 example）",
+      not _net.host_matches("notexample.com", "example.com"))
+check("末尾点被规范化掉（evil.tld. 与 evil.tld 同一台主机）",
+      _net.host_matches("example.com.", "example.com"))
+check("条目写成 URL / 带端口 / 带前导点都收得干净",
+      all(_net.host_matches("api.mycorp.com", e) for e in
+          ("https://api.mycorp.com/v1", "api.mycorp.com:443", ".mycorp.com", "*.mycorp.com")))
+
+# —— 端到端：走真实工具链，验证拒绝落成 400 而不是 500 ——
+_el_net = ExecutionLayer(project_root=str(mktemp()), permission_level="full",
+                         config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+r = run_confirmed(_el_net, "api_get", url="http://127.0.0.1:9/x")
+check("api_get 指向回环 → 400", r["status"] == "400", r.get("message"))
+check("api_get 拒绝原因透给模型", "回环" in (r.get("message") or ""), r.get("message"))
+r = run_confirmed(_el_net, "api_post", url="http://169.254.169.254/latest/meta-data/",
+                  data={"a": 1})
+check("api_post 指向云元数据 → 400", r["status"] == "400", r.get("message"))
+r = run_confirmed(_el_net, "api_get", url="file:///etc/passwd")
+check("api_get 非 http/https → 400", r["status"] == "400", r.get("message"))
+
+# —— 源码级：出站只能有一条路径，旧的旁路不能再回来 ——
+_web_src = (Path(__file__).parent / "tools" / "web_tools.py").read_text(encoding="utf-8")
+_base_src = (Path(__file__).parent / "tools" / "base.py").read_text(encoding="utf-8")
+_net_src = (Path(__file__).parent / "ace_net.py").read_text(encoding="utf-8")
+check("web_tools 不再直接 requests.get/post",
+      "requests.get(" not in _web_src and "requests.post(" not in _web_src)
+check("web_tools 四条出站全部走 safe_request",
+      _web_src.count("ace_net.safe_request") >= 4, _web_src.count("ace_net.safe_request"))
+check("_check_url 委托给 ace_net", "from ace_net import check_url" in _base_src)
+check("safe_request 显式关闭自动重定向", "allow_redirects=False" in _net_src)
+
+# ============================================================
 print("=" * 60)
 
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")

@@ -9,7 +9,6 @@ import time
 import tempfile
 import shutil
 import subprocess
-import ipaddress
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -169,49 +168,19 @@ class ToolExecutorBase:
 
     @staticmethod
     def _check_url(url: str) -> Optional[str]:
-        """URL 协议校验 + 私网地址防护（DNS 解析后拦截内网/回环/链路本地，防 SSRF）
+        """URL 协议 + 地址校验：通过返回 None，否则返回拒绝原因。
 
-        与旧版的差异（三处 fail-open 已收）：
-          1. 校验**全部**解析结果，不再只看第一条（多 A 记录混入内网可绕过）
-          2. DNS 解析失败不再放行，直接拒绝
-          3. 调用方必须传 allow_redirects=False（302 跳内网是独立的绕过路径）
-        残留风险：校验与实际请求之间会二次解析 DNS（TOCTOU / DNS rebinding），
-        彻底修需要把已校验 IP 固定进连接层，本次未做。
+        判定本身住在 ace_net —— 那里不 import 项目内任何模块，并且和它同源的
+        `safe_request()` 才是真正把"校验"和"连接"绑在一起的那条路径。
+
+        这个函数只留给**接管不了连接**的场景（`browser_open` 把 URL 交给系统
+        浏览器）。凡是本进程自己发的请求都必须走 `ace_net.safe_request()`：
+        校验与连接一分开，DNS rebinding 和 302 跳内网这两条就立刻回来了 ——
+        校验时解析一次、requests 再解析一次，两次之间答案可以变。
         """
-        from urllib.parse import urlparse
-        try:
-            parsed = urlparse(url)
-            scheme = parsed.scheme.lower()
-        except Exception:
-            return "URL 解析失败"
-        if not scheme:
-            return "URL 缺少协议（需要 http/https）"
-        if scheme not in ("http", "https"):
-            return f"仅支持 http/https 协议，拒绝: {scheme}"
-        host = parsed.hostname
-        if not host:
-            return "URL 缺少主机名"
-        import socket
-        try:
-            infos = socket.getaddrinfo(host, None)
-        except Exception as e:
-            return f"主机名解析失败，拒绝访问: {host}（{e}）"
-        checked = 0
-        for info in infos:
-            ip = info[4][0].split("%")[0]
-            try:
-                addr = ipaddress.ip_address(ip)
-            except ValueError:
-                continue
-            checked += 1
-            if (addr.is_private or addr.is_loopback or addr.is_link_local
-                    or addr.is_multicast or addr.is_reserved
-                    or addr.is_unspecified
-                    or (addr.version == 4 and ip.startswith("100.64."))):
-                return f"拒绝访问内网/回环/链路本地地址: {ip}"
-        if checked == 0:
-            return f"主机名未解析到可校验的 IP，拒绝访问: {host}"
-        return None
+        from ace_net import check_url
+        return check_url(url)
+
 
     def _resolve_read_path(self, path_str: str) -> Optional[Path]:
         """解析对话内文件路径：支持 ~ 展开与相对项目路径"""

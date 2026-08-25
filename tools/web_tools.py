@@ -9,10 +9,10 @@ import subprocess
 import sys
 import time
 import urllib.parse
-import ipaddress
 from pathlib import Path
 from typing import Any, Dict, List
 
+import ace_net
 from tools.result import ExecutionResult
 
 
@@ -63,9 +63,12 @@ class WebTools:
     @staticmethod
     def _search_engine(engine_url: str, query: str, top_k: int,
                        requests, parser) -> List[Dict]:
+        # 引擎地址是写死的常量，但仍然走 safe_request：出站请求只留一条路径，
+        # 才不会下次改动时又冒出一个"直接 requests.get"的旁路 —— SSRF 那一轮
+        # 留下的缺口正是这么来的（校验一条路、发请求另一条路）。
         try:
-            resp = requests.get(
-                engine_url, params={"q": query},
+            resp, _trail = ace_net.safe_request(
+                "GET", engine_url, requests_mod=requests, params={"q": query},
                 headers={"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                         "AppleWebKit/537.36 (KHTML, like Gecko) "
                                         "Chrome/124.0 Safari/537.36")},
@@ -149,39 +152,62 @@ class WebTools:
 
     def _exec_api_get(self, params: Dict) -> ExecutionResult:
         url = str(params.get("url", ""))
-        url_err = self._check_url(url)
-        if url_err:
-            return ExecutionResult(status="error", error_code="400", message=url_err)
+        # 协议先判：非 http/https 连 requests 都不用导，也让"没装 requests"不影响这条拒绝
+        scheme_err = ace_net.check_scheme(url)
+        if scheme_err:
+            return ExecutionResult(status="error", error_code="400", message=scheme_err)
         try:
             import requests
-            # allow_redirects=False：302 跳 169.254.169.254 是绕过 _check_url 的独立路径
-            resp = requests.get(url, timeout=30, allow_redirects=False)
-            return ExecutionResult(status="success", data={
-                "status_code": resp.status_code,
-                "content": resp.text[:5000]
-            })
+        except ImportError:
+            return ExecutionResult(status="error", error_code="500",
+                                   message="api_get 需要 requests 库: pip install requests")
+        try:
+            # safe_request 自己解析、检查全部记录、把 IP 钉进本次连接，并逐跳复检
+            resp, trail = ace_net.safe_request("GET", url, requests_mod=requests,
+                                               timeout=30)
+        except ace_net.UrlBlocked as e:
+            # 400 不是 500：这是拒绝而非故障，模型要换目标而不是原样重试
+            return ExecutionResult(status="error", error_code="400", message=str(e))
         except Exception as e:
             return ExecutionResult(status="error", error_code="500", message=str(e))
+        return ExecutionResult(status="success", data={
+            "status_code": resp.status_code,
+            "content": resp.text[:5000],
+            # 跟了几跳、最后落在哪儿要如实说：重定向到别的站点是模型该知道的事实
+            "final_url": trail[-1],
+            "redirects": len(trail) - 1,
+        })
 
     def _exec_api_post(self, params: Dict) -> ExecutionResult:
         url = str(params.get("url", ""))
-        url_err = self._check_url(url)
-        if url_err:
-            return ExecutionResult(status="error", error_code="400", message=url_err)
+        scheme_err = ace_net.check_scheme(url)
+        if scheme_err:
+            return ExecutionResult(status="error", error_code="400", message=scheme_err)
         try:
             import requests
-            resp = requests.post(url, json=params.get("data", {}), timeout=30,
-                                 allow_redirects=False)
-            return ExecutionResult(status="success", data={
-                "status_code": resp.status_code,
-                "content": resp.text[:5000]
-            })
+        except ImportError:
+            return ExecutionResult(status="error", error_code="500",
+                                   message="api_post 需要 requests 库: pip install requests")
+        try:
+            resp, trail = ace_net.safe_request("POST", url, requests_mod=requests,
+                                               json_body=params.get("data", {}),
+                                               timeout=30)
+        except ace_net.UrlBlocked as e:
+            return ExecutionResult(status="error", error_code="400", message=str(e))
         except Exception as e:
             return ExecutionResult(status="error", error_code="500", message=str(e))
+        return ExecutionResult(status="success", data={
+            "status_code": resp.status_code,
+            "content": resp.text[:5000],
+            "final_url": trail[-1],
+            "redirects": len(trail) - 1,
+        })
 
     def _exec_browser_open(self, params: Dict) -> ExecutionResult:
         """用系统默认浏览器打开 URL（真实实现，仅 http/https）"""
         url = str(params.get("url", ""))
+        # 这条路只能做校验：URL 交给系统浏览器之后连接不再经过本进程，
+        # 没法 pin 到已校验的 IP，也拦不住浏览器自己跟的重定向。
         url_err = self._check_url(url)
         if url_err:
             return ExecutionResult(status="error", error_code="400", message=url_err)
@@ -222,7 +248,8 @@ class WebTools:
         url = (f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
                f"?width={width}&height={height}&nologo=true")
         try:
-            resp = requests.get(url, timeout=60)
+            resp, _trail = ace_net.safe_request("GET", url, requests_mod=requests,
+                                                timeout=60)
             resp.raise_for_status()
             img_path.write_bytes(resp.content)
         except Exception as e:
