@@ -140,6 +140,33 @@ def final_reply_protocol(content: str) -> str:
             f"<EXTERNAL>\nanswer.\n{content.strip()}\n</EXTERNAL>")
 
 
+# 模型"声称已完成写操作"的措辞。只匹配完成态（已…/…了/created/has been），
+# 不匹配"我将要创建"这类意图陈述，否则正常的计划说明会被误判。
+_CLAIM_DONE_RE = re.compile(
+    r"已(?:经)?(?:为你|帮你|在)?[^。\n]{0,12}?"
+    r"(?:创建|建立|新建|写入|保存|生成|修改|更新|删除|移动|重命名|执行)"
+    r"|(?:创建|写入|保存|生成|修改|删除|执行)(?:好|完)了"
+    r"|文件已(?:经)?(?:成功)?(?:创建|保存|生成|写入|修改|删除)"
+    r"|(?:created|wrote|saved|generated|deleted|updated|executed)\s+(?:the\s+)?file"
+    r"|file\s+(?:has\s+been|was)\s+(?:created|written|saved|updated|deleted)"
+    r"|I(?:'ve|\s+have)\s+(?:created|written|saved|updated|deleted|executed)",
+    re.IGNORECASE)
+
+
+def claims_completed_action(content: str) -> bool:
+    """模型是否在"没有调用任何工具"的前提下声称自己完成了文件/命令操作。
+
+    这是本项目见过的最有害的失败模式：小模型（或被端点吞掉了 tool_calls 的情况）
+    回一句"我已经帮你在桌面创建了 example.py"，final_reply_protocol 无条件把它
+    包成模式 B，执行层判 FINAL_REPLY，CLI 打绿色的"✓ 完成（1 轮）"然后退出——
+    用户以为成功了，桌面上什么都没有。零工具调用 + 完成态措辞 = 必须拦。
+
+    只做措辞检测、不做语义判断：宁可偶尔多问模型一轮，也不能把幻觉当成功。
+    """
+    return bool(_CLAIM_DONE_RE.search(content or ""))
+
+
+
 def sanitize_plain_content(content: str) -> str:
     """tools 模式下模型偶尔输出思考标签/协议残片，清洗成纯文本。
     完整协议则提取 EXTERNAL 正文；思考块包裹正文时删除整块；
@@ -401,6 +428,17 @@ PROMPT_ERROR_RETRY = ("执行层返回了错误，请修正后继续：\n{render
                       "注意：必须严格按 <INTERNAL>/<EXTERNAL> 格式输出。")
 PROMPT_TOOL_RESULT = ("工具执行结果：\n{rendered}\n"
                       "请根据结果继续（输出下一条工具调用，或最终回复）。")
+PROMPT_UNVERIFIED_CLAIM = (
+    "停。你刚才声称已经完成了文件/命令操作，但这一轮你没有调用任何工具，"
+    "所以系统里什么都没有发生——文件不存在，命令没执行。\n"
+    "二选一：\n"
+    "1) 如果确实要做，现在就调用对应工具真正执行（新建文件用 file_write，"
+    "改已有文件用 str_replace，跑命令用 terminal_exec）；\n"
+    "2) 如果不需要执行，重写你的回答，去掉「已创建 / 已保存 / 已执行」这类说法，"
+
+    "改成如实描述。\n"
+    "不要再向用户索要确认——权限审批由执行层负责，不是你的职责。")
+
 
 # 需要回喂模型让它自行修正的错误态
 ERROR_STATUSES = ("FORMAT_ERROR", "GUARD_VIOLATION", "BAIT_TRIGGERED",

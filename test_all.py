@@ -489,6 +489,29 @@ check("状态标签 [PLAN]/[REASON] 被清洗",
 rep = final_reply_protocol("完成")
 check("原生纯文本包装为最终回复",
       rep.startswith("<INTERNAL>") and "answer.\n完成" in rep, rep)
+
+# —— 反幻觉：声称完成 vs 意图陈述 ——
+# 真实事故：Qwen2.5-coder:7b 回了"文件已创建在桌面上"，一个工具都没调，
+# CLI 却打了绿色的"✓ 完成（1 轮）"。这里锁住"完成态措辞"与"意图/提问措辞"的边界，
+# 前者必须命中（会被 converse 拦下并要求重做），后者必须不命中（否则白烧一轮）。
+from agent_runner import claims_completed_action as _ccl  # noqa: E402
+_claim_yes = ["文件已创建在桌面上。",
+              "已经帮你在桌面上创建了 example.py",
+              "我已保存到 config.json 了",
+              "The file has been created successfully.",
+              "I've written the config file"]
+_claim_no = ["好的，我将为您在桌面上创建一个 Python 文件。",
+             "好的，请确认以下操作：1. 在桌面上创建一个 Python 文件。",
+             "你好！有什么我可以帮忙的吗？",
+             "我需要先读取这个文件才能判断",
+             "现在是 10:37。"]
+check("完成态措辞被判定为未验证声称",
+      all(_ccl(s) for s in _claim_yes),
+      [s for s in _claim_yes if not _ccl(s)])
+check("意图/提问措辞不误判为已完成",
+      not any(_ccl(s) for s in _claim_no),
+      [s for s in _claim_no if _ccl(s)])
+
 check("TOOLS 注册 ≥ 20 个工具", len(TOOLS) >= 20, len(TOOLS))
 check("tools 模式加载精简提示词", "工具" in load_system_prompt(tools_mode=True),
       load_system_prompt(tools_mode=True)[:40])

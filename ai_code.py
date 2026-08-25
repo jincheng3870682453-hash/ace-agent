@@ -57,7 +57,9 @@ from execution_layer import ExecutionLayer  # noqa: E402
 from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E402
                           PROMPT_EXEC_EXCEPTION, PROMPT_ERROR_RETRY,
                           PROMPT_PLAN_APPROVED, PROMPT_TOOL_RESULT,
+                          PROMPT_UNVERIFIED_CLAIM,
                           ModelProvider, TOOLS, ask_grant, ask_yes_no,
+                          claims_completed_action,
                           content_to_tool_protocol, final_reply_protocol,
                           load_system_prompt, render_result,
                           resolve_permission, resolve_plan,
@@ -535,14 +537,48 @@ class ModelClient:
             time.sleep(0.02)
         return text
 
+    def _post_openai_once(self, payload: Dict,
+                          on_delta: Optional[Callable] = None) -> tuple:
+        """非流式请求一次，返回 (正文, {index: tool_call})。
+        tools 模式走这条路——见 _stream_openai 里关于 /v1 流式丢 tool_calls 的说明。
+        返回值刻意和流式分支同构，后面的协议转换逻辑就不用分情况。"""
+        import requests
+        r = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload, timeout=300,
+        )
+        r.raise_for_status()
+        body = r.json()
+        choices = body.get("choices") or []
+        msg = ((choices[0] or {}).get("message") or {}) if choices else {}
+        full = msg.get("content") or ""
+        tool_calls: Dict[int, Dict] = {}
+        for i, tc in enumerate(msg.get("tool_calls") or []):
+            if isinstance(tc, dict):
+                tool_calls[i] = tc
+        if full:
+            # 一次性把整段正文交给展示层，等价于"只有一个 delta"的流式
+            if on_delta is not None:
+                on_delta(full)
+            else:
+                print(full, end="", flush=True)
+        return full, tool_calls
+
     def _stream_openai(self, system: str, messages: List[Dict],
                        on_delta: Optional[Callable] = None) -> str:
         import requests
         for _attempt in (1, 2):
+            # tools 模式强制非流式。Ollama 一类端点的 OpenAI 兼容层在 stream=true 下会
+            # 丢掉 tool_calls 增量（ollama#7881：delta.tool_calls 不带 index；#5769：整块
+            # 不下发），后果不是报错而是静默降级——模型明明生成了 file_write 调用，agent
+            # 只收到"我已经帮你在桌面创建了 example.py"这段纯文本，再被当成最终回复，
+            # 文件根本没写。打字机效果没有"工具真的被执行"重要，这里牺牲流式换正确性。
+            streaming = not self.tools_ok
             payload = {
                 "model": self.model,
                 "messages": [{"role": "system", "content": system}] + messages,
-                "stream": True,
+                "stream": streaming,
                 "temperature": 0.2,
             }
             if self.tools_ok:
@@ -551,49 +587,53 @@ class ModelClient:
             full = ""
             tool_calls: Dict[int, Dict] = {}
             try:
-                with requests.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload, stream=True, timeout=300,
-                ) as r:
-                    r.raise_for_status()
-                    for line in r.iter_lines():
-                        if not line:
-                            continue
-                        line = line.decode("utf-8", errors="ignore").strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            obj = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(obj, dict):
-                            continue
-                        choices = obj.get("choices") or []
-                        delta = (choices[0] or {}).get("delta", {}) if choices else {}
-                        if not isinstance(delta, dict):
-                            continue
-                        content = delta.get("content")
-                        if content:
-                            full += content
-                            if on_delta is not None:
-                                on_delta(full)
-                            else:
-                                print(content, end="", flush=True)
-                        for tc in (delta.get("tool_calls") or []):
-                            if not isinstance(tc, dict):
+                if not streaming:
+                    full, tool_calls = self._post_openai_once(payload, on_delta)
+                else:
+                    with requests.post(
+                        f"{self.base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json=payload, stream=True, timeout=300,
+                    ) as r:
+                        r.raise_for_status()
+                        for line in r.iter_lines():
+                            if not line:
                                 continue
-                            idx = int(tc.get("index", 0))
-                            slot = tool_calls.setdefault(
-                                idx, {"function": {"name": "", "arguments": ""}})
-                            fn = tc.get("function") or {}
-                            if fn.get("name"):
-                                slot["function"]["name"] = fn["name"]
-                            if fn.get("arguments"):
-                                slot["function"]["arguments"] += fn["arguments"]
+                            line = line.decode("utf-8", errors="ignore").strip()
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                break
+                            try:
+                                obj = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(obj, dict):
+                                continue
+                            choices = obj.get("choices") or []
+                            delta = ((choices[0] or {}).get("delta", {})
+                                     if choices else {})
+                            if not isinstance(delta, dict):
+                                continue
+                            content = delta.get("content")
+                            if content:
+                                full += content
+                                if on_delta is not None:
+                                    on_delta(full)
+                                else:
+                                    print(content, end="", flush=True)
+                            for tc in (delta.get("tool_calls") or []):
+                                if not isinstance(tc, dict):
+                                    continue
+                                idx = int(tc.get("index", 0))
+                                slot = tool_calls.setdefault(
+                                    idx, {"function": {"name": "", "arguments": ""}})
+                                fn = tc.get("function") or {}
+                                if fn.get("name"):
+                                    slot["function"]["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    slot["function"]["arguments"] += fn["arguments"]
             except requests.HTTPError as e:
                 # 端点不支持 tools 参数（400/404）→ 降级重试一次文本协议
                 if (self.tools_ok and e.response is not None
@@ -1594,6 +1634,9 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         # 记忆预注入：模型生成前把相关历史记忆放进 prompt（无记忆时原样返回）
         next_user = self.el.prepare_context(user_input)
         fail_streak = 0
+        # 反幻觉：本次请求内是否真有工具落地执行、已经纠正过几次
+        tool_ran = False
+        claim_nudges = 0
         for _round in range(1, MAX_ROUNDS + 1):
             msgs = self.messages + [{"role": "user", "content": next_user}]
             spinner = _Spinner(t("thinking"))
@@ -1654,6 +1697,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             # 防止模型靠反复 ls 假装干活、绕过熔断。
             _status = result["status"]
             _VIEW_TOOLS = {"terminal_view", "file_read", "search", "browser_screenshot"}
+            if result.get("tool") and _status == "SUCCESS":
+                tool_ran = True  # 本次请求内确实有工具落地执行过
             if _status == "FINAL_REPLY":
                 fail_streak = 0
             elif _status == "SUCCESS":
@@ -1706,6 +1751,17 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
 
 
             if result["status"] == "FINAL_REPLY":
+                # 反幻觉闸门：模型声称"已创建/已保存/已执行"，但本次请求里一个工具都
+                # 没落地 —— 那就是编的。不能打绿色的 ✓ 完成然后退出（用户会以为成功，
+                # 桌面上什么都没有）。先让模型自己改一次；改不动就把真相打给用户。
+                if (not tool_ran
+                        and claims_completed_action(result.get("message") or "")):
+                    if claim_nudges < 1:
+                        claim_nudges += 1
+                        print(c("yellow", "\n" + t("unverified_claim")))
+                        next_user = PROMPT_UNVERIFIED_CLAIM
+                        continue
+                    print(c("yellow", "\n" + t("unverified_claim_final")))
                 if disp["state"]["reply_printed"] < len(result["message"]):
                     # 兜底：流式展示未覆盖时补打完整回复
                     print()

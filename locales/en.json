@@ -47,6 +47,9 @@
   "snapshotted": " · snapshot created, /undo to roll back",
   "memory_injected": "  · {n} related memories injected",
   "max_rounds": "⚠ Reached max rounds, Agent did not give a final reply.",
+  "unverified_claim": "  ⚠ The model claimed the action was done, but no tool ran this round — nothing actually happened. Asked it to call a tool for real.",
+  "unverified_claim_final": "  ⚠ The \"done\" above is fabricated: no tool was executed in this turn and nothing on disk changed. Use a larger tool-calling model, or verify with /status.",
+
   "help_title": "Available commands:",
   "help_hint": "\nTip: type @ for shortcuts (@lang switch language / @skill switch skill / @file reference file / @folder reference folder)",
   "unknown_prefix": "  No command starts with '{name}' (type / to see all)",
