@@ -1,0 +1,20 @@
+# 核心运行：纯标准库（Python >= 3.10），零第三方依赖
+
+# 可选：接入真实模型 API（ai_code / agent_runner）
+requests>=2.28
+
+# 可选：/ 实时自动补全菜单（Claude Code 同款交互，按 / 弹菜单边打边过滤）
+prompt_toolkit>=3.0
+
+# 可选：文档解析增强（universal_document_parser，懒加载，缺哪个装哪个）
+# python-docx>=1.0      # Word .docx
+# openpyxl>=3.1         # Excel .xlsx / .xlsm
+# xlrd>=2.0             # Excel .xls（旧版）
+# python-pptx>=0.6      # PowerPoint .pptx
+# pdfplumber>=0.10      # PDF 文本提取
+# pymupdf>=1.23         # PDF 文本提取 + 扫描件判断
+# mammoth>=1.6          # Word .doc（旧版）
+# pandas>=2.0           # 表格数据增强
+# pdf2image>=1.16       # 扫描件 PDF 转图片（需系统安装 poppler）
+# pytesseract>=0.3      # OCR 文字识别（需系统安装 Tesseract）
+# pillow>=10.0          # 图片处理 / OCR 辅助

@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}   # 允许手动触发
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true   # 连续 push 时自动取消旧任务
+
+permissions:
+  contents: read
+
+env:
+  # test_all.py 自己会 reconfigure(encoding="utf-8")，这一条是给 print 进管道时兜底
+  PYTHONIOENCODING: "utf-8"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Go 执行器。**必须有 windows-latest**：sandbox_windows.go（Job Object +
+  # CreateRestrictedToken）与 token_probe_windows_test.go 只在 Windows 编译，
+  # executor_test.go 里还有一批 runtime.GOOS != "windows" 就 t.Skip 的用例 ——
+  # 只跑 ubuntu 等于沙箱能力零覆盖。
+  # ubuntu 也要留：sandbox_other.go 是另一半 build tag，不跑就会腐烂。
+  # -race 只能在 CI 跑（开发机没有 C 编译器，cgo 不可用）。
+  # ─────────────────────────────────────────────────────────────
+  go:
+    name: Go executor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: executor
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go (版本由 executor/go.mod 锁定)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: executor/go.mod
+          cache-dependency-path: executor/go.mod
+
+      - run: go version && go env GOOS GOARCH CGO_ENABLED
+        shell: bash
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build（验证两个 build tag 分支都能编译）
+        run: go build ./...
+
+      - name: go test
+        run: go test -count=1 ./...
+
+      # 竞态检测：run.go 的流式 pump 有 goroutine + 共享缓冲，
+      # 这是最可能出回归的地方，而本地跑不了。
+      - name: go test -race
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 ./...
+
+      - name: 产出宿主要用的二进制（名字必须匹配 ace_executor.py 的期望）
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then go build -o ace-executor.exe . ;
+          else go build -o ace-executor . ; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ace-executor-${{ runner.os }}
+          path: |
+            executor/ace-executor
+            executor/ace-executor.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────
+  # Python 全量。needs: go —— test_all.py 里 Go 执行器那一批用例在二进制缺失时
+  # 会**静默跳过且不计失败**，所以必须先拿到真二进制再跑，否则整个执行器边界
+  # 可以退化到零覆盖而 CI 依然全绿。
+  # Windows 也必须跑：路径/编码/UNC 那些逻辑是 Windows 特有的。
+  # ─────────────────────────────────────────────────────────────
+  test:
+    name: Test (Py ${{ matrix.python-version }} on ${{ matrix.os }})
+    needs: go
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ace-executor-${{ runner.os }}
+          path: executor
+
+      - name: 让执行器可执行（Linux 上 artifact 会丢权限位）
+        if: runner.os != 'Windows'
+        run: chmod +x executor/ace-executor
+
+      # ace_*.py 六个模块全部被 tools/ 与 ai_code.py 真实 import，
+      # 之前一个都不在 compileall 清单里。
+      - name: Compile check
+        run: >-
+          python -m compileall -q
+          ai_code.py agent_runner.py execution_layer.py gateway_v2 tools
+          i18n.py work.py guardian.py Archive.py Nuwa.py
+          universal_document_parser.py
+          ace_net.py ace_execpolicy.py ace_executor.py
+          ace_isolation.py ace_http.py ace_context.py
+
+      - name: Run tests (端到端全量)
+        run: python test_all.py
+
+  lint:
+    name: Ruff lint (安全子集)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      # 只查语法错误/未定义名/被破坏的表达式等硬错误（E9/F63/F7/F82），
+      # 不做风格强制，避免因换行宽度等导致 CI 红；ruff 尊重 .gitignore 自动跳过 .test_tmp
+      - run: ruff check . --select E9,F63,F7,F82
+      - name: gofmt 检查（只报告，不改）
+        working-directory: executor
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }

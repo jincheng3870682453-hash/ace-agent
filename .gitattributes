@@ -1,0 +1,28 @@
+# 行尾归一化。
+#
+# 起因是一个具体的 CI 故障：lint 任务里的 `gofmt -l` 把 executor/ 下**每一个** .go
+# 文件都报成待格式化 —— 内容一个字都没问题，只是行尾是 CRLF，而 gofmt 的输出永远是
+# LF。这种失败最坏的地方在于它无法通过"把代码写对"来修复，看到红灯的人只会去关掉
+# 这个检查，于是真正的格式问题也一起没人管了。
+#
+# 显式声明 eol=lf 而不是依赖 core.autocrlf：后者是每台机器的本地配置，
+# 换一台机器（或者 CI runner）行为就变，正是不该让判定依赖的东西。
+*.go        text eol=lf
+*.py        text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+go.mod      text eol=lf
+go.sum      text eol=lf
+Dockerfile  text eol=lf
+.gitignore  text eol=lf
+
+# Windows 批处理必须是 CRLF：cmd.exe 会把行尾的 LF 当成命令的一部分。
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+*.exe       binary
+*.png       binary
+*.pdf       binary

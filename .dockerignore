@@ -1,0 +1,39 @@
+# Dockerfile 的 `COPY . .` 会把仓库根目录整个塞进构建上下文。
+# 没有这份清单时，快照、测试临时目录、.git 历史、以及本机编译出的
+# Windows 版 ace-executor.exe 都会进镜像 —— 前三样是体积和信息泄露，
+# 最后一样在 linux 镜像里还会让宿主误以为执行器可用。
+
+.git/
+.github/
+.gitignore
+
+# Python 运行时
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# 执行层运行时产物（可能含项目文件的明文副本）
+.guardian/
+.agent_flywheel/
+.agent_memory.json
+.poc_reports/
+.sandbox_tmp/
+.test_tmp/
+.ace_shots/
+.ace_images/
+agent.db
+notifications.log
+*.jsonl
+*.log
+*.tmp
+
+# Go 执行器：镜像里要用就得在镜像内为 linux 编译，宿主产物一律不带进去
+executor/ace-executor
+executor/ace-executor.exe
+*.exe
+
+# 参考仓库与文档不参与运行
+_reference/
+docs/
