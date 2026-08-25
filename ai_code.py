@@ -64,8 +64,10 @@ from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E4
                           content_to_tool_protocol, final_reply_protocol,
                           load_system_prompt, render_tool_result,
                           resolve_permission, resolve_plan,
+                          retry_notice,
                           sanitize_plain_content, tool_calls_to_protocol)
 from ace_isolation import wrap_untrusted  # noqa: E402
+import ace_http  # noqa: E402
 from i18n import set_language, t  # noqa: E402
 
 CONFIG_PATH = Path.home() / ".ai_code.json"
@@ -554,14 +556,19 @@ class ModelClient:
                           on_delta: Optional[Callable] = None) -> tuple:
         """非流式请求一次，返回 (正文, {index: tool_call})。
         tools 模式走这条路——见 _stream_openai 里关于 /v1 流式丢 tool_calls 的说明。
-        返回值刻意和流式分支同构，后面的协议转换逻辑就不用分情况。"""
-        import requests
-        r = requests.post(
-            f"{self.base_url}/chat/completions",
+        返回值刻意和流式分支同构，后面的协议转换逻辑就不用分情况。
+
+        "一次"指的是**一次逻辑请求**：429 / 502 / 连接抖动由 ace_http 在里面退避重试，
+        对调用方仍然是一次调用。400/404 属于 FATAL_STATUS，不重试、原样抛
+        requests.HTTPError —— _stream_openai 的 tools 降级就是靠它，绝不能被吞掉。
+        """
+        r = ace_http.request_with_retry(
+            "POST", f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
             json=payload, timeout=300,
+            on_retry=retry_notice,
         )
-        r.raise_for_status()
+        # request_with_retry 只在 status < 400 时返回，raise_for_status 已无事可做。
         body = r.json()
         choices = body.get("choices") or []
         msg = ((choices[0] or {}).get("message") or {}) if choices else {}
@@ -580,7 +587,11 @@ class ModelClient:
 
     def _stream_openai(self, system: str, messages: List[Dict],
                        on_delta: Optional[Callable] = None) -> str:
+        # requests 只为下面 except 里的异常类型；请求本身都交给 ace_http。
         import requests
+        # 这个循环是**协议降级**配额，不是网络重试 —— 网络重试在 ace_http 里，比这层低
+        # 一级。两层各管一件事：这里管"端点认不认 tools 参数"，那里管"这次失败再试一下
+        # 会不会变"。把它们叠成一个循环，结果就是一次 429 也会把 tools 关掉。
         for _attempt in (1, 2):
             # tools 模式强制非流式。Ollama 一类端点的 OpenAI 兼容层在 stream=true 下会
             # 丢掉 tool_calls 增量（ollama#7881：delta.tool_calls 不带 index；#5769：整块
@@ -603,12 +614,15 @@ class ModelClient:
                 if not streaming:
                     full, tool_calls = self._post_openai_once(payload, on_delta)
                 else:
-                    with requests.post(
-                        f"{self.base_url}/chat/completions",
+                    # 重试只覆盖到"拿到响应头"为止，这一点是刻意的：此刻还没有
+                    # 任何字符吐给用户，重发是安全的。读到一半断流则不在覆盖范围内 ——
+                    # 那时正文已经在屏幕上了，重发会造成重复输出，宁可报错。
+                    with ace_http.request_with_retry(
+                        "POST", f"{self.base_url}/chat/completions",
                         headers={"Authorization": f"Bearer {self.api_key}"},
                         json=payload, stream=True, timeout=300,
+                        on_retry=retry_notice,
                     ) as r:
-                        r.raise_for_status()
                         for line in r.iter_lines():
                             if not line:
                                 continue
@@ -704,19 +718,24 @@ class ModelClient:
 
     def _post_anthropic(self, payload: Dict,
                         on_delta: Optional[Callable] = None) -> str:
-        """POST /v1/messages，自动处理流式（SSE）与非流式（JSON）两种响应"""
-        import requests
+        """POST /v1/messages，自动处理流式（SSE）与非流式（JSON）两种响应
+
+        重试同样在 ace_http 里，且和 _stream_anthropic 的变体循环分工明确：
+        变体循环只处理 400（"这个端点不认这种 payload 形状"），而 429/5xx 由退避
+        接手。这一点在合并前是缺的 —— 一次 429 会让变体循环立刻 break，
+        整个会话报"已尝试多种请求格式"然后死掉，用户看不出真实原因是限流。
+        """
         stream = bool(payload.get("stream"))
-        with requests.post(
-            f"{self.base_url}/v1/messages",
+        with ace_http.request_with_retry(
+            "POST", f"{self.base_url}/v1/messages",
             headers={
                 "x-api-key": self.api_key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
             json=payload, stream=stream, timeout=300,
+            on_retry=retry_notice,
         ) as r:
-            r.raise_for_status()
             if not stream:
                 data = r.json()
                 blocks = data.get("content") or []

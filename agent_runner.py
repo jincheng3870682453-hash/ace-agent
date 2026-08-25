@@ -48,6 +48,7 @@ sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
 from ace_isolation import untrusted_source, wrap_untrusted  # noqa: E402
+import ace_http  # noqa: E402
 from tools.base import repair_backslash_json  # noqa: E402
 from tools.registry import openai_tools  # noqa: E402
 
@@ -73,9 +74,26 @@ class ToolsUnsupported(Exception):
     """模型端点不支持原生工具调用，触发自动降级到文本协议"""
 
 
+def retry_notice(decision, attempt: int) -> None:
+    """把 ace_http 的退避决定告诉用户。ai_code 也用这一份。
+
+    必须写 stderr：ai_code 那边 stdout 正被流式渲染器（打字机效果 / 状态行）占着，
+    往里插一行会把画面搅乱。而完全不提示更糟 —— 一次 429 带 Retry-After: 30 的退避，
+    在用户看来和卡死没有区别，他会去按 Ctrl-C。
+    """
+    src = "服务端指定" if decision.source == "retry_after" else "退避"
+    print(f"\n  ⏳ 第 {attempt} 次请求失败，{src} {decision.delay:.1f}s 后重试"
+          f"（{decision.reason}）", file=sys.stderr, flush=True)
+
+
 def _post_chat(base_url: str, api_key: str, model: str, messages: List[Dict],
                tools: Optional[List[Dict]] = None, timeout: int = 120) -> Dict:
-    """OpenAI 兼容 /chat/completions（纯标准库 urllib，无 requests 依赖）"""
+    """OpenAI 兼容 /chat/completions（纯标准库 urllib，无 requests 依赖）
+
+    429 / 5xx / 连接抖动由 ace_http 退避重试；4xx 原样抛 urllib.error.HTTPError，
+    _generate_tools 的 tools 降级判断（读 e.read() 里的错误正文）因此还能照常工作 ——
+    ace_http 只碰 e.headers 取 Retry-After，不会把响应体读掉。
+    """
     payload = {"model": model, "messages": messages, "temperature": 0.2}
     if tools:
         payload["tools"] = tools
@@ -87,8 +105,8 @@ def _post_chat(base_url: str, api_key: str, model: str, messages: List[Dict],
                  "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    return ace_http.urlopen_json_with_retry(req, timeout=timeout,
+                                            on_retry=retry_notice)
 
 
 # ============================================================

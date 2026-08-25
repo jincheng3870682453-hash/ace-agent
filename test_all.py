@@ -2402,6 +2402,257 @@ check("--sandbox 三档齐全",
       'choices=["off", "job", "docker"]' in _ai_src)
 
 # ============================================================
+print("\n[21] ace_http —— 模型调用的重试与退避（纯判定 + 假传输，不发真实请求、不真睡眠）")
+# ============================================================
+import io as _io
+import ace_http as _http
+from dataclasses import fields as _dc_fields
+
+# —— Retry-After 解析：秒数与 HTTP 日期两种合法形式都要认 ——
+check("Retry-After 秒数形式", _http.parse_retry_after("3") == 3.0,
+      _http.parse_retry_after("3"))
+check("Retry-After 负数归零", _http.parse_retry_after("-5") == 0.0,
+      _http.parse_retry_after("-5"))
+check("Retry-After 垃圾值返回 None", _http.parse_retry_after("soon") is None,
+      _http.parse_retry_after("soon"))
+# 只认秒数是常见的偷懒实现，而 Cloudflare 前置会返回日期形式；
+# 漏掉它的后果是退避退成 0 秒，然后立刻再撞一次 429。
+_ra_date = _http.parse_retry_after("Wed, 21 Oct 2015 07:28:03 GMT",
+                                   now=1445412483.0)   # 恰好是该时刻
+check("Retry-After 日期形式", _ra_date is not None and abs(_ra_date) < 1.0, _ra_date)
+_ra_future = _http.parse_retry_after("Wed, 21 Oct 2015 07:28:33 GMT",
+                                     now=1445412483.0)
+check("Retry-After 日期形式算出正确间隔",
+      _ra_future is not None and abs(_ra_future - 30.0) < 1.0, _ra_future)
+
+# —— DEFAULT 必须是类属性而不是 dataclass 字段 ——
+# 不加 ClassVar 的话它会变成 __init__ 参数，每个实例都带一个恒为 None 的 DEFAULT。
+check("RetryPolicy.DEFAULT 不是 dataclass 字段",
+      "DEFAULT" not in {f.name for f in _dc_fields(_http.RetryPolicy)},
+      [f.name for f in _dc_fields(_http.RetryPolicy)])
+check("RetryPolicy.DEFAULT 已就位",
+      isinstance(_http.RetryPolicy.DEFAULT, _http.RetryPolicy))
+
+# —— 状态码分类：只重试"再试可能会变"的 ——
+_hpol = _http.RetryPolicy(max_attempts=4, base_delay=1.0, max_delay=8.0,
+                          max_elapsed=100.0, max_retry_after=60.0)
+
+
+def _hd(**kw):
+    kw.setdefault("attempt", 1)
+    kw.setdefault("policy", _hpol)
+    kw.setdefault("elapsed", 0.0)
+    kw.setdefault("rand", lambda: 1.0)   # 固定抖动上界，让延迟可断言
+    return _http.decide(**kw)
+
+
+for _code in (429, 500, 502, 503, 504, 529, 408):
+    check(f"HTTP {_code} 可重试", _hd(status=_code).should_retry, _code)
+for _code in (400, 401, 403, 404, 422):
+    # 密钥错、模型名错、参数非法——等十秒答案一样，重试只是把真正的错因埋进延迟里
+    check(f"HTTP {_code} 不重试", not _hd(status=_code).should_retry, _code)
+check("2xx 不算失败，不重试", not _hd(status=200).should_retry)
+
+# —— 服务端指定的 Retry-After 优先于自算退避 ——
+_dec = _hd(status=429, retry_after="3")
+check("Retry-After 优先于退避算法",
+      _dec.should_retry and _dec.delay == 3.0 and _dec.source == "retry_after",
+      (_dec.delay, _dec.source))
+# 见过返回 3600 的实现，照办等于让会话睡一小时；取上限但仍以服务端值为准。
+_dec = _hd(status=429, retry_after="3600")
+check("Retry-After 被 max_retry_after 夹住", _dec.delay == 60.0, _dec.delay)
+
+# —— full jitter：延迟在 [0, ceiling] 内均匀取值 ——
+# 无抖动时并发的请求会同步重试形成惊群，把刚缓过来的服务端再打回限流。
+check("抖动下界为 0（不是固定间隔）",
+      _hd(status=503, rand=lambda: 0.0).delay == 0.0)
+_ceils = [_hd(status=503, attempt=n, rand=lambda: 1.0).delay for n in (1, 2, 3)]
+check("退避上界指数增长", _ceils == [1.0, 2.0, 4.0], _ceils)
+# 直接测纯函数：走 decide 的话 attempt=9 会先被 max_attempts 拦掉，测不到夹取
+_cap_delay, _cap_src = _http.compute_delay(9, _hpol, rand=lambda: 1.0)
+check("退避上界被 max_delay 夹住",
+      _cap_delay == 8.0 and _cap_src == "backoff", (_cap_delay, _cap_src))
+
+# —— 次数与总时长两个预算都要封顶 ——
+check("用尽尝试次数后停止", not _hd(status=429, attempt=4).should_retry,
+      _hd(status=429, attempt=4).reason)
+check("超出总耗时预算后停止", not _hd(status=429, elapsed=100.0).should_retry,
+      _hd(status=429, elapsed=100.0).reason)
+# 宁可少睡一点立刻再试，也不要睡完才发现预算没了
+_dec = _hd(status=429, elapsed=98.0, retry_after="30")
+check("退避时长被剩余预算夹住",
+      _dec.should_retry and abs(_dec.delay - 2.0) < 1e-9, _dec.delay)
+
+# —— 异常类失败 ——
+check("连接失败可重试", _hd(exc_kind=_http.EXC_CONNECT).should_retry)
+check("读超时可重试", _hd(exc_kind=_http.EXC_READ_TIMEOUT).should_retry)
+# 证书错误、JSON 解析失败这类重试无益，不该盲目重发
+check("未知异常不重试", not _hd(exc_kind=_http.EXC_OTHER).should_retry)
+check("既无状态码也无异常时不重试", not _hd().should_retry)
+
+# —— 假传输：验证重试循环真的重发、真的退避、真的在该停时停 ——
+try:
+    import requests as _hrq
+except ImportError:
+    # ace_http 对 requests 是**惰性依赖**（只在 request_with_retry 内部导入），
+    # 纯判定部分照样测得到；下面这段依赖 requests 的异常类型，只能跳过。
+    _hrq = None
+    print("  · 跳过 requests 假传输用例：本机未安装 requests")
+
+if _hrq is not None:
+    class _FakeResp:
+        def __init__(self, status, headers=None):
+            self.status_code = status
+            self.headers = headers or {}
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    _orig_request = _hrq.request
+    _slept = []
+    try:
+        _seq = [_FakeResp(429, {"Retry-After": "2"}), _FakeResp(503), _FakeResp(200)]
+        _calls = []
+
+        def _fake_request(method, url, **kw):
+            _calls.append((method, url))
+            return _seq[len(_calls) - 1]
+
+        _hrq.request = _fake_request
+        _resp = _http.request_with_retry("POST", "http://x/chat", policy=_hpol,
+                                         sleep=_slept.append, clock=lambda: 0.0)
+        check("429→503→200 最终成功", _resp.status_code == 200, _resp.status_code)
+        check("重发了两次", len(_calls) == 3, len(_calls))
+        check("第一次按 Retry-After 睡 2 秒", _slept and _slept[0] == 2.0, _slept)
+        # 失败的响应必须 close，否则连接不还池，重试会不断新建连接
+        check("失败响应被关闭", _seq[0].closed and _seq[1].closed,
+              (_seq[0].closed, _seq[1].closed))
+
+        _calls.clear()
+        _seq = [_FakeResp(401)]
+        try:
+            _http.request_with_retry("POST", "http://x/chat", policy=_hpol,
+                                     sleep=_slept.append, clock=lambda: 0.0)
+            check("401 立即抛出，不浪费请求", False, "未抛出")
+        except _hrq.HTTPError:
+            check("401 立即抛出，不浪费请求", len(_calls) == 1, len(_calls))
+
+        # 400 必须原样抛 HTTPError **且带上 response**：_stream_openai 的 tools 降级
+        # 判的就是 e.response.status_code in (400, 404)。重试层把它换成别的异常，
+        # 等于把"端点不支持 tools 参数"变成一个硬错误。
+        _calls.clear()
+        _seq = [_FakeResp(400)]
+        try:
+            _http.request_with_retry("POST", "http://x/chat", policy=_hpol,
+                                     sleep=_slept.append, clock=lambda: 0.0)
+            check("400 抛出的 HTTPError 带 response（tools 降级靠它）", False, "未抛出")
+        except _hrq.HTTPError as e:
+            check("400 抛出的 HTTPError 带 response（tools 降级靠它）",
+                  e.response is not None and e.response.status_code == 400,
+                  getattr(e.response, "status_code", None))
+
+        # 连接一直失败 → 用尽预算后抛 RetryExhausted，而不是无限重试
+        _calls.clear()
+
+        def _always_conn_error(method, url, **kw):
+            _calls.append(1)
+            raise _hrq.exceptions.ConnectionError("refused")
+
+        _hrq.request = _always_conn_error
+        try:
+            _http.request_with_retry("POST", "http://x/chat", policy=_hpol,
+                                     sleep=lambda _s: None, clock=lambda: 0.0)
+            check("连接持续失败后抛 RetryExhausted", False, "未抛出")
+        except _http.RetryExhausted as e:
+            check("连接持续失败后抛 RetryExhausted",
+                  len(_calls) == _hpol.max_attempts
+                  and e.attempts == _hpol.max_attempts,
+                  (len(_calls), e.attempts))
+
+        # ConnectTimeout 同时是 ConnectionError 和 Timeout 的子类，判断顺序写反
+        # 会把"根本没连上"错判成"连上了但没等到回复"。
+        check("ConnectTimeout 归为 connect",
+              _http.classify_requests_exception(
+                  _hrq.exceptions.ConnectTimeout()) == _http.EXC_CONNECT)
+        check("ReadTimeout 归为 read_timeout",
+              _http.classify_requests_exception(
+                  _hrq.exceptions.ReadTimeout()) == _http.EXC_READ_TIMEOUT)
+        check("非网络异常归为 other",
+              _http.classify_requests_exception(ValueError("x")) == _http.EXC_OTHER)
+    finally:
+        _hrq.request = _orig_request
+
+# —— urllib 版本（agent_runner 走这条，不依赖 requests）——
+import urllib.error as _hue
+import urllib.request as _hur
+
+_orig_urlopen = _hur.urlopen
+try:
+    _u_calls = []
+
+    class _FakeURLResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def _fake_urlopen(req, timeout=None):
+        _u_calls.append(1)
+        if len(_u_calls) == 1:
+            raise _hue.HTTPError("http://x", 503, "busy", {"Retry-After": "1"}, None)
+        return _FakeURLResp()
+
+    _hur.urlopen = _fake_urlopen
+    _u_slept = []
+    _out = _http.urlopen_json_with_retry(object(), timeout=5, policy=_hpol,
+                                         sleep=_u_slept.append, clock=lambda: 0.0)
+    check("urllib 版 503 后重试成功", _out == {"ok": True}, _out)
+    # Retry-After 只能从 e.headers 取，从 e.reason 里是拿不到的
+    check("urllib 版读到了 HTTPError 里的 Retry-After", _u_slept == [1.0], _u_slept)
+
+    # 4xx 原样抛，且**不能把响应体读掉** —— agent_runner 的 tools 降级要读
+    # e.read() 里的错误正文来判断"是不是不认 tools 参数"。
+    _u_calls.clear()
+
+    def _fake_urlopen_400(req, timeout=None):
+        _u_calls.append(1)
+        raise _hue.HTTPError("http://x", 400, "bad", {},
+                             _io.BytesIO(b"no tools here"))
+
+    _hur.urlopen = _fake_urlopen_400
+    try:
+        _http.urlopen_json_with_retry(object(), timeout=5, policy=_hpol,
+                                      sleep=lambda _s: None, clock=lambda: 0.0)
+        check("urllib 版 400 原样抛且正文未被读掉", False, "未抛出")
+    except _hue.HTTPError as e:
+        check("urllib 版 400 原样抛且正文未被读掉",
+              len(_u_calls) == 1 and e.read() == b"no tools here")
+finally:
+    _hur.urlopen = _orig_urlopen
+
+# —— 接入点源码守卫：四个出网点都必须走 ace_http ——
+_ar_src = (Path(__file__).parent / "agent_runner.py").read_text(encoding="utf-8")
+check("ai_code 的三处出网都走 ace_http",
+      _ai_src.count("ace_http.request_with_retry(") == 3,
+      _ai_src.count("ace_http.request_with_retry("))
+check("ai_code 不再直接 requests.post 打模型", "requests.post(" not in _ai_src)
+check("agent_runner 走 urllib 版重试",
+      "ace_http.urlopen_json_with_retry(" in _ar_src
+      and "urllib.request.urlopen(" not in _ar_src)
+# 两层循环各管一件事：tools 协议降级 vs 网络重试。叠成一个的后果是一次 429
+# 也会把 tools 永久关掉。
+check("tools 降级循环仍然独立存在（没有和重试叠成一层）",
+      "for _attempt in (1, 2):" in _ai_src and "self.tools_ok = False" in _ai_src)
+check("退避提示走 stderr（stdout 被流式渲染器占着）",
+      "def retry_notice" in _ar_src and "file=sys.stderr" in _ar_src)
+
+# ============================================================
+
 
 
 
