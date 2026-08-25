@@ -136,5 +136,8 @@
   "memory_empty": "  No memories yet",
   "command_failed": "Command failed: {err}",
   "chat_error": "Conversation error: {err}",
-  "stall_abort": "WARNING: Agent failed/blocked for {n} consecutive rounds and was auto-aborted. Please rephrase your request or check the model."
+  "stall_abort": "WARNING: Agent failed/blocked for {n} consecutive rounds and was auto-aborted. Please rephrase your request or check the model.",
+  "compact_done": "  ⓘ Context compacted: {before} → {after} tokens (earlier turns folded into a summary)",
+  "compact_truncated": "  ⚠ Summary unavailable, hard-truncated: {before} → {after} tokens (reason: {reason})",
+  "compact_failed": "  ⚠ Context compaction errored, skipped this turn: {err}"
 }

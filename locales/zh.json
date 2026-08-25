@@ -136,5 +136,8 @@
   "memory_disabled": "记忆引擎未启用",
   "memory_empty": "  暂无记忆",
   "command_failed": "命令执行失败: {err}",
-  "chat_error": "对话异常: {err}"
+  "chat_error": "对话异常: {err}",
+  "compact_done": "  ⓘ 上下文已压缩：{before} → {after} tokens（早期对话已折成摘要）",
+  "compact_truncated": "  ⚠ 上下文摘要不可用，已硬截断：{before} → {after} tokens（原因: {reason}）",
+  "compact_failed": "  ⚠ 上下文压缩异常，本轮跳过: {err}"
 }

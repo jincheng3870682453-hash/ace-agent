@@ -2652,6 +2652,186 @@ check("退避提示走 stderr（stdout 被流式渲染器占着）",
       "def retry_notice" in _ar_src and "file=sys.stderr" in _ar_src)
 
 # ============================================================
+print("[22] ace_context —— 上下文压缩（纯判定 + 假摘要函数，不发真实请求）")
+
+import ace_context as _ctx  # noqa: E402
+
+# —— token 估算：中文不能按 4 字符 1 token 折算 ——
+check("中文按字计 token", _ctx.estimate_tokens("你好世界") == 4,
+      _ctx.estimate_tokens("你好世界"))
+check("英文按 4 字符折算", _ctx.estimate_tokens("abcdefgh") == 2,
+      _ctx.estimate_tokens("abcdefgh"))
+check("空串为 0", _ctx.estimate_tokens("") == 0)
+# 低估是危险方向：低估 → 以为没超 → 请求被服务端拒。所以中文必须 >= 字符数
+_zh_ctx = "这是一段中文对话内容" * 20
+check("中文估算不低于字符数", _ctx.estimate_tokens(_zh_ctx) >= len(_zh_ctx))
+check("消息含固定包装开销",
+      _ctx.message_tokens({"role": "user", "content": "ab"}) > _ctx.estimate_tokens("ab"))
+
+
+def _mk_hist(n_turns: int, filler: str = "内容") -> list:
+    """构造 user/assistant 交替的历史；第 0 条是任务锚点"""
+    msgs = [{"role": "user", "content": "任务：把项目重构一遍"}]
+    for i in range(n_turns):
+        msgs.append({"role": "assistant", "content": f"回答{i} {filler * 40}"})
+        msgs.append({"role": "user", "content": f"追问{i} {filler * 40}"})
+    return msgs
+
+
+_small = _ctx.CompactionPolicy(context_window=4096, reserve_output=512,
+                              keep_recent_turns=2, min_summarize_messages=4)
+
+# 短历史不该触发压缩——压缩本身要花一次模型调用
+_p_short = _ctx.plan_compaction(_mk_hist(1), _small)
+check("短历史不触发压缩", _p_short.should_compact is False, _p_short.reason)
+
+_long = _mk_hist(20)
+_p_long = _ctx.plan_compaction(_long, _small)
+check("超阈值触发压缩", _p_long.should_compact is True, _p_long.reason)
+check("压缩后估算小于压缩前",
+      _p_long.tokens_after_est < _p_long.tokens_before,
+      (_p_long.tokens_after_est, _p_long.tokens_before))
+
+# 核心不变式：第一条用户消息（任务锚点）永远保留。丢了它，模型就开始靠碎片猜任务。
+_applied = _ctx.apply_compaction(_long, _p_long, "摘要正文")
+check("压缩保留任务锚点", _applied[0] == _long[0], _applied[0])
+check("摘要紧跟锚点且带标记",
+      _applied[1]["content"].startswith(_ctx.SUMMARY_MARKER), _applied[1])
+check("摘要以 user 角色注入（不伪造模型发言）",
+      _applied[1]["role"] == "user", _applied[1]["role"])
+check("尾段原文保真", _applied[-1] == _long[-1])
+check("压缩确实变短", len(_applied) < len(_long), (len(_applied), len(_long)))
+check("压缩后 token 真的下降",
+      _ctx.measure(_applied) < _ctx.measure(_long))
+
+# 尾段必须从 user 开始：从 assistant 开头会让模型看到一句无来由的"自己的回答"
+_tail_roles = [m["role"] for m in _applied[2:]]
+check("尾段以 user 开头", _tail_roles[0] == "user", _tail_roles[:3])
+
+# 摘要预算比原文还大 → 不压（压了反而变长，白花一次调用）
+_fat = _ctx.CompactionPolicy(context_window=4096, reserve_output=512,
+                            keep_recent_turns=2, summary_max_tokens=100000,
+                            min_summarize_messages=2)
+_p_fat = _ctx.plan_compaction(_mk_hist(20), _fat)
+check("摘要预算过大时不压缩", _p_fat.should_compact is False, _p_fat.reason)
+check("不压缩时标记需要硬截断兜底", _p_fat.force_truncate is True)
+
+# 中间段太短 → 摘要没有收益，转硬截断
+_p_thin = _ctx.plan_compaction(
+    [{"role": "user", "content": "锚" * 5000}, {"role": "assistant", "content": "答" * 5000}],
+    _small)
+check("可压缩区间过短时不压缩", _p_thin.should_compact is False, _p_thin.reason)
+check("过短区间转硬截断", _p_thin.force_truncate is True)
+
+# —— maybe_compact：摘要成功 / 失败 / 为空 / 未提供 ——
+_sum_calls = []
+
+
+def _fake_summarize(prompt):
+    _sum_calls.append(prompt)
+    return "用户要重构项目；已改 a.py、b.py；未完成 c.py"
+
+
+_out_ok = _ctx.maybe_compact(_long, _small, summarize=_fake_summarize)
+check("摘要成功即压缩", _out_ok.compacted is True and _out_ok.truncated is False)
+check("摘要函数被调用一次", len(_sum_calls) == 1, len(_sum_calls))
+check("摘要请求里带了压缩指令",
+      _ctx.SUMMARY_INSTRUCTION.split("\n")[0] in _sum_calls[0])
+check("摘要请求不含尾段原文（尾段要保原文，不该重复送去摘要）",
+      _long[-1]["content"] not in _sum_calls[0])
+
+
+def _boom_summarize(_p):
+    raise RuntimeError("模型挂了")
+
+
+_out_err = _ctx.maybe_compact(_long, _small, summarize=_boom_summarize)
+# 摘要失败必须降级，不能抛——上下文超限是可缓解问题，缓解手段不该更致命
+check("摘要异常降级为硬截断",
+      _out_err.compacted is False and _out_err.truncated is True, _out_err.error)
+check("降级后历史非空", len(_out_err.messages) > 0)
+check("降级后仍保留任务锚点", _out_err.messages[0] == _long[0])
+check("降级后明确告知丢了东西",
+      any(_ctx.TRUNCATION_NOTICE in m["content"] for m in _out_err.messages))
+check("降级后确实装得进预算",
+      _ctx.measure(_out_err.messages) <= _small.budget(),
+      (_ctx.measure(_out_err.messages), _small.budget()))
+
+_out_empty = _ctx.maybe_compact(_long, _small, summarize=lambda _p: "   ")
+check("空摘要降级为硬截断", _out_empty.truncated is True, _out_empty.error)
+
+_out_none = _ctx.maybe_compact(_long, _small, summarize=None)
+check("未提供摘要函数时降级为硬截断", _out_none.truncated is True, _out_none.error)
+
+# 不需要压缩时必须原样返回，且不得修改入参
+_orig_hist = _mk_hist(1)
+_snapshot = [dict(m) for m in _orig_hist]
+_out_noop = _ctx.maybe_compact(_orig_hist, _small, summarize=_fake_summarize)
+check("无需压缩时原样返回", _out_noop.messages == _snapshot)
+check("纯函数不修改入参", _orig_hist == _snapshot)
+
+# 极端：单条消息就超预算，也不能把历史清空（空历史 = 下一次请求直接失败）
+_huge = [{"role": "user", "content": "字" * 100000}]
+_out_huge = _ctx.hard_truncate(_huge, _small)
+check("单条超预算时历史不为空", len(_out_huge) > 0)
+
+# 重复压缩：第二次要能认出上一次的摘要，而不是把摘要当普通对话越堆越多
+_round2 = _applied + _mk_hist(20)[1:]
+_p_r2 = _ctx.plan_compaction(_round2, _small)
+_applied2 = _ctx.apply_compaction(_round2, _p_r2, "第二次摘要")
+check("可重复压缩且仍只有一条摘要在头部",
+      sum(1 for m in _applied2 if _ctx.SUMMARY_MARKER in m["content"]) == 1,
+      [m["content"][:20] for m in _applied2])
+
+# 没有 user 消息的畸形历史：不要猜结构，直接走硬截断
+_p_bad = _ctx.plan_compaction(
+    [{"role": "assistant", "content": "答" * 8000}], _small)
+check("无用户消息时不猜结构",
+      _p_bad.should_compact is False and _p_bad.force_truncate is True, _p_bad.reason)
+
+# 渲染给摘要用的文本要有长度上限，否则摘要请求自己就超限了
+_rendered = _ctx.render_for_summary(_mk_hist(200), limit_chars=1000)
+check("摘要输入被截到上限内", len(_rendered) <= 1000 + 40, len(_rendered))
+check("截断时明确标注省略", "已省略" in _rendered)
+
+# CLIConfig 必须校验 context_window：填个 100 进去等于每轮都在压缩
+try:
+    ai_code.CLIConfig.from_dict({"context_window": 100})
+    check("context_window 过小被拒", False, "未抛异常")
+except ValueError:
+    check("context_window 过小被拒", True)
+
+_cfg_ctx_ok = ai_code.CLIConfig.from_dict({"context_window": 8192, "compact": False})
+check("context_window/compact 可配置",
+      _cfg_ctx_ok.context_window == 8192 and _cfg_ctx_ok.compact is False)
+check("压缩默认开启（默认 max_history=0 不裁剪，没有压缩就只能等 400）",
+      ai_code.CLIConfig.from_dict({}).compact is True
+      and ai_code.CLIConfig.from_dict({}).context_window == 32768)
+
+# 压缩文案三语齐备
+for _lang_ctx in ("zh", "en", "ja"):
+    _lp = Path(__file__).parent / "locales" / f"{_lang_ctx}.json"
+    _data = json.loads(_lp.read_text(encoding="utf-8"))
+    _miss = [k for k in ("compact_done", "compact_truncated", "compact_failed")
+             if k not in _data]
+    check(f"{_lang_ctx}.json 含压缩文案", _miss == [], _miss)
+
+# —— 接入点源码守卫：压缩是"合"进硬截断之后的一层，不是另起一套机制 ——
+check("压缩紧跟在 trim_messages 之后（max_history 仍是用户显式上限）",
+      "self.max_history)\n            # 压缩放在硬截断之后" in _ai_src
+      and "self._compact_if_needed(system)" in _ai_src)
+check("压缩异常不打断会话", "except Exception as e:\n            # 压缩是增强" in _ai_src)
+# 摘要请求带着 tools 会拿回一段 tool_call JSON 当"摘要"；用完必须还原，
+# 否则一次压缩把整个会话的原生工具调用关掉。
+check("摘要调用临时关 tools 且 finally 还原",
+      "self.tools_ok = False\n        try:" in _ai_src
+      and "finally:\n            self.tools_ok = saved_tools" in _ai_src)
+check("ace_context 保持纯函数（不自己发请求、不读时钟）",
+      all(s not in (Path(__file__).parent / "ace_context.py").read_text(encoding="utf-8")
+          for s in ("import requests", "urlopen", "time.sleep", "time.time")))
+
+# ============================================================
+
 
 
 

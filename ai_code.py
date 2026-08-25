@@ -68,6 +68,7 @@ from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E4
                           sanitize_plain_content, tool_calls_to_protocol)
 from ace_isolation import wrap_untrusted  # noqa: E402
 import ace_http  # noqa: E402
+import ace_context  # noqa: E402
 from i18n import set_language, t  # noqa: E402
 
 CONFIG_PATH = Path.home() / ".ai_code.json"
@@ -294,6 +295,11 @@ class CLIConfig:
     bait: bool = True
     tools: bool = False
     max_history: int = 0
+    # 模型上下文窗口。压缩阈值按它算，所以宁可填小不要填大：
+    # 填大了会在"以为还有余量"的时候被服务端直接拒掉。
+    context_window: int = 32768
+    # 上下文压缩开关。关掉就退回纯硬截断（会丢早期对话，包括第一条用户消息）。
+    compact: bool = True
     lang: str = "zh"
     skill: str = "general"
     # 执行位置：
@@ -316,6 +322,10 @@ class CLIConfig:
         if (not isinstance(self.max_history, int)
                 or isinstance(self.max_history, bool) or self.max_history < 0):
             raise ValueError(f"max_history 必须是非负整数，收到: {self.max_history!r}")
+        if (not isinstance(self.context_window, int)
+                or isinstance(self.context_window, bool) or self.context_window < 2048):
+            raise ValueError(
+                f"context_window 必须是不小于 2048 的整数，收到: {self.context_window!r}")
         if self.lang not in LANG_NAMES:
             raise ValueError(f"lang 必须是 {', '.join(LANG_NAMES)}，收到: {self.lang!r}")
         if self.skill not in SKILLS:
@@ -470,6 +480,9 @@ def merge_config(args) -> Dict:
     cfg.setdefault("bait", True)
     cfg.setdefault("tools", bool(getattr(args, "tools", False)))
     cfg.setdefault("max_history", int(getattr(args, "max_history", 0) or 0))
+    cfg.setdefault("context_window",
+                   int(getattr(args, "context_window", 0) or 32768))
+    cfg.setdefault("compact", not bool(getattr(args, "no_compact", False)))
     cfg.setdefault("sandbox", getattr(args, "sandbox", None) or "off")
     cfg.setdefault("sandbox_image", getattr(args, "sandbox_image", None) or "")
     # 配置校验与归一化（纯 stdlib dataclass）
@@ -697,6 +710,24 @@ class ModelClient:
             return messages
         max_msgs = max_history * 2
         return messages[-max_msgs:] if len(messages) > max_msgs else messages
+
+    def summarize_context(self, prompt: str) -> str:
+        """上下文压缩用的单次纯文本调用。
+
+        临时关掉 tools 的原因：压缩请求不需要工具，带上 tools 就给了模型
+        返回 tool_call 的机会 —— 那时拿到的"摘要"是一段 JSON，会被原样塞进历史。
+        用 try/finally 还原，否则一次压缩会把整个会话的原生工具调用关掉。
+        """
+        saved_tools = self.tools_ok
+        self.tools_ok = False
+        try:
+            raw = self.stream_generate(
+                "你是上下文压缩器。只输出压缩后的交接说明正文，不要寒暄，不要调用工具。",
+                [{"role": "user", "content": prompt}])
+        finally:
+            self.tools_ok = saved_tools
+        # 模型仍可能按协议格式包一层（系统提示词训出来的习惯），统一剥成纯文本
+        return sanitize_plain_content(raw)
 
     def _anthropic_payload_variants(self, system: str, messages: List[Dict]) -> List[Dict]:
         """生成多组兼容变体：不同服务商对 system 字段格式 / 流式支持要求不一，逐个降级尝试"""
@@ -1496,6 +1527,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         self.cfg = cfg
         self.client = ModelClient(cfg, mock=mock)
         self.max_history = int(cfg.get("max_history", 0) or 0)
+        self.context_window = int(cfg.get("context_window", 32768) or 32768)
+        self.compact_enabled = bool(cfg.get("compact", True))
         self.lang = str(cfg.get("lang", "zh"))
         set_language(self.lang)  # 界面语言跟随配置/@lang
         self.skill = str(cfg.get("skill", "general"))
@@ -1519,6 +1552,37 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                             "image": self.cfg.get("sandbox_image")},
             },
         )
+
+    def _compact_if_needed(self, system: str) -> None:
+        """历史逼近上下文窗口时把中间段折成摘要。
+
+        为什么不在这里抛错：上下文超限是可缓解的问题。压缩失败就退回硬截断
+        （ace_context 内部已经这么做），会话继续 —— 但必须**告诉用户**丢了东西，
+        否则模型突然"忘事"看起来像是模型变蠢了。
+        """
+        if not self.compact_enabled or not self.messages:
+            return
+        policy = ace_context.CompactionPolicy(
+            context_window=self.context_window,
+            # 系统提示词每轮都在，算进固定开销里，否则阈值会算得偏松
+            fixed_overhead=ace_context.estimate_tokens(system),
+        )
+        try:
+            outcome = ace_context.maybe_compact(
+                self.messages, policy, summarize=self.client.summarize_context)
+        except Exception as e:
+            # 压缩是增强，不能反过来打断会话
+            print(c("yellow", t("compact_failed", err=e)))
+            return
+        if not (outcome.compacted or outcome.truncated):
+            return
+        before, after = outcome.plan.tokens_before, ace_context.measure(outcome.messages)
+        self.messages = outcome.messages
+        if outcome.compacted:
+            print(c("dim", t("compact_done", before=before, after=after)))
+        else:
+            print(c("yellow", t("compact_truncated", before=before, after=after,
+                                reason=outcome.error or "-")))
 
     @staticmethod
     def _clickable_uri(path: str) -> str:
@@ -1714,6 +1778,9 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             self.messages = self.client.trim_messages(
                 msgs + [{"role": "assistant", "content": output}],
                 self.max_history)
+            # 压缩放在硬截断之后：max_history 是用户显式设的上限，压缩只负责
+            # 在仍然超出模型窗口时把中间段折成摘要，而不是替用户改主意。
+            self._compact_if_needed(system)
 
             # 工具执行阶段动画（仅当本轮确实是工具调用）
             exec_spinner = (_Spinner(t("calling_tool"))
@@ -2039,6 +2106,12 @@ def main() -> None:
                         help="使用原生工具调用（OpenAI 兼容 function calling，不支持时自动降级）")
     parser.add_argument("--max-history", type=int, default=0,
                         help="保留最近 N 轮对话历史（0 = 不裁剪）")
+    parser.add_argument("--context-window", type=int, default=0,
+                        help="模型上下文窗口 token 数（默认 32768）。压缩阈值按它算，"
+                             "填小只是早压缩一点，填大会在以为还有余量时被服务端拒掉")
+    parser.add_argument("--no-compact", action="store_true",
+                        help="关闭上下文压缩，退回纯硬截断（会丢早期对话，"
+                             "包括第一条用户消息里的任务说明）")
     parser.add_argument("--input", help="单次对话（非交互）")
     parser.add_argument("--save-config", action="store_true", help="把当前参数保存到 ~/.ai_code.json")
     parser.add_argument("--install-ui", action="store_true",

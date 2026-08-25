@@ -76,6 +76,9 @@ Windows 上项目目录已带 `ace.cmd`，加入 PATH 后可在任意目录直�
 ```bash
 ace --tools                     # 原生工具调用（OpenAI 兼容 function calling，不支持时自动降级到文本协议）
 ace --max-history 12            # 只保留最近 12 轮，防止本地小模型上下文溢出
+ace --context-window 8192       # 告诉 ACE 模型窗口有多大（压缩阈值按它算，默认 32768）
+ace --no-compact                # 关掉上下文压缩，退回纯硬截断
+
 ace --install-ui                # 装 / 补全 prompt_toolkit（多镜像自动回退）
 
 # 本地 Ollama（Qwen 支持原生工具调用）
@@ -115,6 +118,8 @@ docker compose up               # ACE + Ollama 编排
 | 10 家提供商 | 智谱 GLM / DeepSeek / Kimi / OpenAI / Claude / Qwen / 硅基流动 / OpenRouter / Ollama，`/provider` 一键切换 |
 | 真实工具全家桶 | 联网搜索（双引擎兜底，无需 Key）、SQLite 读写、文档解析（Word/Excel/PPT/PDF/OCR）、浏览器、截图、通知、图像生成 |
 | SimHash 记忆 | 主题切换时预注入相关历史，按会话隔离 |
+| 上下文压缩 | 历史逼近窗口时把中间段折成摘要，**第一条用户消息永不丢弃**；摘要失败退回硬截断并明确告知，不静默失忆 |
+| 网络退避 | 429 / 5xx / 连接抖动自动退避重试（认 `Retry-After`，含 HTTP-date 形式），与 tools 协议降级分层，一次限流不会把工具关掉 |
 | i18n | zh / en / ja，`@lang` 同时切换模型回复语言与界面语言 |
 
 ## 架构
@@ -316,6 +321,8 @@ ace-agent/
 ├── ace_execpolicy.py           # 命令三值判定（allow / prompt / forbidden），纯函数、可单测
 ├── ace_net.py                  # 出站请求闸门：全记录校验 + pin-to-IP + 逐跳复检（SSRF）
 ├── ace_isolation.py            # 外部内容定界与来源标注
+├── ace_http.py                 # 模型调用的重试与退避（Retry-After + full jitter，纯判定可单测）
+├── ace_context.py              # 上下文压缩判定：保住任务锚点，中间段折成摘要
 ├── ace_executor.py             # Go 执行器客户端（NDJSON 协议，纯 stdlib）
 ├── executor/                   # Go 执行器：Job Object 沙箱（唯一需要 go build 的部分）
 
