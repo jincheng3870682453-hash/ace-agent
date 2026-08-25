@@ -294,7 +294,11 @@ class CLIConfig:
     max_history: int = 0
     lang: str = "zh"
     skill: str = "general"
-    # 执行位置："off" = 宿主，"docker" = 一次性容器（见 tools/docker_sandbox.py）
+    # 执行位置：
+    #   off    = 宿主直跑（Go 执行器在时顺带用一下，只为把进程树收干净）
+    #   job    = Windows Job Object 边界（executor/ 里的 Go 执行器，Tier-1）
+    #   docker = 一次性容器（见 tools/docker_sandbox.py）
+    # job 与 docker 都不做静默回退：拿不到边界就报 503，绝不偷偷改回宿主执行。
     sandbox: str = "off"
     sandbox_image: str = ""
 
@@ -314,8 +318,8 @@ class CLIConfig:
             raise ValueError(f"lang 必须是 {', '.join(LANG_NAMES)}，收到: {self.lang!r}")
         if self.skill not in SKILLS:
             raise ValueError(f"skill 必须是 {', '.join(SKILLS)}，收到: {self.skill!r}")
-        if self.sandbox not in ("off", "docker"):
-            raise ValueError(f"sandbox 必须是 off/docker，收到: {self.sandbox!r}")
+        if self.sandbox not in ("off", "job", "docker"):
+            raise ValueError(f"sandbox 必须是 off/job/docker，收到: {self.sandbox!r}")
 
 # ---- ANSI 颜色（非 tty 或 NO_COLOR 时自动关闭，遵循 NO_COLOR 约定）----
 ANSI = {
@@ -2002,11 +2006,14 @@ def main() -> None:
     parser.add_argument("--project-root", help="工作目录")
     parser.add_argument("--permission", choices=["readonly", "write", "full"], help="权限等级")
     parser.add_argument("--no-bait", action="store_true", help="关闭诱饵验证")
-    parser.add_argument("--sandbox", choices=["off", "docker"],
+    parser.add_argument("--sandbox", choices=["off", "job", "docker"],
                         help="terminal_exec / code_execute 的执行位置："
                              "off = 宿主（默认，仅有 Python 层策略校验）；"
+                             "job = Windows Job Object（内存/进程数上限 + 整棵进程树"
+                             "回收，需先在 executor/ 下 go build）；"
                              "docker = 一次性容器（--network none，只挂工作目录）。"
-                             "选 docker 后若 Docker 不可用会直接报错，不会静默回退宿主。")
+                             "job 与 docker 都不做静默回退：拿不到边界直接报错，"
+                             "绝不偷偷改回宿主执行。")
     parser.add_argument("--sandbox-image", help="沙箱镜像（默认 ace-sandbox:latest，"
                                                "用 docker/Dockerfile.sandbox 构建）")
     parser.add_argument("--tools", action="store_true",

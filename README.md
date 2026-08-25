@@ -98,7 +98,8 @@ docker compose up               # ACE + Ollama 编排
 
 **默认只读。** 起步权限是 `readonly`，写工具会被 403 拦下。模型可以申请授权（`request_permission`），由用户选「本次」或「本会话」。`terminal_exec` 例外：它只接受逐次确认，因为它的危险命令黑名单本身可被绕过，「人看一眼命令」是它唯一有效的防线。
 
-**边界要说清能挡什么、挡不住什么。** 不开 docker 沙箱时，`code_execute` 是进程内策略层沙箱、`terminal_exec` 的黑名单只是止血层——两者都不是 OS 级隔离。要真正的内核边界就开 `--sandbox docker`，见[安全模型](#安全模型)。
+**边界要说清能挡什么、挡不住什么。** 不开沙箱时，`code_execute` 是进程内策略层沙箱、`terminal_exec` 的判定层只是止血层——两者都不是 OS 级隔离。要真正的内核边界就开 `--sandbox docker`（容器）或 `--sandbox job`（Windows Job Object），见[安全模型](#安全模型)。
+
 
 
 ## 核心能力
@@ -268,7 +269,23 @@ python ai_code.py --sandbox docker
 
 两点要知道：容器共享内核，容器逃逸漏洞仍然是逃逸，更强的边界得上虚拟机；**开了沙箱但 Docker 不可用时直接返回 503，不会静默回退宿主执行**——回退会让你以为命令跑在容器里而实际跑在自己机器上。
 
+**Job Object 隔离（`--sandbox job`，Windows）**
+
+Docker 没装、或者装了但不想为一条 `dir` 起容器时，还有一档更轻的边界。它由 `executor/` 下的 Go 执行器提供，是项目里唯一需要编译的部分：
+
+```bash
+cd executor && go build -o ace-executor.exe .   # 非 Windows 去掉 .exe
+python ai_code.py --sandbox job
+```
+
+命令会跑在一个 Windows Job Object 里：内存与子进程数上限、限制性令牌 + 中等完整性级别、退出时整棵进程树一起回收。最后那条是宿主直跑做不到的——Python 的 `Process.kill()` 只杀直接子进程，孙进程会变孤儿留在后台。
+
+执行器同时是第二道判定闸：宿主已经判过的 `policy_decision` 会在独立进程里再检一次，宿主侧写错一处逻辑时它还拦得住。
+
+与 docker 档同样的原则：**二进制没编译、本平台不支持 Tier-1、或隔离只部分生效，都返回 503**，不会偷偷改回宿主执行。`--sandbox off`（默认）下执行器若存在会顺带用一下（只为拿进程树回收），起不来则静默回落宿主——这一档本来就没承诺任何边界。设 `ACE_USE_GO_EXECUTOR=0` 可完全关掉这个可选增强。
+
 > **生产部署必读**：不开 `--sandbox docker` 时，`code_execute` 与 `terminal_exec` 只是进程内策略层，**不是 OS 级隔离**，`python -c` 一类等价路径无法靠枚举封死。生产环境还应配合：低权限账户运行、按需授权而非常开 `write`、`signing_key` 置于项目目录之外。
+
 
 
 ## 配置
@@ -296,6 +313,12 @@ ace-agent/
 ├── ai_code.py                  # 命令行前端：登录页 / REPL / 斜杠补全 / 提供商注册表
 ├── agent_runner.py             # 交互循环：模型 ↔ 执行层多轮闭环，错误自动回喂
 ├── execution_layer.py          # 执行层主入口：协议解析、权限、安全闸门、Plan Mode
+├── ace_execpolicy.py           # 命令三值判定（allow / prompt / forbidden），纯函数、可单测
+├── ace_net.py                  # 出站请求闸门：全记录校验 + pin-to-IP + 逐跳复检（SSRF）
+├── ace_isolation.py            # 外部内容定界与来源标注
+├── ace_executor.py             # Go 执行器客户端（NDJSON 协议，纯 stdlib）
+├── executor/                   # Go 执行器：Job Object 沙箱（唯一需要 go build 的部分）
+
 ├── tools/                      # 工具执行器包
 │   ├── registry.py             #   工具唯一声明处（name / schema / 权限组 / handler）
 │   ├── base.py                 #   共享助手 + 敏感目标判定 + execute 分发

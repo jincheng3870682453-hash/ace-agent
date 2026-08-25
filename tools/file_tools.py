@@ -795,7 +795,103 @@ class FileTools:
         return verdict
 
 
+    @staticmethod
+    def _is_cmd_builtin(argv0: str) -> bool:
+        """argv[0] 是不是 Windows cmd 的内建命令（因而只能经 shell 跑）。
+
+        宿主分支和 Go 执行器分支都要问这一句，所以抽出来：两边答案不一致的话，
+        同一条 `echo ok` 会在一条路上跑通、在另一条路上 spawn 失败。
+        """
+        if os.name != "nt":
+            return False
+        base = argv0.lower()
+        if base.endswith(".exe"):
+            base = base[:-4]
+        return base in _CMD_BUILTIN_BASES
+
+    def _exec_via_go(self, cmd: str, verdict: "execpolicy.Verdict",
+                     approved: bool) -> Optional[ExecutionResult]:
+        """把命令交给 Go 执行器执行。返回 None = 这条路走不了，由调用方决定后果。
+
+        返回 ExecutionResult 的情况有两种，都不该被重试：执行成功，以及执行器
+        **明确拒绝**（策略复检不通过、超时、沙箱不可用）。拿到拒绝之后回落到宿主
+        重跑，等于绕过它刚刚给出的拒绝。
+        """
+        client = self._go_executor()
+        if client is None:
+            return None
+        import ace_executor as _ax
+        want_tier = _ax.TIER_JOB_OBJECT if self.sandbox_mode == "job" else None
+        if want_tier and want_tier not in client.sandbox_available():
+            return None   # 本平台没有 Tier-1（非 Windows），交回调用方
+
+        # allow 档有干净的 argv，压根不经 shell。prompt 档（已获批准）往往正是靠
+        # 管道/重定向才需要 shell，这时把整条字符串作为**单个** argv 元素交给平台
+        # shell —— 让 shell 跑在边界**里面**。
+        #
+        # 这不是把命令注入放回来：这条字符串刚刚由人逐字看过并点头，而边界是 Job
+        # Object，不是"没有 shell"。job 档下如果因为"执行器只收 argv"就把这类命令
+        # 踢回宿主，边界就等于没有 —— 那比让 shell 在 Job 里跑坏得多。
+        #
+        # 例外是 cmd 内建命令（echo / dir / type ...）：它们不是磁盘上的可执行文件，
+        # 执行器按 argv[0] 去 PATH 里找必然 E_SPAWN_FAILED。宿主分支早就有这一层
+        # （见 _CMD_BUILTIN_BASES 与 _exec_terminal_exec 结尾），这里必须同样处理，
+        # 否则 `echo ok` 这种最普通的 allow 档命令一进执行器就挂。
+        if verdict.allowed and verdict.argv and not self._is_cmd_builtin(verdict.argv[0]):
+            argv = list(verdict.argv)
+        elif os.name == "nt":
+            argv = ["cmd", "/c", cmd]
+        else:
+            argv = ["/bin/sh", "-c", cmd]
+
+        try:
+            out = client.exec_command(
+                argv, cwd=str(self.project_root), tier=want_tier,
+                # job 档不许降档：允许降档等于"用户要了 Job Object，实际拿到 tier0"，
+                # 而他不会知道。off 档无所谓，那本来就没承诺任何边界。
+                allow_weaker_tier=(self.sandbox_mode != "job"),
+                policy=_ax.verdict_to_policy(verdict, user_approved=approved))
+        except _ax.ExecutorError as e:
+            if e.code == "E_TRANSPORT" and self.sandbox_mode != "job":
+                # 会话本身断了，不是执行器在拒绝。off 档没承诺边界，回落到宿主。
+                self.use_go_executor = False
+                self._go_client = None
+                return None
+            if e.code == "E_SPAWN_FAILED" and self.sandbox_mode != "job":
+                # 进程压根没起来（argv[0] 不在 PATH 上），既不是策略拒绝也不是边界失效，
+                # 回落到宿主重跑不构成"绕过拒绝"——什么都还没执行。宿主的 shell=True
+                # 能多认一些东西（.bat / .cmd / doskey），认不出来也会给出更好读的报错。
+                # 注意这里**不**关掉执行器：这是单条命令的事，不是会话级故障。
+                return None
+            return ExecutionResult(
+
+                status="error", error_code=e.http_like,
+                message=f"Go 执行器拒绝或终止了该命令：{e.message}",
+                metadata={"executor": {"code": e.code, "data": e.data}})
+        except Exception:
+            if self.sandbox_mode == "job":
+                return None
+            self.use_go_executor = False
+            self._go_client = None
+            return None
+
+        if self.sandbox_mode == "job" and out.degraded:
+            # 只部分生效就报错。给出一个自己都不确定的隔离保证，比明确说"做不到"更糟。
+            return ExecutionResult(
+                status="error", error_code="503",
+                message=f"Job Object 只部分生效（{out.sandbox_applied}），已拒绝执行。")
+
+        return ExecutionResult(status="success", data={
+            "stdout": out.stdout,
+            "stderr": out.stderr,
+            "returncode": out.exit_code,
+            "truncated": out.truncated,
+            "executor": "go",
+            "sandbox": out.sandbox_applied,
+        })
+
     def _exec_terminal_exec(self, params: Dict) -> ExecutionResult:
+
         """写入权限下的真实终端执行（受权限门 + 三值判定 + 快照回滚保护）
 
         三条出口：
@@ -880,19 +976,37 @@ class FileTools:
                             "mount": "/work"},
             })
 
-        # allow 档走 argv + shell=False：判定已经保证整条字符串里没有 shell 元字符，
+        # Go 执行器：Tier-1 Job Object。docker 之后、宿主之前。
+        #
+        # 它解决的是 docker 解决不了的那个场景：docker 没装 / 没起来的机器上，
+        # 宿主直跑连"把整棵进程树收干净"都做不到 —— Python 的 Process.Kill() 只杀
+        # 直接子进程，孙进程会变孤儿继续跑。Job Object 是 OS 原语，Python 侧拿不到，
+        # 这是把执行搬出进程的唯一理由；判定仍然在上面的 execpolicy 完成。
+        if self.sandbox_mode == "job" or (verdict.allowed and verdict.argv):
+            go_result = self._exec_via_go(cmd, verdict, approved)
+            if go_result is not None:
+                return go_result
+            if self.sandbox_mode == "job":
+                # job 档要的就是这个边界。拿不到就报错，绝不静默回落到宿主 ——
+                # 和 docker 那条同一个原则：用户以为在 Job 里跑、实际在自己机器上跑，
+                # 而且毫无提示，是最坏的一种"能用"。
+                return ExecutionResult(
+                    status="error", error_code="503",
+                    message=("Job Object 沙箱不可用（执行器未编译、起不来，或本平台"
+                             "不支持 Tier-1），已拒绝执行。在 executor/ 下跑 "
+                             "`go build -o ace-executor.exe .`，或用 --sandbox off "
+                             "显式改回宿主执行。"))
+
+
         # 不经 shell 则连"万一漏了一个元字符"的余地也没有。
         # 例外是 Windows 的 cmd 内建命令（echo / dir / type / copy / md ...）——
         # 它们不是可执行文件，argv + shell=False 会得到 FileNotFoundError。
         # 这类命令交给 shell 是安全的：元字符在第 2 关就已经被排除干净了。
         target: Any = cmd
         use_shell = True
-        if verdict.allowed and verdict.argv:
-            base = verdict.argv[0].lower()
-            if base.endswith(".exe"):
-                base = base[:-4]
-            if not (os.name == "nt" and base in _CMD_BUILTIN_BASES):
-                target, use_shell = verdict.argv, False
+        if verdict.allowed and verdict.argv and not self._is_cmd_builtin(verdict.argv[0]):
+            target, use_shell = verdict.argv, False
+
         try:
             result = subprocess.run(target, shell=use_shell, capture_output=True, text=True,
                                     timeout=30, cwd=str(self.project_root),

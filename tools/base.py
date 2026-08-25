@@ -123,7 +123,19 @@ class ToolExecutorBase:
         # docker 一次性容器执行层（None = 未启用，命令仍在宿主跑）。
         # 只有 terminal_exec / code_execute 走它——那两个才是真正需要内核边界的地方。
         self.docker_sandbox = build_sandbox(sandbox, str(self.project_root))
+        # 执行位置档位：off / job / docker。docker 由上面那行接管，job 由 Go 执行器
+        # 接管（Tier-1 Job Object），off 表示宿主直跑。
+        self.sandbox_mode = str((sandbox or {}).get("mode", "off")).lower()
+        self._go_client = None
+        # Go 执行器：job 档是**必需**，off 档是可选增强。
+        # 这个区分很要紧，理由见 _go_executor() 的注释。
+        self.use_go_executor = (
+            self.sandbox_mode == "job"
+            or (self.sandbox_mode == "off"
+                and os.environ.get("ACE_USE_GO_EXECUTOR", "1").lower()
+                not in ("0", "false", "no", "off")))
         self.execution_log: List[Dict] = []
+
         # —— 审批 / 沙箱双闸门（见 ace_execpolicy）——
         # 两者正交，不是同一件事的两种说法：
         #   approval_policy 管"要不要问人"，sandbox_policy 管"允许它碰什么"。
@@ -155,8 +167,45 @@ class ToolExecutorBase:
         except ValueError:
             return None
 
+    def _go_executor(self):
+        """惰性拿到 Go 执行器客户端。返回 None 表示"这条路走不了"。
+
+        两个档位的失败语义**不一样**，这是从 docker 那条路继承下来的原则：
+
+        - `--sandbox off`：用户已经说了不要边界。这时候执行器只是个增强
+          （Job Object 能把整棵进程树收干净，Python 的 `Process.Kill()` 只杀直接
+          子进程，孙进程会变孤儿）。所以起不来就静默降级回宿主，返回 None。
+        - `--sandbox job`：用户要的就是这个边界。起不来必须报错，**绝不**静默回落到
+          宿主。这里同样只返回 None，但调用方看到 `sandbox_mode == "job"` 就知道
+          该报 503 而不是接着跑 —— 判断留在调用方，因为只有它知道自己在执行谁。
+
+          理由和 docker 那条一模一样：用户以为在容器/Job 里跑、实际在自己机器上跑，
+          而且毫无提示，这是最坏的一种"能用"。
+
+        真正的命令安全闸门在 ace_execpolicy，不依赖这个进程存在 —— 执行器里那道
+        policy_decision 复检是第二道闸，不是唯一一道。
+        """
+        if not self.use_go_executor:
+            return None
+        if self._go_client is not None:
+            return self._go_client
+        try:
+            import ace_executor
+            client = ace_executor.ExecutorClient()
+            if not client.available():
+                self.use_go_executor = False
+                return None
+            client.start()
+            self._go_client = client
+            return client
+        except Exception:
+            # 一次失败就彻底关掉，避免每条命令都付一次启动失败的代价。
+            self.use_go_executor = False
+            return None
+
     @staticmethod
     def _read_text_any(path: Path) -> str:
+
         """读取文本：UTF-8 优先，失败回退系统默认编码（如 GBK），避免中文被静默丢弃"""
         try:
             return path.read_text(encoding="utf-8")

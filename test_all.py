@@ -2264,7 +2264,145 @@ check("_round_confirmed 取值早于 can_execute",
 check("allow 档以 shell=False 执行", "target, use_shell = verdict.argv, False" in _ft_src)
 
 # ============================================================
-print("=" * 60)
+print("\n[20] Go 执行器 —— 三档执行位置 + Tier-1 Job Object + 无静默回退")
+# ============================================================
+import ace_executor as _ax
+
+_GO_ROOT = str(mktemp())
+
+# —— 档位派生：sandbox.mode 决定执行位置，docker 那条不受影响 ——
+check("默认档是 off", _PolTE(_GO_ROOT).sandbox_mode == "off")
+check("job 档被识别", _PolTE(_GO_ROOT, sandbox={"mode": "job"}).sandbox_mode == "job")
+check("job 档不会顺手造 docker 沙箱",
+      _PolTE(_GO_ROOT, sandbox={"mode": "job"}).docker_sandbox is None)
+check("docker 档仍然造 docker 沙箱",
+      _PolTE(_GO_ROOT, sandbox={"mode": "docker"}).docker_sandbox is not None)
+
+# —— use_go_executor：off 档是可选增强（可关），job 档是必需（关不掉）——
+_old_env = os.environ.get("ACE_USE_GO_EXECUTOR")
+os.environ["ACE_USE_GO_EXECUTOR"] = "0"
+check("off 档可用环境变量关掉执行器",
+      _PolTE(_GO_ROOT).use_go_executor is False)
+check("job 档不受环境变量影响（边界是用户点名要的，不能被环境变量偷偷关掉）",
+      _PolTE(_GO_ROOT, sandbox={"mode": "job"}).use_go_executor is True)
+if _old_env is None:
+    del os.environ["ACE_USE_GO_EXECUTOR"]
+else:
+    os.environ["ACE_USE_GO_EXECUTOR"] = _old_env
+check("默认（无环境变量）off 档也会顺带用执行器",
+      _PolTE(_GO_ROOT).use_go_executor is True)
+
+# —— 失败语义：off 档静默降级回宿主，job 档报 503，绝不偷偷改回宿主 ——
+_off_te = _PolTE(_GO_ROOT)
+_off_te.use_go_executor = False          # 模拟"执行器起不来"
+_r = _off_te.execute({"tool": "terminal_exec", "command": "echo ok"})
+check("off 档执行器不可用时静默回落宿主", _r.status == "success", _r.message)
+check("回落宿主的结果里没有 executor 标记",
+      "executor" not in (_r.data or {}), _r.data)
+
+_job_te = _PolTE(_GO_ROOT, sandbox={"mode": "job"})
+_job_te.use_go_executor = False
+_r = _job_te.execute({"tool": "terminal_exec", "command": "echo ok"})
+check("job 档执行器不可用时报 503 而不是回落宿主",
+      _r.status == "error" and _r.error_code == "503", _r.message)
+check("503 里给出了自救办法（go build）", "go build" in (_r.message or ""), _r.message)
+
+
+# —— cmd 内建命令：两条路（宿主 / 执行器）必须给同一个答案 ——
+# echo / dir 不是磁盘上的可执行文件，直接按 argv[0] 去 PATH 找必然 spawn 失败。
+check("echo 被认作 cmd 内建", _PolTE._is_cmd_builtin("echo") is (os.name == "nt"))
+check("带 .exe 后缀也能认出来", _PolTE._is_cmd_builtin("ECHO.exe") is (os.name == "nt"))
+check("git 不是 cmd 内建", _PolTE._is_cmd_builtin("git") is False)
+
+# —— policy_decision 翻译：执行器的第二道闸靠它 ——
+class _StubVerdict:
+    decision = "prompt"
+    rule = "shell_syntax"
+
+_p = _ax.verdict_to_policy(_StubVerdict(), user_approved=True)
+check("verdict_to_policy 只靠鸭子类型（不 import execpolicy）",
+      _p == {"decision": "prompt", "rule_id": "shell_syntax", "approved": True}, _p)
+_p = _ax.verdict_to_policy(_v("rm -rf /"))
+check("forbidden 判定原样传给执行器",
+      _p["decision"] == _pol.DECISION_FORBIDDEN and _p["approved"] is False, _p)
+
+_ax_src = (Path(__file__).parent / "ace_executor.py").read_text(encoding="utf-8")
+check("ace_executor 不依赖 ace_execpolicy（客户端可独立使用）",
+      "import ace_execpolicy" not in _ax_src)
+check("E_POLICY_DENIED 映射到 403", _ax._HTTP_LIKE["E_POLICY_DENIED"] == "403")
+check("E_SANDBOX_UNAVAILABLE 映射到 501", _ax._HTTP_LIKE["E_SANDBOX_UNAVAILABLE"] == "501")
+
+# —— 真的把二进制跑起来（未编译则跳过这一段，不让 CI 因为缺 Go 而红）——
+_client = _ax.ExecutorClient()
+if _client.available():
+    _client.start()
+    try:
+        _tiers = _client.sandbox_available()
+        check("执行器自报 tier0", _ax.TIER_PROCESS in _tiers, _tiers)
+        if os.name == "nt":
+            check("Windows 上自报 tier1（Job Object）",
+                  _ax.TIER_JOB_OBJECT in _tiers, _tiers)
+
+        # 第二道闸：宿主标 forbidden，执行器独立复检后拒绝执行。
+        # 这一条是整个"判定搬出进程"的意义所在——宿主侧写错一处，它还站得住。
+        try:
+            _client.exec_command(["cmd", "/c", "echo x"] if os.name == "nt"
+                                 else ["/bin/sh", "-c", "echo x"],
+                                 cwd=_GO_ROOT,
+                                 policy={"decision": "forbidden", "rule_id": "t",
+                                         "approved": True})
+            check("执行器独立复检 forbidden", False, "居然执行了")
+        except _ax.ExecutorError as _e:
+            check("执行器独立复检 forbidden → E_POLICY_DENIED",
+                  _e.code == "E_POLICY_DENIED" and _e.http_like == "403", _e.code)
+
+        # prompt 档没带 approved 同样拒绝：默认桶朝安全的方向。
+        try:
+            _client.exec_command(["cmd", "/c", "echo x"] if os.name == "nt"
+                                 else ["/bin/sh", "-c", "echo x"],
+                                 cwd=_GO_ROOT,
+                                 policy={"decision": "prompt", "rule_id": "t",
+                                         "approved": False})
+            check("执行器拒绝未批准的 prompt 档", False, "居然执行了")
+        except _ax.ExecutorError as _e:
+            check("执行器拒绝未批准的 prompt 档",
+                  _e.code == "E_POLICY_DENIED", _e.code)
+    finally:
+        _client.close()
+
+    # 端到端：off 档下 allow 桶命令确实经执行器跑完并带回沙箱信息
+    _r = _PolTE(_GO_ROOT).execute({"tool": "terminal_exec", "command": "echo ok"})
+    check("off 档 allow 桶命令经执行器执行", _r.status == "success", _r.message)
+    check("结果标明走的是 Go 执行器",
+          (_r.data or {}).get("executor") == "go", _r.data)
+    check("cmd 内建命令在执行器里也能跑通（曾因 spawn 失败整条挂掉）",
+          "ok" in ((_r.data or {}).get("stdout") or ""), _r.data)
+
+    if os.name == "nt":
+        _r = _PolTE(_GO_ROOT, sandbox={"mode": "job"}).execute(
+            {"tool": "terminal_exec", "command": "echo ok"})
+        check("job 档命令跑在 Job Object 里", _r.status == "success", _r.message)
+        _sb = (_r.data or {}).get("sandbox") or {}
+
+        check("job 档实际生效的是 tier1", _sb.get("tier") == _ax.TIER_JOB_OBJECT, _sb)
+        check("job 档没有降级", _sb.get("degraded") is False, _sb)
+else:
+    print("  (跳过真实二进制段：executor/ 未编译)")
+
+# —— 源码守卫：无静默回退这条原则必须留在代码里 ——
+check("job 档不允许降档",
+      "allow_weaker_tier=(self.sandbox_mode != \"job\")" in _ft_src)
+check("job 档只部分生效也报错", "out.degraded" in _ft_src and "503" in _ft_src)
+check("E_TRANSPORT 只在 off 档回落",
+      "e.code == \"E_TRANSPORT\" and self.sandbox_mode != \"job\"" in _ft_src)
+check("E_SPAWN_FAILED 只在 off 档回落",
+      "e.code == \"E_SPAWN_FAILED\" and self.sandbox_mode != \"job\"" in _ft_src)
+_ai_src = (Path(__file__).parent / "ai_code.py").read_text(encoding="utf-8")
+check("--sandbox 三档齐全",
+      'choices=["off", "job", "docker"]' in _ai_src)
+
+# ============================================================
+
 
 
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")
