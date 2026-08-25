@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any, Dict
 
 from tools.base import MAX_CODE_LENGTH
+from tools.docker_sandbox import DockerUnavailable
 from tools.result import ExecutionResult
+
 
 
 class CodeTools:
@@ -105,7 +107,33 @@ class CodeTools:
         if denied:
             return ExecutionResult(status="error", error_code="403", message=denied)
 
+        # docker 沙箱：整段代码丢进一次性容器，内存 / 进程数 / 网络都由内核约束。
+        # 这里刻意保留上面的 AST 扫描：docker 可用性是运行时探测出来的，万一探测
+        # 判断错了、或者镜像被换成没有隔离能力的东西，放宽黑名单就等于把一个检测
+        # bug 直接变成逃逸口。两道一起留着，代价只是容器里也用不了 os/subprocess。
+        if self.docker_sandbox is not None:
+            try:
+                out = self.docker_sandbox.run_python(code)
+            except DockerUnavailable as e:
+                return ExecutionResult(
+                    status="error", error_code="503",
+                    message=(f"docker 沙箱不可用（{e}），已拒绝执行。"
+                             "启动 Docker 后重试，或用 --sandbox off 显式改回宿主执行。"))
+            if out["timeout"]:
+                return ExecutionResult(status="error", error_code="504",
+                                       message=out["stderr"])
+            return ExecutionResult(status="success", data={
+                "stdout": out["stdout"],
+                "stderr": out["stderr"],
+                "returncode": out["returncode"],
+                "sandbox": {"kind": "docker", "image": self.docker_sandbox.image,
+                            "network": self.docker_sandbox.network,
+                            "memory": self.docker_sandbox.memory,
+                            "timeout": self.docker_sandbox.timeout},
+            })
+
         import subprocess
+
         import uuid
         base = Path(self.sandbox_base) if self.sandbox_base else Path(tempfile.gettempdir())
         sandbox_dir = base / f"agent_sandbox_{uuid.uuid4().hex[:8]}"

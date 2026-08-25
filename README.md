@@ -98,7 +98,8 @@ docker compose up               # ACE + Ollama 编排
 
 **默认只读。** 起步权限是 `readonly`，写工具会被 403 拦下。模型可以申请授权（`request_permission`），由用户选「本次」或「本会话」。`terminal_exec` 例外：它只接受逐次确认，因为它的危险命令黑名单本身可被绕过，「人看一眼命令」是它唯一有效的防线。
 
-**边界要说清能挡什么、挡不住什么。** `code_execute` 是进程内策略层沙箱，不是 OS 级隔离；`terminal_exec` 的黑名单是止血层，不是完备边界。文档里不会把它们写成"安全"，生产部署的真实隔离手段见[安全模型](#安全模型)末尾。
+**边界要说清能挡什么、挡不住什么。** 不开 docker 沙箱时，`code_execute` 是进程内策略层沙箱、`terminal_exec` 的黑名单只是止血层——两者都不是 OS 级隔离。要真正的内核边界就开 `--sandbox docker`，见[安全模型](#安全模型)。
+
 
 ## 核心能力
 
@@ -254,7 +255,21 @@ flowchart TB
 - 守门分层：block 级拦截并回滚本轮快照，warn 级不阻断；只回滚本轮，不动无关修改
 - `api_get`/`api_post` 仅 http/https，且 **DNS 解析后**拦截内网 / 回环 / 链路本地地址（防 SSRF）；未实现的工具返回 501 而非假成功
 
-> **生产部署必读**：`code_execute` 与 `terminal_exec` 是进程内策略层沙箱，**不是 OS 级隔离**。沙箱黑名单与高危命令筛查都只是止血层，`python -c` 一类等价路径无法靠枚举封死。生产环境必须配合：容器 / 虚拟机 + 低权限账户运行、按需授权而非常开 `write`、`signing_key` 置于项目目录之外。
+**容器隔离（`--sandbox docker`）**
+
+上面所有校验都是进程内的 Python 逻辑。`terminal_exec` 是 `shell=True`，cwd 固定在项目根挡不住 `cd /`；`code_execute` 的 AST 黑名单也不可能枚举完。真正的边界要靠内核：
+
+```bash
+docker build -t ace-sandbox:latest -f docker/Dockerfile.sandbox .
+python ai_code.py --sandbox docker
+```
+
+开启后 `terminal_exec` / `code_execute` 的每次调用都是一个一次性容器：`--network none`（凭据出不去、也下载不了第二阶段载荷）、`--read-only` + `--tmpfs /tmp`、`--cap-drop ALL` + `no-new-privileges`、内存与 `--pids-limit` 上限（fork bomb 变成容器自己的事）、只挂工作目录到 `/work`、`--rm` 跑完即销毁。其余工具仍在宿主，所以"在桌面建个文件"这类请求照常能做。
+
+两点要知道：容器共享内核，容器逃逸漏洞仍然是逃逸，更强的边界得上虚拟机；**开了沙箱但 Docker 不可用时直接返回 503，不会静默回退宿主执行**——回退会让你以为命令跑在容器里而实际跑在自己机器上。
+
+> **生产部署必读**：不开 `--sandbox docker` 时，`code_execute` 与 `terminal_exec` 只是进程内策略层，**不是 OS 级隔离**，`python -c` 一类等价路径无法靠枚举封死。生产环境还应配合：低权限账户运行、按需授权而非常开 `write`、`signing_key` 置于项目目录之外。
+
 
 ## 配置
 
@@ -300,7 +315,8 @@ ace-agent/
 ├── docs/ADR.md                 # 架构决策记录
 
 ├── LICENSE                     # MIT
-├── docker/                     # lite / standard / full 三档镜像 + 模型下载脚本
+├── docker/                     # lite / standard / full 三档整体镜像 + sandbox 执行镜像 + 模型下载脚本
+
 └── .github/workflows/ci.yml    # CI：Python 3.10/3.11/3.12 编译检查 + 全量测试 + ruff
 ```
 

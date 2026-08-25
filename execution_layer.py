@@ -385,7 +385,9 @@ class ExecutionLayer:
             sandbox_base=(config or {}).get("sandbox_base"),
             confine_files=bool((config or {}).get("confine_files", True)),
             email_smtp=(config or {}).get("email_smtp"),
+            sandbox=(config or {}).get("sandbox"),
         )
+
         self.parser = AgentOutputParser()
 
         # V2 网关（config 为空时也启用，使用默认配置）

@@ -1,0 +1,24 @@
+# ace 沙箱镜像 —— terminal_exec / code_execute 的一次性执行容器
+#
+# 用途和 Dockerfile.lite 完全不同：lite 是"把 ace 整个装进容器"，这个镜像里
+# 没有 ace 的代码，它只是一个干净的执行环境。ace 跑在宿主，每条命令 docker run
+# 一个这个镜像的容器、跑完即销毁（见 tools/docker_sandbox.py）。
+#
+# 构建：docker build -t ace-sandbox:latest -f docker/Dockerfile.sandbox .
+# 启用：python ai_code.py --sandbox docker
+#
+# 刻意保持最小：镜像里装什么，agent 在沙箱里就能用什么。要 gcc / node / git
+# 就自己往下加一层，别为了"可能用得上"预装一堆东西——攻击面是按装了什么算的。
+FROM python:3.12-slim-bookworm
+
+# 非 root 用户。POSIX 宿主上 docker_sandbox 会用 -u <宿主 uid> 覆盖它
+# （这样容器写出的文件在宿主侧归属正确）；Windows 宿主没有 uid，就用这个。
+RUN useradd --create-home --uid 10001 ace
+
+WORKDIR /work
+USER ace
+
+# 没有 ENTRYPOINT：命令由 docker run 传入（sh -c "..." 或 python -）。
+# 直接 docker run 这个镜像不带参数只会打开一个 python REPL 然后因为
+# stdin 关闭立刻退出，符合预期。
+CMD ["python", "-c", "print('ace sandbox image ok')"]

@@ -18,7 +18,10 @@ services:
       - PYTHONUTF8=1
     stdin_open: true
     tty: true
-    command: ["python", "ai_code.py"]
+    # --project-root 必须显式指到挂载点：镜像 WORKDIR 是 /app（烤进去的代码副本），
+    # 而 ace 的 project_root 默认是 "."，不加这个参数它会去改镜像内的代码副本，
+    # 挂进来的 /app/project 一个字都不动 —— 容器一删改动全没了。
+    command: ["python", "ai_code.py", "--project-root", "/app/project"]
 
   # 方案B: 内置 VLM (镜像 ~2.3GB，启动即用)
   ace-standard:
@@ -30,7 +33,10 @@ services:
     volumes:
       - ../:/app/project
       - ace-config:/home/ace
-      - ace-memory:/app/.agent_memory.json
+      # 记忆文件是 project_root/.agent_memory.json（execution_layer.py:413），
+      # 已经在上面那条 bind mount 里，不需要再单独挂。以前这里挂了个 named volume
+      # 到 /app/.agent_memory.json —— docker 会在那个位置建**目录**，MemoryArchive
+      # 按文件去读写必然失败，而且路径本身也是错的（project_root 在 /app/project）。
     environment:
       - AGENT_BASE_URL=${AGENT_BASE_URL:-}
       - AGENT_API_KEY=${AGENT_API_KEY:-}
@@ -41,6 +47,7 @@ services:
       - "8080:8080"   # llama.cpp server (可选暴露)
     stdin_open: true
     tty: true
+    command: ["python", "ai_code.py", "--project-root", "/app/project"]
     deploy:
       resources:
         limits:
@@ -64,4 +71,3 @@ services:
 
 volumes:
   ace-config:
-  ace-memory:

@@ -292,6 +292,9 @@ class CLIConfig:
     max_history: int = 0
     lang: str = "zh"
     skill: str = "general"
+    # 执行位置："off" = 宿主，"docker" = 一次性容器（见 tools/docker_sandbox.py）
+    sandbox: str = "off"
+    sandbox_image: str = ""
 
     @classmethod
     def from_dict(cls, data: Dict) -> "CLIConfig":
@@ -309,6 +312,8 @@ class CLIConfig:
             raise ValueError(f"lang 必须是 {', '.join(LANG_NAMES)}，收到: {self.lang!r}")
         if self.skill not in SKILLS:
             raise ValueError(f"skill 必须是 {', '.join(SKILLS)}，收到: {self.skill!r}")
+        if self.sandbox not in ("off", "docker"):
+            raise ValueError(f"sandbox 必须是 off/docker，收到: {self.sandbox!r}")
 
 # ---- ANSI 颜色（非 tty 或 NO_COLOR 时自动关闭，遵循 NO_COLOR 约定）----
 ANSI = {
@@ -457,6 +462,8 @@ def merge_config(args) -> Dict:
     cfg.setdefault("bait", True)
     cfg.setdefault("tools", bool(getattr(args, "tools", False)))
     cfg.setdefault("max_history", int(getattr(args, "max_history", 0) or 0))
+    cfg.setdefault("sandbox", getattr(args, "sandbox", None) or "off")
+    cfg.setdefault("sandbox_image", getattr(args, "sandbox_image", None) or "")
     # 配置校验与归一化（纯 stdlib dataclass）
     try:
         cli_cfg = CLIConfig.from_dict(cfg)
@@ -1479,6 +1486,9 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             config={
                 "bait": {"enabled": bool(self.cfg.get("bait", True)), "frequency": 0},
                 "sandbox_base": str(Path(self.cfg["project_root"]).resolve() / ".sandbox_tmp"),
+                # docker 一次性容器执行层：mode="off" 时整块失效，行为与以前一致
+                "sandbox": {"mode": self.cfg.get("sandbox", "off"),
+                            "image": self.cfg.get("sandbox_image")},
             },
         )
 
@@ -1980,6 +1990,13 @@ def main() -> None:
     parser.add_argument("--project-root", help="工作目录")
     parser.add_argument("--permission", choices=["readonly", "write", "full"], help="权限等级")
     parser.add_argument("--no-bait", action="store_true", help="关闭诱饵验证")
+    parser.add_argument("--sandbox", choices=["off", "docker"],
+                        help="terminal_exec / code_execute 的执行位置："
+                             "off = 宿主（默认，仅有 Python 层策略校验）；"
+                             "docker = 一次性容器（--network none，只挂工作目录）。"
+                             "选 docker 后若 Docker 不可用会直接报错，不会静默回退宿主。")
+    parser.add_argument("--sandbox-image", help="沙箱镜像（默认 ace-sandbox:latest，"
+                                               "用 docker/Dockerfile.sandbox 构建）")
     parser.add_argument("--tools", action="store_true",
                         help="使用原生工具调用（OpenAI 兼容 function calling，不支持时自动降级）")
     parser.add_argument("--max-history", type=int, default=0,

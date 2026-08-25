@@ -1710,7 +1710,50 @@ if _PT_AVAILABLE:
               _probe_err if _outs is None else f"positions={[c.start_position for c in _outs]}")
 
 # ============================================================
+print("[16] docker 沙箱 —— 容器执行层的开关、参数与失败语义")
+# ============================================================
+from tools.docker_sandbox import DockerSandbox, build_sandbox  # noqa: E402
+
+check("sandbox mode=off 不构造沙箱（默认行为不变）",
+      build_sandbox({"mode": "off"}, ".") is None
+      and build_sandbox(None, ".") is None
+      and build_sandbox({}, ".") is None)
+_sb_root = mktemp()
+_sb = build_sandbox({"mode": "docker"}, str(_sb_root))
+check("sandbox mode=docker 构造 DockerSandbox", isinstance(_sb, DockerSandbox))
+
+# 容器参数是这一层唯一的安全价值来源，逐条钉死。少了任何一条，"隔离"就只是个说法：
+# 没有 --network=none 就能外传凭据；没有 --read-only 就能改镜像里的东西；
+# 没有 --cap-drop ALL / no-new-privileges 就能拿额外权能；没有 pids/memory 上限
+# 一个 fork bomb 就把宿主拖死。
+_args = " ".join(_sb._base_args("probe-name"))
+for _flag in ("--network=none", "--read-only", "--memory=", "--memory-swap=",
+              "--pids-limit=", "no-new-privileges", "--cap-drop", "--rm"):
+    check(f"容器参数含 {_flag}", _flag in _args, _args)
+check("只挂工作目录、cwd 指向挂载点",
+      f"{_sb_root.resolve()}:/work:rw" in _args and " -w /work" in _args, _args)
+
+# 失败语义：沙箱开了但 docker 不可用 → 报错，绝不静默回退宿主。
+# 静默回退比没沙箱更危险：用户以为命令在容器里跑，实际跑在自己机器上。
+# 这里断言的不只是错误码，还有"文件确实没被创建"——回退会让它出现。
+el_sbx = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False},
+                                "sandbox_base": str(TEST_TMP),
+                                "sandbox": {"mode": "docker"}})
+el_sbx.executor.docker_sandbox._available = False   # 模拟 daemon 不可达
+el_sbx.executor.docker_sandbox._detail = "daemon 不可达（测试注入）"
+_probe_file = Path(el_sbx.project_root) / "sandbox_fallback_probe.txt"
+r = run_confirmed(el_sbx, "terminal_exec",
+                  command=f"echo hi > {_probe_file.name}")
+check("docker 不可用时 terminal_exec 返回 503", r["status"] == "503", r.get("message"))
+check("docker 不可用时命令没有在宿主执行（无静默回退）",
+      not _probe_file.exists(), str(_probe_file))
+r = run_agent(el_sbx, "code_execute", code="print(1)")
+check("docker 不可用时 code_execute 同样返回 503", r["status"] == "503", r.get("message"))
+
+# ============================================================
 print("=" * 60)
+
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")
 if FAILED:
     print("失败项:")

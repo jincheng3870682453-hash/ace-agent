@@ -15,7 +15,9 @@ from tools.base import (GIT_READONLY_SUBCOMMANDS, MAX_COMMAND_LENGTH,
                         READ_ONLY_COMMANDS, SHELL_META_RE,
                         VERSION_ONLY_COMMANDS, VERSION_SUBCOMMANDS,
                         sensitive_target)
+from tools.docker_sandbox import DockerUnavailable
 from tools.result import ExecutionResult
+
 
 # Windows 无默认打开程序时，文本类扩展名回退记事本打开（.py 常无关联程序）
 _TEXT_EXTENSIONS = {".py", ".txt", ".md", ".json", ".log", ".csv", ".ini", ".cfg",
@@ -796,6 +798,29 @@ class FileTools:
         if denied:
             return ExecutionResult(status="error", error_code="403",
                                    message=f"{denied}，已拦截。如确需执行请在终端手动操作。")
+        # docker 沙箱：启用后命令跑在一次性容器里，宿主拿不到。这是这个工具唯一
+        # 真正的边界——shell=True 的宿主分支靠 cwd 和正则黑名单是拦不住的。
+        # 注意不做静默回退：沙箱开了但 docker 挂了就报 503，绝不偷偷改回宿主执行，
+        # 否则用户以为在容器里跑，实际在自己机器上跑，而且毫无提示。
+        if self.docker_sandbox is not None:
+            try:
+                out = self.docker_sandbox.run_shell(cmd)
+            except DockerUnavailable as e:
+                return ExecutionResult(
+                    status="error", error_code="503",
+                    message=(f"docker 沙箱不可用（{e}），已拒绝执行。"
+                             "启动 Docker 后重试，或用 --sandbox off 显式改回宿主执行。"))
+            if out["timeout"]:
+                return ExecutionResult(status="error", error_code="504",
+                                       message=out["stderr"])
+            return ExecutionResult(status="success", data={
+                "stdout": out["stdout"],
+                "stderr": out["stderr"],
+                "returncode": out["returncode"],
+                "sandbox": {"kind": "docker", "image": self.docker_sandbox.image,
+                            "network": self.docker_sandbox.network,
+                            "mount": "/work"},
+            })
         try:
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                                     timeout=30, cwd=str(self.project_root),
@@ -809,6 +834,7 @@ class FileTools:
             return ExecutionResult(status="error", error_code="504", message="命令执行超时（30 秒）")
         except Exception as e:
             return ExecutionResult(status="error", error_code="500", message=str(e))
+
 
     def _exec_open_file(self, params: Dict) -> ExecutionResult:
         """对话内打开文件：默认返回可点击链接（用户点击后全屏查看）；
