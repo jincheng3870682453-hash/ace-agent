@@ -2831,6 +2831,115 @@ check("ace_context 保持纯函数（不自己发请求、不读时钟）",
           for s in ("import requests", "urlopen", "time.sleep", "time.time")))
 
 # ============================================================
+print("[23] 出站目的地白名单 —— 接上闸门（判定 + 逐跳复检 + 403 而非静默）")
+
+# 闸门关闭（未配置）= 一律放行。这个方向必须钉住：把它写成"没配就全拦"，
+# 升级到这个版本的人会发现 api_get 全部失灵，然后判断是功能坏了。
+check("未配置清单时不拦（allowlist=None）",
+      _net.egress_reject_reason("https://anything.example.com/x", None) is None)
+check("host_in_allowlist 的 None 仍是'用内置清单'（两个默认值方向相反，不能混）",
+      _net.host_in_allowlist("duckduckgo.com", None) is True
+      and _net.host_in_allowlist("anything.example.com", None) is False)
+
+_al = ["api.mycorp.com"]
+check("清单内放行", _net.egress_reject_reason("https://api.mycorp.com/v1/x", _al) is None)
+check("子域也放行", _net.egress_reject_reason("https://a.api.mycorp.com/x", _al) is None)
+_deny = _net.egress_reject_reason("https://evil.tld/?data=leak", _al)
+check("清单外拒绝", _deny is not None)
+check("拒绝原因点明主机名", _deny and "evil.tld" in _deny, _deny)
+check("拒绝原因告诉模型别重试、且加白名单要找人",
+      _deny and "重试同一个地址不会变" in _deny and "egress_allowlist" in _deny, _deny)
+
+# 标签边界：能注册域名就能利用的绕过
+check("notmycorp 不命中 mycorp（只在标签边界后缀匹配）",
+      _net.egress_reject_reason("https://notapi.mycorp.com.evil.tld/x", _al) is not None)
+
+# 内置端点并进去，而不是被配置覆盖 —— 否则"配了清单"的第一个后果是搜索坏了
+check("配了窄清单，内置端点仍然可用",
+      _net.egress_reject_reason("https://html.duckduckgo.com/html/", _al) is None
+      and _net.egress_reject_reason("https://image.pollinations.ai/prompt/x", _al) is None)
+check("effective_allowlist 是并集而非覆盖",
+      set(_net.DEFAULT_EGRESS_ALLOWLIST).issubset(set(_net.effective_allowlist(_al))))
+
+# 空清单 ≠ 未配置：那是"配了，但除内置端点外都不许"
+check("空清单只留内置端点",
+      _net.egress_reject_reason("https://api.mycorp.com/x", []) is not None
+      and _net.egress_reject_reason("https://bing.com/search", []) is None)
+
+# 通配符把闸门整体关掉（人写 "*" 的意思很明确）
+check("清单里有 * 等于关闸门",
+      _net.egress_reject_reason("https://anything.tld/x", ["*"]) is None
+      and _net.egress_reject_reason("https://anything.tld/x", ["all"]) is None)
+
+# 条目容错：人会顺手写成 URL / 带端口 / 带前导点，这些都得认
+for _entry in ("https://api.mycorp.com/v1", "api.mycorp.com:443", ".mycorp.com"):
+    check(f"条目写法容错: {_entry}",
+          _net.egress_reject_reason("https://api.mycorp.com/x", [_entry]) is None)
+
+check("取不出主机名时按拒绝处理",
+      _net.egress_reject_reason("http:///nohost", _al) is not None)
+
+# —— 逐跳复检：清单内的域名 302 出去，必须在跳之前拦住 ——
+_eg_te = _TE_CLS(project_root=str(Path(tempfile.gettempdir())),
+                 egress_allowlist=["allowed.test"])
+check("闸门开着时 _egress_hop_gate 返回可调用",
+      callable(_eg_te._egress_hop_gate()))
+_eg_off = _TE_CLS(project_root=str(Path(tempfile.gettempdir())))
+check("闸门关着时 _egress_hop_gate 返回 None（不给 safe_request 加无用回调）",
+      _eg_off._egress_hop_gate() is None)
+
+_hop_fr = _FakeRequests([_FakeResp(302, {"Location": "https://evil.tld/steal"})])
+try:
+    _net.safe_request("GET", "https://allowed.test/start", requests_mod=_hop_fr,
+                      resolver=_stub_resolver(["93.184.216.34"]),
+                      on_hop=_eg_te._egress_hop_gate())
+    _hop_blocked = False
+except _net.UrlBlocked as e:
+    _hop_blocked, _hop_why = True, str(e)
+check("清单内域名 302 到清单外 → 拦住", _hop_blocked, "重定向没过清单")
+check("拦住的理由是白名单而不是内网判定",
+      _hop_blocked and "不在出站白名单" in _hop_why, _hop_why)
+check("拦在发出第二跳之前", len(_hop_fr.calls) == 1, _hop_fr.calls)
+
+# 清单内跳清单内要照跟，否则防护变功能墙
+_hop_ok = _FakeRequests([_FakeResp(302, {"Location": "https://allowed.test/next"}),
+                         _FakeResp(200)])
+_r_ok, _t_ok = _net.safe_request("GET", "https://allowed.test/a", requests_mod=_hop_ok,
+                                 resolver=_stub_resolver(["93.184.216.34"]),
+                                 on_hop=_eg_te._egress_hop_gate())
+check("清单内的重定向正常跟随", _r_ok.status_code == 200 and len(_t_ok) == 2, _t_ok)
+
+# —— 工具层：403 而不是 400/500，且请求根本没发出去 ——
+# 注意 execute() 的入参是**平铺**的（base.py 里 params = tool_call 去掉 "tool" 那一项），
+# 没有 "parameters" 这层嵌套。写成嵌套的话 url 取到空串，拿回来的是 400 缺少协议，
+# 看着像闸门没生效，其实是调用方式错了。
+_eg_res = _eg_te.execute({"tool": "api_get", "url": "https://evil.tld/x"})
+check("api_get 命中清单外返回 403（授权问题，不是请求格式问题）",
+      _eg_res.error_code == "403", (_eg_res.status, _eg_res.error_code, _eg_res.message))
+_eg_res2 = _eg_te.execute({"tool": "api_post", "url": "https://evil.tld/x", "data": {"k": "v"}})
+check("api_post 同样 403", _eg_res2.error_code == "403", _eg_res2.error_code)
+_eg_res3 = _eg_te.execute({"tool": "browser_open", "url": "https://evil.tld/x"})
+check("browser_open 也过清单（连接不经过本进程，但要不要交给浏览器本进程能决定）",
+      _eg_res3.error_code == "403", _eg_res3.error_code)
+# 顺序守卫：清单必须排在 _check_url（含 DNS 解析）之前。反过来的话清单外主机会先
+# 因解析结果拿到 400，403 永远轮不到 —— 而且"不许去"这个判断反倒要先向该目的地
+# 发一次可观测的 DNS 查询才能得出。
+_bo_src = _web_src[_web_src.index("def _exec_browser_open"):]
+check("browser_open 里清单判定排在 DNS 解析之前",
+      _bo_src.index("self._egress_reason(url)") < _bo_src.index("self._check_url(url)"))
+
+# 源码守卫：每条出站都得把 on_hop 接上，少一处清单就是装饰品。
+# 五处而不是四处：_search_engine 只有一个 safe_request，但 _exec_search 会分别用
+# DuckDuckGo 和 Bing 调它两次，两个调用点都要显式带上闸门。
+check("web_tools 五处 safe_request 全部接了 on_hop",
+      _web_src.count("on_hop=self._egress_hop_gate()") == 5,
+      _web_src.count("on_hop=self._egress_hop_gate()"))
+check("execution_layer 把 egress_allowlist 透给执行器",
+      "egress_allowlist=(config or {}).get(\"egress_allowlist\")" in
+      (Path(__file__).parent / "execution_layer.py").read_text(encoding="utf-8"))
+
+# ============================================================
+
 
 
 

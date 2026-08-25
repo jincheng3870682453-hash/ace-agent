@@ -388,6 +388,7 @@ class ExecutionLayer:
             email_smtp=(config or {}).get("email_smtp"),
             sandbox=(config or {}).get("sandbox"),
             approval_policy=(config or {}).get("approval_policy"),
+            egress_allowlist=(config or {}).get("egress_allowlist"),
             sandbox_policy=(config or {}).get("sandbox_policy"),
             approval_hook=self._exec_approval_hook,
         )

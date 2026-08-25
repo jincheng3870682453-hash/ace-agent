@@ -62,17 +62,18 @@ class WebTools:
 
     @staticmethod
     def _search_engine(engine_url: str, query: str, top_k: int,
-                       requests, parser) -> List[Dict]:
+                       requests, parser, on_hop=None) -> List[Dict]:
         # 引擎地址是写死的常量，但仍然走 safe_request：出站请求只留一条路径，
         # 才不会下次改动时又冒出一个"直接 requests.get"的旁路 —— SSRF 那一轮
         # 留下的缺口正是这么来的（校验一条路、发请求另一条路）。
+        # on_hop 同理：引擎首跳一定在内置清单里，但它回的 302 不一定。
         try:
             resp, _trail = ace_net.safe_request(
                 "GET", engine_url, requests_mod=requests, params={"q": query},
                 headers={"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                         "AppleWebKit/537.36 (KHTML, like Gecko) "
                                         "Chrome/124.0 Safari/537.36")},
-                timeout=15)
+                timeout=15, on_hop=on_hop)
         except Exception:
             return []
         if resp.status_code != 200 or not resp.text:
@@ -94,11 +95,13 @@ class WebTools:
             return ExecutionResult(status="error", error_code="500",
                                    message="search 需要 requests 库: pip install requests")
         results = self._search_engine(
-            "https://html.duckduckgo.com/html/", query, top_k, requests, self._parse_ddg)
+            "https://html.duckduckgo.com/html/", query, top_k, requests, self._parse_ddg,
+            on_hop=self._egress_hop_gate())
         engine = "duckduckgo"
         if not results:
             results = self._search_engine(
-                "https://www.bing.com/search", query, top_k, requests, self._parse_bing)
+                "https://www.bing.com/search", query, top_k, requests, self._parse_bing,
+                on_hop=self._egress_hop_gate())
             engine = "bing"
         if not results:
             return ExecutionResult(status="error", error_code="500",
@@ -156,6 +159,12 @@ class WebTools:
         scheme_err = ace_net.check_scheme(url)
         if scheme_err:
             return ExecutionResult(status="error", error_code="400", message=scheme_err)
+        # 出站清单在解析之前判：目的地不许去的话，连 DNS 查询都不该发出去
+        # （查询本身就是一次可观测的外部信号）。403 而不是 400：这是授权问题，
+        # 换个写法不会通过，得由人改配置。
+        egress_err = self._egress_reason(url)
+        if egress_err:
+            return ExecutionResult(status="error", error_code="403", message=egress_err)
         try:
             import requests
         except ImportError:
@@ -164,7 +173,8 @@ class WebTools:
         try:
             # safe_request 自己解析、检查全部记录、把 IP 钉进本次连接，并逐跳复检
             resp, trail = ace_net.safe_request("GET", url, requests_mod=requests,
-                                               timeout=30)
+                                               timeout=30,
+                                               on_hop=self._egress_hop_gate())
         except ace_net.UrlBlocked as e:
             # 400 不是 500：这是拒绝而非故障，模型要换目标而不是原样重试
             return ExecutionResult(status="error", error_code="400", message=str(e))
@@ -183,6 +193,10 @@ class WebTools:
         scheme_err = ace_net.check_scheme(url)
         if scheme_err:
             return ExecutionResult(status="error", error_code="400", message=scheme_err)
+        # POST 是数据外发通道，清单在这里比在 api_get 上更要紧
+        egress_err = self._egress_reason(url)
+        if egress_err:
+            return ExecutionResult(status="error", error_code="403", message=egress_err)
         try:
             import requests
         except ImportError:
@@ -191,7 +205,8 @@ class WebTools:
         try:
             resp, trail = ace_net.safe_request("POST", url, requests_mod=requests,
                                                json_body=params.get("data", {}),
-                                               timeout=30)
+                                               timeout=30,
+                                               on_hop=self._egress_hop_gate())
         except ace_net.UrlBlocked as e:
             return ExecutionResult(status="error", error_code="400", message=str(e))
         except Exception as e:
@@ -208,6 +223,19 @@ class WebTools:
         url = str(params.get("url", ""))
         # 这条路只能做校验：URL 交给系统浏览器之后连接不再经过本进程，
         # 没法 pin 到已校验的 IP，也拦不住浏览器自己跟的重定向。
+        #
+        # 三道检查的顺序是有讲究的，和 api_get 一致：协议 → 清单 → 全量校验。
+        # 因为 _check_url 里含 DNS 解析，把清单放在它后面的话，清单外主机会先因为
+        # 解析结果（甚至解析失败）拿到 400，403 永远轮不到 —— 等于"目的地不许去"
+        # 这个判断反倒要先向该目的地发一次可观测的 DNS 查询才能得出。
+        scheme_err = ace_net.check_scheme(url)
+        if scheme_err:
+            return ExecutionResult(status="error", error_code="400", message=scheme_err)
+        # 清单同样要管这条路。连接不经过本进程，所以拦不住浏览器自己跟的重定向 ——
+        # 但"该不该把这个域名交给浏览器"这个决定，本进程还是能做的。
+        egress_err = self._egress_reason(url)
+        if egress_err:
+            return ExecutionResult(status="error", error_code="403", message=egress_err)
         url_err = self._check_url(url)
         if url_err:
             return ExecutionResult(status="error", error_code="400", message=url_err)
@@ -249,7 +277,8 @@ class WebTools:
                f"?width={width}&height={height}&nologo=true")
         try:
             resp, _trail = ace_net.safe_request("GET", url, requests_mod=requests,
-                                                timeout=60)
+                                                timeout=60,
+                                                on_hop=self._egress_hop_gate())
             resp.raise_for_status()
             img_path.write_bytes(resp.content)
         except Exception as e:

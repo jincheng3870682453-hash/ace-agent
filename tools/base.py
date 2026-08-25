@@ -115,6 +115,7 @@ class ToolExecutorBase:
                  sandbox: Optional[Dict] = None,
                  approval_policy: Optional[str] = None,
                  sandbox_policy: Optional[str] = None,
+                 egress_allowlist=None,
                  approval_hook=None):
         self.project_root = Path(project_root).resolve()
         self.sandbox_base = sandbox_base  # code_execute 沙箱临时目录基路径（None = 系统临时目录）
@@ -149,6 +150,13 @@ class ToolExecutorBase:
         # 为 None 表示无人可问 —— 此时判定为 prompt 的命令一律拒绝，而不是放行。
         # 这个默认方向很重要：非交互场景把默认答案写成 "y" 就是 SEC-004 那类事故。
         self.approval_hook = approval_hook
+        # 出站目的地白名单。None = 闸门关闭（默认，只有 ace_net 的内网判定生效）；
+        # 给了列表就只放行清单内主机（自动并上 DEFAULT_EGRESS_ALLOWLIST）。
+        # 默认关而不是默认开：内网判定挡的是"打到内网去"，清单挡的是"把数据带到
+        # 哪个公网站点去"。后者只有宿主知道哪些站点是正当的，猜一个默认值的结果
+        # 是 api_get 在升级后突然大面积失灵，而用户的第一反应是这功能坏了。
+        self.egress_allowlist = egress_allowlist
+
 
 
 
@@ -247,6 +255,23 @@ class ToolExecutorBase:
         """
         from ace_net import check_url
         return check_url(url)
+
+    def _egress_reason(self, url: str) -> Optional[str]:
+        """出站目的地是否被白名单拒绝：放行返回 None，否则返回给模型看的原因。"""
+        from ace_net import egress_reject_reason
+        return egress_reject_reason(url, self.egress_allowlist)
+
+    def _egress_hop_gate(self):
+        """给 `safe_request(on_hop=...)` 的回调；闸门关着时返回 None（不加回调开销）。
+
+        重定向必须逐跳复检，否则清单是装饰品：清单里的域名回一个
+        `302 Location: https://evil.tld/?data=...`，请求就落到清单外去了，
+        而首跳的判定完全正确 —— 判定和最终目的地不是同一个东西。
+        """
+        if self.egress_allowlist is None:
+            return None
+        return self._egress_reason
+
 
 
     def _resolve_read_path(self, path_str: str) -> Optional[Path]:

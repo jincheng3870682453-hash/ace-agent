@@ -362,6 +362,49 @@ def url_in_allowlist(url: Any, allowlist: Optional[Sequence[str]] = None) -> boo
     return bool(host) and host_in_allowlist(host, allowlist)
 
 
+def effective_allowlist(allowlist: Sequence[str]) -> tuple:
+    """配置的条目 ∪ 内置端点。
+
+    并进 DEFAULT_EGRESS_ALLOWLIST 而不是让配置完全覆盖：用户收紧清单是为了限制
+    **模型自己挑的**目的地，不是为了把 search / image_generate 这些工具本身弄坏。
+    如果覆盖，那么"配了清单"的第一个可见后果是联网搜索不能用了 —— 用户会把这
+    理解成功能坏了，然后把清单删掉，闸门也就没了。
+    """
+    return tuple(allowlist) + tuple(DEFAULT_EGRESS_ALLOWLIST)
+
+
+def egress_reject_reason(url: Any,
+                         allowlist: Optional[Sequence[str]] = None) -> Optional[str]:
+    """出站目的地判定：放行返回 None，否则返回可直接给模型看的拒绝原因。
+
+    **注意 `allowlist=None` 在这里的含义和 `host_in_allowlist` 相反**：
+    那边 None = 用内置清单，这里 None = **闸门关闭，一律放行**。看着像是自找麻烦，
+    但两个默认值各自的方向都是对的：`host_in_allowlist` 是个判定函数，问它
+    "在不在清单里"总得有个清单；而这个函数是闸门入口，宿主**没配**清单时
+    正确行为是不拦（否则升级到这个版本的人会发现 api_get 突然全废）。
+    真正危险的是把两者混为一谈，所以这里不复用那边的 None 分支，显式分开写。
+
+    空清单（`[]`）与 None 不同：那是"配了，但一条都不许" —— 除内置端点外全拦。
+    """
+    if allowlist is None:
+        return None
+    entries = effective_allowlist(allowlist)
+    if any(normalize_entry(e) in _WILDCARD_ALL for e in entries):
+        return None
+    host = url_host(url)
+    if not host:
+        return "ACE 出站拦截：URL 里取不出主机名"
+    if host_in_allowlist(host, entries):
+        return None
+    shown = ", ".join(str(e) for e in allowlist) or "（空）"
+    return (f"ACE 出站拦截：{host} 不在出站白名单里。"
+            f"当前清单: {shown}（另含内置端点 "
+            f"{', '.join(DEFAULT_EGRESS_ALLOWLIST)}）。"
+            "这不是网络故障，重试同一个地址不会变。要么改用清单内的地址，"
+            "要么请用户把该域名加进配置 egress_allowlist —— 你自己加不了。")
+
+
+
 # ---------------------------------------------------------------- pin-to-IP
 
 # 把已校验的解析结果钉到实际连接上。
