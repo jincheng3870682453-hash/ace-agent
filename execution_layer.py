@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 
 from tools import ExecutionResult, ToolExecutor, repair_backslash_json
 from ace_isolation import wrap_untrusted
+import ace_execpolicy as execpolicy  # noqa: E402
 
 # ============================================================
 # 导入用户代码库（V1 + V2）
@@ -671,10 +672,16 @@ class ExecutionLayer:
 
                 and tool_name not in self.permission.temp_grants
                 and tool_name in self.permission.allowed_tools(self.permission.level)):
+            # on_failure 审批档 + 真实沙箱边界（docker/job）→ 先试后问：跳过逐次确认，
+            # 让边界拦（与 file_tools 的 _exec_terminal_exec 同一豁免口径）。
+            _of_fail = (getattr(self.executor, "approval_policy", None)
+                        == execpolicy.ApprovalPolicy.ON_FAILURE
+                        and (self.executor.docker_sandbox is not None
+                             or self.executor.sandbox_mode == "job"))
             # 同前缀免确认：用户之前确认过同前缀命令（且不是 BANNED 危险包装）→ 跳过确认闸门。
             # 确认逻辑与 _exec_approval_hook 共用同一套前缀判定，避免两处口径漂移。
             _cmd = str(tool_call.get("command") or tool_call.get("code") or "")
-            if not self._prefix_auto_approved(_cmd):
+            if not _of_fail and not self._prefix_auto_approved(_cmd):
                 preview = _cmd
                 if len(preview) > 300:
                     preview = preview[:300] + " …（已截断）"

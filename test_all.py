@@ -474,6 +474,40 @@ el_pref2._exec_approval_hook(_V("bash -c 'rm -rf /'"))
 check("BANNED 前缀确认后不被记住", "bash -c" not in el_pref2._approved_prefixes,
       el_pref2._approved_prefixes)
 
+# —— on_failure 审批档（"沙箱内失败后才问"，此前声明未实现） ——
+# 有真实边界（docker/job）→ 先试后问：prompt 档不弹确认，直接让沙箱拦
+el_of = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                       config={"bait": {"enabled": False},
+                               "sandbox": {"mode": "docker"},
+                               "approval_policy": "on_failure"})
+el_of.executor.docker_sandbox._available = True
+el_of.executor.docker_sandbox._image_ok = True
+_DEN_OK = {"stdout": "", "stderr": "", "returncode": 0,
+           "timeout": False, "sandbox_denied": False}
+with _mockp.patch.object(el_of.executor.docker_sandbox, "run_shell",
+                         return_value=_DEN_OK):
+    r = run_agent(el_of, "terminal_exec", command="rm -rf build", user="on_failure测试")
+check("on_failure + docker 边界：prompt 命令直接执行（不弹确认）",
+      r["status"] == "SUCCESS", r.get("status"))
+# 无边界（off 档）→ on_failure 退回 on_request：仍要确认
+el_of2 = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False},
+                                "approval_policy": "on_failure"})
+with _mockp.patch.object(el_of2.executor, "execute", return_value=_OK_RES):
+    r = run_agent(el_of2, "terminal_exec", command="rm -rf build", user="on_failure测试")
+check("on_failure 无边界：退回逐次确认", r["status"] == "PERMISSION_REQUEST",
+      r.get("status"))
+# 默认 on_request 回归：docker 边界下 prompt 命令仍要确认（不因沙箱存在而免问）
+el_or = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                       config={"bait": {"enabled": False},
+                               "sandbox": {"mode": "docker"}})
+el_or.executor.docker_sandbox._available = True
+el_or.executor.docker_sandbox._image_ok = True
+with _mockp.patch.object(el_or.executor, "execute", return_value=_OK_RES):
+    r = run_agent(el_or, "terminal_exec", command="rm -rf build", user="on_request测试")
+check("on_request 默认档：docker 边界下仍逐次确认",
+      r["status"] == "PERMISSION_REQUEST", r.get("status"))
+
 # —— 五层网关 L1/L2 接入执行循环 ——
 el_route = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
                           config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})

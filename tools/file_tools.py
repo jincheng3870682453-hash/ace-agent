@@ -1011,7 +1011,16 @@ class FileTools:
 
         approved = False
         if verdict.needs_approval:
-            if self.approval_hook is None:
+            # on_failure 档（"沙箱内失败后才问"）：真实边界（docker/job）生效时
+            # **先试后问** —— 让边界拦，失败无害（sandbox_denied 会如实上报并带
+            # denied_hint），不打断用户；被拒后模型自然换做法。无真实边界时这一档
+            # 退回 on_request 语义（询问），避免"先试"退化成裸跑。
+            _sandbox_active = (self.docker_sandbox is not None
+                               or self.sandbox_mode == "job")
+            if (self.approval_policy == execpolicy.ApprovalPolicy.ON_FAILURE
+                    and _sandbox_active):
+                approved = True
+            elif self.approval_hook is None:
                 # 无人可问 → 拒绝。方向必须朝安全：把非交互场景的默认答案写成 "y"
                 # 正是 SEC-004 那类事故的成因。
                 return ExecutionResult(
@@ -1020,23 +1029,24 @@ class FileTools:
                              f"可改用只读的 terminal_view，或拆成不含 shell 元字符的单条命令。"),
                     metadata={"policy": {"decision": verdict.decision, "rule": verdict.rule,
                                          "approval": "unavailable"}})
-            try:
-                approved = bool(self.approval_hook(verdict))
-            except Exception as e:
-                # 只把异常**类型**给模型：hook 由上层注入，它的异常文本不受本层控制，
-                # 完全可能把路径甚至凭据带进来（FileNotFoundError 的 str 就带路径）。
-                return ExecutionResult(
-                    status="error", error_code="500",
-                    message=f"审批回调异常（{type(e).__name__}），按拒绝处理",
-                    metadata={"error": {"action": "approval_hook",
-                                        "type": type(e).__name__, "detail": str(e)},
-                              "policy": {"decision": verdict.decision, "rule": verdict.rule}})
-            if not approved:
-                return ExecutionResult(
-                    status="error", error_code="403",
-                    message=f"用户拒绝执行：{verdict.reason}",
-                    metadata={"policy": {"decision": verdict.decision, "rule": verdict.rule,
-                                         "approval": "denied"}})
+            else:
+                try:
+                    approved = bool(self.approval_hook(verdict))
+                except Exception as e:
+                    # 只把异常**类型**给模型：hook 由上层注入，它的异常文本不受本层控制，
+                    # 完全可能把路径甚至凭据带进来（FileNotFoundError 的 str 就带路径）。
+                    return ExecutionResult(
+                        status="error", error_code="500",
+                        message=f"审批回调异常（{type(e).__name__}），按拒绝处理",
+                        metadata={"error": {"action": "approval_hook",
+                                            "type": type(e).__name__, "detail": str(e)},
+                                  "policy": {"decision": verdict.decision, "rule": verdict.rule}})
+                if not approved:
+                    return ExecutionResult(
+                        status="error", error_code="403",
+                        message=f"用户拒绝执行：{verdict.reason}",
+                        metadata={"policy": {"decision": verdict.decision, "rule": verdict.rule,
+                                             "approval": "denied"}})
 
         ok, why = execpolicy.should_execute(verdict, self.approval_policy,
                                            user_approved=approved)
