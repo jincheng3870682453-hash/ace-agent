@@ -1215,13 +1215,22 @@ r = run_agent(el_h, "code_execute", language="python",
               code="import pickle\npickle.loads(b'x')")
 check("沙箱拦截 pickle 导入", r["status"] == "403", r.get("message"))
 # —— code_execute 接入 Go 执行器（Tier-1 Job Object 边界） ——
-r = run_agent(el_h, "code_execute", language="python", code="print('go-ce-ok')")
-_sand = r.get("data", {}).get("sandbox", {}) if r["status"] == "SUCCESS" else {}
-check("code_execute 走 Go 执行器（job 边界）",
-      r["status"] == "SUCCESS" and _sand.get("kind") == "go-executor"
-      and _sand.get("job_object") is True
-      and "go-ce-ok" in r.get("data", {}).get("stdout", ""),
-      (r.get("status"), _sand))
+# 仅当执行器二进制可用（本机 go build 过）时断言 job 边界；CI/Linux 无 exe 时
+# 走进程内回落，这是预期行为，不算失败（与 [13] 的 available() 跳过同一口径）。
+import ace_executor as _ax_ce  # noqa: E402
+if _ax_ce.ExecutorClient().available():
+    r = run_agent(el_h, "code_execute", language="python", code="print('go-ce-ok')")
+    _sand = r.get("data", {}).get("sandbox", {}) if r["status"] == "SUCCESS" else {}
+    check("code_execute 走 Go 执行器（job 边界）",
+          r["status"] == "SUCCESS" and _sand.get("kind") == "go-executor"
+          and _sand.get("job_object") is True
+          and "go-ce-ok" in r.get("data", {}).get("stdout", ""),
+          (r.get("status"), _sand))
+else:
+    r = run_agent(el_h, "code_execute", language="python", code="print('go-ce-ok')")
+    check("code_execute 无执行器时进程内回落仍可用",
+          r["status"] == "SUCCESS" and "go-ce-ok" in r.get("data", {}).get("stdout", ""),
+          r.get("status"))
 
 # —— 快照 HMAC 签名（防伪造） ——
 gproj = mktemp()
@@ -2369,7 +2378,7 @@ check("git 只读子命令 → allow", _v("git status").allowed and _v("git log"
 check("工作区内写命令 → allow", _v("mkdir build").allowed)
 check("allow 档带 argv 供 shell=False 执行", _v("git status").argv == ["git", "status"])
 check("路径参数越出工作区 → prompt",
-      _v("copy a.txt C:\\Users\\Public\\a.txt").rule == "path_escape")
+      _v("copy a.txt C:\\Users\\Public\\a.txt", posix=False).rule == "path_escape")
 # POSIX 上 `/tmp/x` 是绝对路径而不是命令开关。无条件跳过 `/` 开头的 token 会让
 # `cp secret.txt /tmp/x` 落进 allow 档、不问人就跑 —— 正是路径约束要防的那件事。
 check("POSIX 下 /tmp 目标不被当成命令开关",

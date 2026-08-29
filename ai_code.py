@@ -63,7 +63,7 @@ from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E4
                           ModelProvider, TOOLS, ask_grant, ask_yes_no,
                           claims_completed_action,
                           content_to_tool_protocol, final_reply_protocol,
-                          load_system_prompt, render_tool_result,
+                          load_system_prompt, render_result, render_tool_result,
                           resolve_permission, resolve_plan,
                           retry_notice, tools_for_permission,
                           sanitize_plain_content, tool_calls_to_protocol)
