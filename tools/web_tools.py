@@ -10,13 +10,24 @@ import sys
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import ace_net
 from tools.result import ExecutionResult
 
 
 class WebTools:
+    # 联网工具清单（/net 开关控制；关闭时这些工具一律拒绝）
+    NETWORK_TOOLS = {"search", "search_read", "api_get", "api_post",
+                     "image_generate", "browser_open", "browser_navigate"}
+
+    def _net_gate(self) -> Optional[ExecutionResult]:
+        """联网开关门卫：关闭时返回 403，开启时返回 None。"""
+        if getattr(self, "network_enabled", True):
+            return None
+        return ExecutionResult(status="error", error_code="403",
+                               message="联网已关闭（/net 可开启）：该工具需要联网，"
+                                       "本地操作不受影响")
     @staticmethod
     def _clean_html(seg: str) -> str:
         return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", seg))).strip()
@@ -82,6 +93,9 @@ class WebTools:
 
     def _exec_search(self, params: Dict) -> ExecutionResult:
         """真实联网搜索（DuckDuckGo HTML → Bing 兜底，无需 API Key）"""
+        g = self._net_gate()
+        if g:
+            return g
         query = str(params.get("query", "")).strip()
         if not query:
             return ExecutionResult(status="error", error_code="400", message="query 参数为空")
@@ -115,6 +129,9 @@ class WebTools:
 
     def _exec_search_read(self, params: Dict) -> ExecutionResult:
         """搜索 + 抓取 top 结果正文（RAG 式联网：一步拿到可引用的网页内容）"""
+        g = self._net_gate()
+        if g:
+            return g
         query = str(params.get("query", "")).strip()
         if not query:
             return ExecutionResult(status="error", error_code="400", message="query 参数为空")
@@ -193,6 +210,9 @@ class WebTools:
                                        "其他平台请 pip install pillow）")
 
     def _exec_api_get(self, params: Dict) -> ExecutionResult:
+        g = self._net_gate()
+        if g:
+            return g
         url = str(params.get("url", ""))
         # 协议先判：非 http/https 连 requests 都不用导，也让"没装 requests"不影响这条拒绝
         scheme_err = ace_net.check_scheme(url)
@@ -228,6 +248,9 @@ class WebTools:
         })
 
     def _exec_api_post(self, params: Dict) -> ExecutionResult:
+        g = self._net_gate()
+        if g:
+            return g
         url = str(params.get("url", ""))
         scheme_err = ace_net.check_scheme(url)
         if scheme_err:
@@ -259,6 +282,9 @@ class WebTools:
 
     def _exec_browser_open(self, params: Dict) -> ExecutionResult:
         """用系统默认浏览器打开 URL（真实实现，仅 http/https）"""
+        g = self._net_gate()
+        if g:
+            return g
         url = str(params.get("url", ""))
         # 这条路只能做校验：URL 交给系统浏览器之后连接不再经过本进程，
         # 没法 pin 到已校验的 IP，也拦不住浏览器自己跟的重定向。
@@ -321,6 +347,9 @@ class WebTools:
 
     def _exec_browser_navigate(self, params: Dict) -> ExecutionResult:
         """Playwright 受控页面打开 URL（与 browser_open 的系统浏览器不同：可后续点击/输入）"""
+        g = self._net_gate()
+        if g:
+            return g
         url = str(params.get("url", ""))
         url_err = self._check_url(url)
         if url_err:
@@ -383,6 +412,9 @@ class WebTools:
 
     def _exec_image_generate(self, params: Dict) -> ExecutionResult:
         """真实图像生成（pollinations.ai 免费端点，无需密钥），保存到项目 .ace_images/"""
+        g = self._net_gate()
+        if g:
+            return g
         prompt = str(params.get("prompt", "")).strip()
         if not prompt:
             return ExecutionResult(status="error", error_code="400", message="prompt 参数为空")

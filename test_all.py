@@ -3839,6 +3839,47 @@ check("未配置技能目录 → 400 提示",
 check("skill 工具已注册",
       "skill_list" in _READ_TOOLS and "skill_load" in _READ_TOOLS, "")
 
+# ============================================================
+print("[31] 联网开关 —— /net 切换，关时联网工具 403")
+# ============================================================
+_el_net = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                         config={"bait": {"enabled": False}})
+_net_te = _el_net.executor
+check("默认联网开启", _net_te.network_enabled is True, "")
+# 开启时 search 正常走（mock 搜索源避免真联网）
+with _mocksr.patch.object(_net_te, "_net_gate", return_value=None), \
+     _mocksr.patch.object(_net_te, "_search_engine", return_value=[]):
+    r = _net_te.execute({"tool": "search", "query": "x"})
+check("联网开启时 search 正常（无网源时 500 而非 403）",
+      r.status == "error" and r.error_code == "500", (r.status, r.error_code))
+# 关闭 → 联网工具一律 403
+_net_te.network_enabled = False
+for _tool in ("search", "search_read", "api_get", "image_generate",
+              "browser_open", "browser_navigate"):
+    r = _net_te.execute({"tool": _tool, "query": "x", "url": "https://example.com",
+                         "prompt": "a", "name": "x"})
+    check(f"联网关闭时 {_tool} → 403",
+          r.status == "error" and r.error_code == "403"
+          and "联网已关闭" in r.message, (r.status, r.message))
+# 本地工具不受影响（联网关闭时文件/知识库照常）
+r = _net_te.execute({"tool": "file_write", "path": "net_test.txt", "content": "x"})
+check("联网关闭不影响本地工具", r.status == "success", r.status)
+# CLI /net 切换
+_cli_net = ai_code.AgentCLI({"project_root": str(mktemp()), "permission": "write",
+                             "bait": False, "base_url": "", "api_key": "",
+                             "model": "m1", "tools": False}, mock=True)
+_bufn = io.StringIO()
+with contextlib.redirect_stdout(_bufn):
+    _cli_net.run_command("/net")
+check("/net 回车切换为关", _cli_net.el.executor.network_enabled is False,
+      _bufn.getvalue()[:100])
+_bufn = io.StringIO()
+with contextlib.redirect_stdout(_bufn):
+    _cli_net.run_command("/net on")
+check("/net on 显式开启", _cli_net.el.executor.network_enabled is True,
+      _bufn.getvalue()[:100])
+check("/net 已注册命令", "/net" in ai_code.AgentCLI.COMMANDS, "")
+
 # —— 会话恢复：重启后从上次会话日志重建消息历史（DSH「历史 = 日志派生」落地） ——
 _res_root = Path(tempfile.mkdtemp(prefix="ace_resume_"))
 _cli_r1 = ai_code.AgentCLI({"project_root": str(_res_root), "permission": "write",

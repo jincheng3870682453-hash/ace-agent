@@ -169,5 +169,11 @@
   "session_resumed": "前回セッションを復元（{n} メッセージ、{file}）。/clear でリセット",
   "goal_pending": "未完了の目標（{phase}）: {obj}  /goal で表示・再開",
   "subagent_no_approval": "サブエージェント環境では承認を受けられません。plan_propose / request_permission をやめ、承認不要の方法で完了するか、結論を直接出してください。",
-  "subagent_limit": "（サブエージェントが 8 ラウンド上限に達し結論を出せませんでした）"
+  "subagent_limit": "（サブエージェントが 8 ラウンド上限に達し結論を出せませんでした）",
+  "cmd_net": "ネットワーク機能を切り替え（/net でトグル、/net on|off で明示設定）",
+  "net_on": "ON",
+  "net_off": "OFF",
+  "net_status": "ネットワーク: {state}（search/api_get/ブラウザ等のオンラインツール{}）",
+  "net_usage": "使い方: /net でトグル、/net on|off",
+  "banner_net": "ネットワーク: {state}（/net で切替）"
 }

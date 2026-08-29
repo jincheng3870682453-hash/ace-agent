@@ -171,5 +171,11 @@
   "session_resumed": "已恢复上次会话（{n} 条消息，{file}），/clear 可清空",
   "goal_pending": "有未完成目标（{phase}）：{obj}  /goal 查看或恢复",
   "subagent_no_approval": "子代理环境无人批准计划/授权。不要再用 plan_propose / request_permission，改用不需要批准的方式完成，或直接给出结论。",
-  "subagent_limit": "（子代理达到 8 轮上限未给出结论）"
+  "subagent_limit": "（子代理达到 8 轮上限未给出结论）",
+  "cmd_net": "切换联网功能（/net 回车开关；/net on|off 显式设置）",
+  "net_on": "开",
+  "net_off": "关",
+  "net_status": "联网: {state}（search/api_get/浏览器等联网工具{}）",
+  "net_usage": "用法: /net 回车切换，或 /net on|off",
+  "banner_net": "联网: {state}（/net 切换）"
 }

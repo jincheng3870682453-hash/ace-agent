@@ -1115,6 +1115,7 @@ class _SlashCommands:
         "/config": "cmd_config",
         "/goal": "cmd_goal",
         "/audit": "cmd_audit",
+        "/net": "cmd_net",
         "/open": "cmd_open",
         "/edit": "cmd_edit",
         "/search": "cmd_search",
@@ -1222,6 +1223,8 @@ class _SlashCommands:
             self._show_goal(parts)
         elif name == "/audit":
             self._show_audit(parts)
+        elif name == "/net":
+            self._toggle_net(parts)
         elif name == "/open":
             self._open_file(" ".join(parts[1:]), prefer_editor=False)
         elif name == "/edit":
@@ -1382,6 +1385,29 @@ class _SlashCommands:
             return False, t("subagent_limit")
         except Exception as e:
             return False, f"子代理执行失败: {type(e).__name__}: {e}"
+
+    # ---------- 联网开关（/net：回车切换开/关） ----------
+
+    def _toggle_net(self, parts: List[str]) -> None:
+        """/net 或 /net on|off：切换联网功能（search/api_get/browser 等联网工具）"""
+        cur = self.el.executor.network_enabled
+        if len(parts) > 1:
+            arg = parts[1].lower()
+            if arg in ("on", "1", "开", "true"):
+                self._set_net(True)
+                return
+            if arg in ("off", "0", "关", "false"):
+                self._set_net(False)
+                return
+            print(c("yellow", t("net_usage")))
+            return
+        self._set_net(not cur)
+
+    def _set_net(self, enabled: bool) -> None:
+        self.el.executor.network_enabled = enabled
+        self.cfg["network_enabled"] = enabled
+        print(c("green" if enabled else "yellow",
+                t("net_status", state=t("net_on") if enabled else t("net_off"))))
 
     # ---------- 会话审计（/audit：从事件日志展示全链路） ----------
 
@@ -1701,6 +1727,9 @@ class _LandingUI:
         lines.append(c("dim", t("banner_kb", path=kb_path,
                                 ext=t("banner_kb_ext") if kb else "")))
         lines.append(c("dim", t("banner_sesslog")))
+        net = "on" if self.el.executor.network_enabled else "off"
+        lines.append(c("dim", t("banner_net", state=t("net_on") if net == "on"
+                                else t("net_off"))))
         return lines
 
     def _draw_landing(self, sel: int) -> None:
@@ -1879,6 +1908,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 "kb_root": self.cfg.get("kb_root"),
                 # 文件式技能库目录（skill_list/skill_load 扫描的目录）
                 "skills_dir": self.cfg.get("skills_dir"),
+                # 联网开关（/net 切换；默认开）
+                "network_enabled": bool(self.cfg.get("network_enabled", True)),
             },
         )
 

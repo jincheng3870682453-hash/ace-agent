@@ -118,7 +118,8 @@ class ToolExecutorBase:
                  egress_allowlist=None,
                  approval_hook=None,
                  kb_root: Optional[str] = None,
-                 skills_dir: Optional[str] = None):
+                 skills_dir: Optional[str] = None,
+                 network_enabled: bool = True):
         self.project_root = Path(project_root).resolve()
         self.sandbox_base = sandbox_base  # code_execute 沙箱临时目录基路径（None = 系统临时目录）
         self.confine_files = confine_files  # 文件工具是否强制限制在项目目录内
@@ -127,6 +128,8 @@ class ToolExecutorBase:
         self.kb_root = kb_root
         # 文件式技能库目录（--skills G:\AI_skils 等）；None = 只用内置预设
         self.skills_dir = skills_dir
+        # 联网开关（/net 切换）：关闭时 search/api_get/browser 等联网工具一律拒绝
+        self.network_enabled = bool(network_enabled)
         # docker 一次性容器执行层（None = 未启用，命令仍在宿主跑）。
         # 只有 terminal_exec / code_execute 走它——那两个才是真正需要内核边界的地方。
         self.docker_sandbox = build_sandbox(sandbox, str(self.project_root))

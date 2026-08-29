@@ -171,5 +171,11 @@
   "session_resumed": "Resumed previous session ({n} messages, {file}); /clear to reset",
   "goal_pending": "Unfinished goal ({phase}): {obj}  /goal to view or resume",
   "subagent_no_approval": "No human approval is available in the subagent environment. Stop using plan_propose / request_permission; use a way that needs no approval, or give a conclusion directly.",
-  "subagent_limit": "(subagent hit the 8-round limit without a conclusion)"
+  "subagent_limit": "(subagent hit the 8-round limit without a conclusion)",
+  "cmd_net": "Toggle networking (/net toggles; /net on|off to set explicitly)",
+  "net_on": "ON",
+  "net_off": "OFF",
+  "net_status": "Network: {state} (online tools like search/api_get/browser {})",
+  "net_usage": "Usage: /net toggles; /net on|off",
+  "banner_net": "Network: {state} (/net toggles)"
 }
