@@ -81,6 +81,14 @@ ace --no-compact                # 关掉上下文压缩，退回纯硬截断
 
 ace --install-ui                # 装 / 补全 prompt_toolkit（多镜像自动回退）
 
+# 沙箱（真实内核边界，缺一不可的隔离档）：
+ace --sandbox job               # Windows Job Object：进程树/内存/进程数上限（需先在 executor/ 下 go build）
+ace --sandbox docker            # 一次性容器：--network none + 只挂工作目录（需 Docker + 构建 ace-sandbox 镜像）
+                                # job/docker 都不做静默回退：拿不到边界直接报错
+
+# 自定义外挂知识库（kb_search/kb_add/kb_list，跨会话持久）：
+ace --kb D:\我的资料库          # 外挂你的资料目录；不指定则用项目 .ace_kb/
+
 # 本地 Ollama（Qwen 支持原生工具调用）
 python agent_runner.py --base-url http://localhost:11434/v1 --api-key ollama \
        --model qwen2.5-coder:7b --tools
@@ -111,14 +119,24 @@ docker compose up               # ACE + Ollama 编排
 |---|---|
 | 三级权限裁决 | `readonly` / `write` / `full`，工具与权限组在 `tools/registry.py` 单点声明，schema 与权限集合全部由它派生 |
 | 按权限裁剪工具表 | 发给模型的工具列表随权限档位裁剪（readonly 只给 16 个只读+控制工具）——模型只在真实可用的工具里决策，小模型不再为"看得见用不了"的写工具分心 |
+| **三层沙箱** | `off`（Python 层策略校验）/ `job`（Windows Job Object：进程树/内存/进程数上限 + 受限令牌）/ `docker`（一次性容器：network none + 只挂工作目录 + cap-drop ALL）。job/docker 都不做静默回退 |
+| **Go 执行器** | `terminal_exec` / `code_execute` 委派给独立 Go 进程（NDJSON 协议），Job Object 整树回收 + 第二道策略复检 |
+| **持久目标（goal）** | `goal_create` 建目标后**自动逐轮续跑**直到完成/暂停/阻塞/预算耗尽；revision CAS 防旧状态覆盖；blocked 须给机器 code（难度不算阻塞）；重启后须 `/goal resume` 才续 |
+| **子代理** | `subagent` 把子任务交给独立上下文的模型会话（spawn 全新 / fork 继承父会话），拥有自己的工具执行循环（最多 8 轮），结果回传父代理整合 |
+| **自定义知识库** | `kb_search` / `kb_add` / `kb_list`：检索与写入自己的资料库（`--kb` 外挂目录或项目 `.ace_kb/`），**跨会话持久**——写进知识库的东西下次还能搜到 |
+| **联网读取** | `search`（双引擎兜底）+ `search_read`（搜索并抓取 top 结果正文，RAG 式一步拿到可引用内容）；全部出站走 SSRF 校验 + pin-to-IP + 逐跳复检 + 出站白名单 |
+| **会话事件日志** | append-only JSONL 全链路：用户输入 → 模型请求/输出 → 工具往返 → 权限裁决 → 快照/回滚 → 守卫违规，`/audit` 查看；**重启自动恢复上次会话**（消息历史 = 日志派生） |
 | 写入前物理快照 | 每次写操作前自动快照，`/undo` 一键回滚；HMAC 签名防元信息伪造，快照目录自身不可被 Agent 改写 |
 | Plan Mode | 复杂任务先提议分步计划（`plan_propose`），用户批准后才放行，杜绝"边想边干" |
 | 行为检测闸门 | 诱饵验证（首次 `code_execute` 注入语义诱饵）+ AST 检测（6 规则：无限递归 / 硬编码密钥 / SQL 注入等） |
 | 本地代码检索 | `grep` 正则搜内容 + `glob` 找文件 + `file_read` 分段读，只读权限下即可用，不必猜文件名 |
 | 局部编辑 | `str_replace` 按片段替换：唯一匹配才写，多匹配报 409 让模型补上下文，缩进以文件真实缩进为准 |
+| 审批疲劳缓解 | 确认过的命令**同前缀自动放行**（`pip install` 通过后 `pip install x` 不再问）；`bash -c`/`python -c` 等危险包装永不自动放行；`on_failure` 档在沙箱边界下"先试后问" |
+| 浏览器自动化 | `browser_navigate` / `browser_click` / `browser_type`：Playwright 受控页面（系统 Edge/Chrome channel），可点击/输入 |
 | 10 家提供商 | 智谱 GLM / DeepSeek / Kimi / OpenAI / Claude / Qwen / 硅基流动 / OpenRouter / Ollama，`/provider` 一键切换 |
 | 真实工具全家桶 | 联网搜索（双引擎兜底，无需 Key）、SQLite 读写、文档解析（Word/Excel/PPT/PDF/OCR）、浏览器、截图、通知、图像生成 |
 | SimHash 记忆 | 主题切换时预注入相关历史，按会话隔离 |
+| AGENTS.md 项目指令 | 项目根的约定文件（AGENTS.md/CLAUDE.md）自动发现并注入系统提示（32 KiB 预算、会话缓存）——项目所有者的规则，模型不再猜 |
 | 上下文压缩 | 历史逼近窗口时把中间段折成摘要，**第一条用户消息永不丢弃**；摘要失败退回硬截断并明确告知，不静默失忆 |
 | 网络退避 | 429 / 5xx / 连接抖动自动退避重试（认 `Retry-After`，含 HTTP-date 形式），与 tools 协议降级分层，一次限流不会把工具关掉 |
 | i18n | zh / en / ja，`@lang` 同时切换模型回复语言与界面语言 |
@@ -357,21 +375,31 @@ config = {
 
 ```
 ace-agent/
-├── ai_code.py                  # 命令行前端：登录页 / REPL / 斜杠补全 / 提供商注册表
-├── agent_runner.py             # 交互循环：模型 ↔ 执行层多轮闭环，错误自动回喂
-├── execution_layer.py          # 执行层主入口：协议解析、权限、安全闸门、Plan Mode
+├── ai_code.py                  # 命令行前端：登录页 / REPL / 斜杠补全 / 提供商注册表 / goal 续跑 / 会话恢复
+├── agent_runner.py             # 交互循环：模型 ↔ 执行层多轮闭环，错误自动回喂，工具结果确定性裁剪
+├── execution_layer.py          # 执行层主入口：协议解析、权限、安全闸门、Plan Mode、全链路日志
 ├── ace_execpolicy.py           # 命令三值判定（allow / prompt / forbidden），纯函数、可单测
 ├── ace_net.py                  # 出站请求闸门：全记录校验 + pin-to-IP + 逐跳复检（SSRF）
-├── ace_isolation.py            # 外部内容定界与来源标注
+├── ace_isolation.py            # 外部内容定界与来源标注（SEC-011）
 ├── ace_http.py                 # 模型调用的重试与退避（Retry-After + full jitter，纯判定可单测）
 ├── ace_context.py              # 上下文压缩判定：保住任务锚点，中间段折成摘要
 ├── ace_executor.py             # Go 执行器客户端（NDJSON 协议，纯 stdlib）
+├── ace_sessionlog.py           # 会话事件日志：append-only JSONL，seq 契约，深冻结，replay 重建
 ├── executor/                   # Go 执行器：Job Object 沙箱（唯一需要 go build 的部分）
 
-├── tools/                      # 工具执行器包
+├── tools/                      # 工具执行器包（40 个工具）
 │   ├── registry.py             #   工具唯一声明处（name / schema / 权限组 / handler）
 │   ├── base.py                 #   共享助手 + 敏感目标判定 + execute 分发
-│   └── {file,code,web,db,notify,parse}_tools.py
+│   ├── file_tools.py           #   文件/终端/检索（grep/glob/str_replace）
+│   ├── code_tools.py           #   代码执行（AST 白名单 + Go 执行器/docker 边界）
+│   ├── web_tools.py            #   网络/搜索/search_read/Playwright 浏览器
+│   ├── db_tools.py             #   SQLite 读写
+│   ├── notify_tools.py         #   通知（console/file/toast）
+│   ├── parse_tools.py          #   文档解析（Word/Excel/PPT/PDF/OCR）
+│   ├── goal_tools.py           #   持久目标状态机（revision CAS / blocked 白名单 / 轮次驱动）
+│   ├── subagent_tools.py       #   子代理（spawn/fork，独立工具执行循环）
+│   ├── kb_tools.py             #   自定义知识库（kb_search/kb_add/kb_list）
+│   └── docker_sandbox.py       #   容器执行层（--sandbox docker）
 ├── gateway_v2/                 # 网关包：intent(L1/L2) · guard(L4) · flywheel(L5)
 ├── work.py                     # 诱饵工厂 + ASTDetector + BehaviorConstraint
 ├── guardian.py                 # 物理快照回滚：快照 / 完整性预检 / HMAC / 自动清理
@@ -380,16 +408,21 @@ ace-agent/
 ├── universal_document_parser.py# N 合一文档解析 + 懒加载 + 50MB 防线
 ├── i18n.py + locales/          # 轻量国际化（zh / en / ja JSON 字典）
 ├── prompts/                    # 系统提示词：v7 完整版 · v8 精简版 · tools 原生调用版
-├── test_all.py                 # 全模块端到端测试（纯 stdlib）
+├── test_all.py                 # 全模块端到端测试（纯 stdlib，836 项断言）
 ├── demo/                       # README 演示动画 + 录制脚本（跑真实 --mock 会话）
 ├── assets/logo.svg             # 标识（原创几何构图，无第三方素材）
 
-├── docs/ADR.md                 # 架构决策记录
+├── docs/                       # 设计文档
+│   ├── ADR.md                  #   架构决策记录（内联序列 001-006）
+│   ├── ADR-002-executor-boundary.md  #   执行器进程边界 / NDJSON 协议 / Windows 沙箱选型
+│   ├── SECURITY-AUDIT.md       #   安全审计（OWASP + STRIDE，P0 全修复记录）
+│   ├── codex_research.md       #   Codex 源码调研（45+ 可借鉴设计）
+│   └── dsh_research.md         #   DeepSeek Harness 源码调研（62 项可借鉴设计）
 
 ├── LICENSE                     # MIT
 ├── docker/                     # lite / standard / full 三档整体镜像 + sandbox 执行镜像 + 模型下载脚本
 
-└── .github/workflows/ci.yml    # CI：Python 3.10/3.11/3.12 编译检查 + 全量测试 + ruff
+└── .github/workflows/ci.yml    # CI：Python 3.10/3.11/3.12 全量测试 + ruff + Go 执行器 vet/build/test/race
 ```
 
 ## 开发与测试
