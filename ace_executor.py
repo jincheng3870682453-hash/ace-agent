@@ -557,13 +557,16 @@ class ExecutorClient:
                     env_set: Optional[Dict[str, str]] = None,
                     max_output_bytes: int = 1 << 20,
                     max_memory_bytes: int = 256 << 20,
-                    max_child_processes: int = 1,
+                    max_child_processes: int = 2,
                     on_event: Optional[Callable[[Dict], None]] = None) -> ExecOutcome:
         """在受限子进程里跑一段 Python。
 
         注意这**不替代** tools/code_tools.py 的 AST 白名单：那一层管"这段代码
         允不允许写"，这一层管"跑起来能碰到什么"。两层是正交的，都要在。
-        max_child_processes 默认 1，代码片段没有正当理由再开子进程。
+        max_child_processes 默认 2：Windows 上部分 python.exe（venv/工具生成的
+        启动器）启动时会以同样参数重启自身一次，Job 上限 1 会把它掐死在创建阶段
+        （exit 101 "Unable to create process"）；上限 2 仍能拦住代码片段的 fork
+        （python+自重启占满 2，代码再 fork 第 3 个进程即被 Job 拒绝）。
         """
         return self._exec("exec.python",
                           {"source": source, "filename": filename, "python": self.python},
