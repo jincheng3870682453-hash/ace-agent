@@ -459,10 +459,28 @@ def render_result(r: Dict) -> str:
 # 和测试用，往里塞隔离块会把"给模型看"和"给人看"两件事又搅在一起。
 
 
+def truncate_tool_output(text: str, *, head_chars: int = 4000,
+                         tail_chars: int = 2000, max_chars: int = 8000) -> str:
+    """工具结果的确定性头/尾裁剪（借鉴 DSH compaction-tool-result-pruner）。
+
+    超大工具输出（如 terminal_exec 的整页日志）直接塞进上下文会挤爆窗口；
+    这里保留头部 + 尾部 + 中间替换为标记，**同输入必同输出**（纯函数、可重放
+    验证），不调用模型。Python str 按码点索引，天然不会切破代理对。
+    """
+    if len(text) <= max_chars:
+        return text
+    head = text[:head_chars]
+    tail = text[-tail_chars:] if tail_chars else ""
+    cut = len(text) - head_chars - (tail_chars or 0)
+    return (f"{head}\n…[已裁剪 {cut} 字符，原始长度 {len(text)}；"
+            f"需要完整内容请用 file_read 读取]\n{tail}")
+
+
 def render_tool_result(r: Dict) -> str:
-    """给模型看的工具结果：序列化 + 隔离标记 + 来源标注"""
+    """给模型看的工具结果：序列化 + 隔离标记 + 来源标注（超大输出确定性裁剪）"""
     tool = r.get("tool")
-    return wrap_untrusted(render_result(r), source=untrusted_source(tool),
+    body = truncate_tool_output(render_result(r))
+    return wrap_untrusted(body, source=untrusted_source(tool),
                           origin=f"tool:{tool}" if tool else "")
 
 

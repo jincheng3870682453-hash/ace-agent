@@ -1860,6 +1860,28 @@ check("隔离块内仍是完整 JSON", json.loads(_body)["tool"] == "search", _b
 check("render_result 不带隔离标记（给人看的通道）",
       _iso.UNTRUSTED_BEGIN not in _rr(_r_search))
 
+# —— 工具结果确定性裁剪（DSH B8：超大输出头尾保留+中间标记） ——
+from agent_runner import truncate_tool_output as _tto  # noqa: E402
+_short = "短输出" * 100   # 300 字符
+check("短输出不裁剪", _tto(_short) == _short, len(_tto(_short)))
+_long = "x" * 20000
+_cut = _tto(_long)
+check("超长输出被裁剪（头尾保留+标记）",
+      len(_cut) < 20000 and _cut.startswith("x" * 4000)
+      and _cut.endswith("x" * 2000) and "已裁剪" in _cut, len(_cut))
+check("裁剪确定性（同输入必同输出）",
+      _tto(_long) == _cut and _tto(_long + "y") != _cut, "")
+_uni = "中文😀" * 5000   # 5000 码点，含代理对
+_cutu = _tto(_uni)
+check("Unicode 裁剪不切破代理对（可正常解码）",
+      _cutu.encode("utf-8").decode("utf-8") == _cutu
+      and "😀" in _cutu[:200], _cutu[:50])
+# 裁剪发生在 render_tool_result 主链路上（超大工具结果不再挤爆上下文）
+_big = {"status": "SUCCESS", "tool": "terminal_exec",
+        "data": {"stdout": "line\n" * 6000}}
+_big_out = _rtr(_big)
+check("render_tool_result 裁剪超大结果", len(_big_out) < 10000, len(_big_out))
+
 # 记忆预注入：注入文本可能来自过去某轮的网页/命令输出，一次注入不能跨会话存活
 class _StubArchive:
     def add(self, *a, **k): pass
