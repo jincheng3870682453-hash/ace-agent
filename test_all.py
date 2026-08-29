@@ -1110,6 +1110,14 @@ check("沙箱拦截关键字参数 open", r["status"] == "403", r.get("message")
 r = run_agent(el_h, "code_execute", language="python",
               code="import pickle\npickle.loads(b'x')")
 check("沙箱拦截 pickle 导入", r["status"] == "403", r.get("message"))
+# —— code_execute 接入 Go 执行器（Tier-1 Job Object 边界） ——
+r = run_agent(el_h, "code_execute", language="python", code="print('go-ce-ok')")
+_sand = r.get("data", {}).get("sandbox", {}) if r["status"] == "SUCCESS" else {}
+check("code_execute 走 Go 执行器（job 边界）",
+      r["status"] == "SUCCESS" and _sand.get("kind") == "go-executor"
+      and _sand.get("job_object") is True
+      and "go-ce-ok" in r.get("data", {}).get("stdout", ""),
+      (r.get("status"), _sand))
 
 # —— 快照 HMAC 签名（防伪造） ——
 gproj = mktemp()

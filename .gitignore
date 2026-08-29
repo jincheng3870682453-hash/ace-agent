@@ -23,6 +23,7 @@ venv/
 # Go 执行器编译产物（宿主按 ace_executor.py 里的固定名去找它，就地编译）
 executor/ace-executor
 executor/ace-executor.exe
+executor/executor.exe
 
 
 # 日志与临时文件

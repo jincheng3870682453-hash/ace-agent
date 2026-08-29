@@ -132,6 +132,53 @@ class CodeTools:
                             "timeout": self.docker_sandbox.timeout},
             })
 
+        # Go 执行器（Tier-1 Job Object）：与 docker 同级的"跑起来能碰到什么"边界。
+        # AST 扫描保留在上面（两层正交）：docker/执行器可用性是运行时探测的，
+        # 探测错了也不至于把黑名单直接变成逃逸口。
+        if self.use_go_executor:
+            client = self._go_executor()
+            if client is not None:
+                import ace_executor as _ax
+                try:
+                    out = client.exec_python(
+                        code, cwd=str(self.project_root),
+                        timeout_ms=30_000,
+                        max_output_bytes=1 << 20,
+                        max_memory_bytes=256 << 20,
+                        max_child_processes=2,
+                    )
+                except _ax.ExecutorError as e:
+                    # job 档是用户要的边界，起不来必须报错，绝不静默回落宿主
+                    # （与 terminal_exec 的 _exec_via_go 同一条理由）。
+                    if self.sandbox_mode == "job":
+                        return ExecutionResult(
+                            status="error", error_code="503",
+                            message=f"Go 执行器失败（job 档不回落）: {e.code} {e.message}")
+                    # off 档：协议损坏 / 沙箱档位不可用才回落进程内；
+                    # 其余（超时已作为 outcome、策略拒绝等）如实上报。
+                    if e.code in ("E_TRANSPORT", "E_SANDBOX_UNAVAILABLE"):
+                        self.use_go_executor = False
+                        client = None
+                    else:
+                        return ExecutionResult(
+                            status="error", error_code="500",
+                            message=f"Go 执行器执行失败: {e.code} {e.message}")
+                if client is not None:
+                    return ExecutionResult(status="success", data={
+                        "stdout": out.stdout,
+                        "stderr": out.stderr,
+                        "returncode": out.exit_code,
+                        "truncated": out.truncated,
+                        "sandbox": {
+                            "kind": "go-executor",
+                            "tier": out.sandbox_applied.get("tier"),
+                            "job_object": out.sandbox_applied.get("job_object"),
+                            "restricted_token": out.sandbox_applied.get("restricted_token"),
+                            "integrity_level": out.sandbox_applied.get("integrity_level"),
+                            "degraded": out.degraded,
+                        },
+                    })
+
         base = Path(self.sandbox_base) if self.sandbox_base else Path(tempfile.gettempdir())
         sandbox_dir = base / f"agent_sandbox_{uuid.uuid4().hex[:8]}"
         try:
