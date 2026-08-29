@@ -1113,6 +1113,7 @@ class _SlashCommands:
         "/provider": "cmd_provider",
         "/config": "cmd_config",
         "/goal": "cmd_goal",
+        "/audit": "cmd_audit",
         "/open": "cmd_open",
         "/edit": "cmd_edit",
         "/search": "cmd_search",
@@ -1218,6 +1219,8 @@ class _SlashCommands:
             self._config_wizard()
         elif name == "/goal":
             self._show_goal(parts)
+        elif name == "/audit":
+            self._show_audit(parts)
         elif name == "/open":
             self._open_file(" ".join(parts[1:]), prefer_editor=False)
         elif name == "/edit":
@@ -1317,6 +1320,70 @@ class _SlashCommands:
             print(f"  {c('red', 'blocked')}: [{snap['blocked_reason_code']}] "
                   f"{snap.get('blocked_reason_message', '')}")
         print(c("dim", "  操作: /goal resume | /goal pause | /goal complete"))
+
+    # ---------- 会话审计（/audit：从事件日志展示全链路） ----------
+
+    def _show_audit(self, parts: List[str]) -> None:
+        """/audit [n] [kind]：展示会话事件日志（默认最近 20 条，可按类型过滤）。
+        日志是 append-only 事实源：用户输入 → 模型请求/输出 → 工具往返 →
+        权限裁决 → 快照/回滚 → 守卫违规，全部可逐事件回放。"""
+        n = 20
+        kind_filter = ""
+        for p in parts[1:]:
+            if p.isdigit():
+                n = min(int(p), 500)
+            else:
+                kind_filter = p
+        events = list(self.session_log.events())
+        if kind_filter:
+            events = [e for e in events if kind_filter in e.get("kind", "")]
+        events = events[-n:]
+        if not events:
+            print(c("dim", "会话日志为空。"))
+            return
+        print(c("bold", f"会话事件日志（{len(events)} 条"
+                        f"{'，过滤: ' + kind_filter if kind_filter else ''}，"
+                        f"文件: {self.session_log.path.name}）"))
+        for ev in events:
+            kind = ev.get("kind", "?")
+            seq = ev.get("seq", "?")
+            ts = ev.get("ts", "")
+            detail = self._audit_summary(kind, ev)
+            print(f"  {c('dim', f'#{seq} {ts}')} {c('magenta', kind):<22} {detail[:100]}")
+        print(c("dim", "  完整文件: " + str(self.session_log.path)))
+
+    @staticmethod
+    def _audit_summary(kind: str, ev: Dict) -> str:
+        """按事件类型渲染一行摘要（截断到适合终端）。"""
+        if kind == "user/message":
+            return str(ev.get("content", ""))[:100]
+        if kind == "assistant/message":
+            return (str(ev.get("content", ""))[:80] + "…") \
+                if len(str(ev.get("content", ""))) > 80 else str(ev.get("content", ""))
+        if kind == "request/snapshot":
+            return (f"model={ev.get('model')} msgs={ev.get('messages_count')} "
+                    f"system={ev.get('system_len')}B perm={ev.get('permission')}")
+        if kind == "system/snapshot":
+            return f"系统提示词全文（{len(str(ev.get('system', '')))} 字符，含 AGENTS.md/记忆/目标）"
+        if kind == "tool/call":
+            return f"{ev.get('tool')} {str(ev.get('params', ''))[:80]}"
+        if kind == "tool/result":
+            return f"{ev.get('tool')} [{ev.get('status')}] {str(ev.get('message', ''))[:60]}"
+        if kind == "permission/decision":
+            return f"{ev.get('tool')} → {ev.get('decision')} (level={ev.get('level')})"
+        if kind == "snapshot/create":
+            return f"{ev.get('tag') or ev.get('snapshot_id')}"
+        if kind == "snapshot/rollback":
+            return f"回滚到 {ev.get('snapshot_id')}"
+        if kind == "guard/verdict":
+            return f"规则={ev.get('rule')} action={ev.get('action')}"
+        if kind == "compaction/event":
+            return f"{ev.get('before')}→{ev.get('after')} tokens ({ev.get('reason')})"
+        if kind == "goal/round":
+            return f"R{ev.get('rounds_started')}/{ev.get('max_rounds')}"
+        if kind == "model/error":
+            return str(ev.get("error", ""))[:100]
+        return str(ev)[:100]
 
     def _open_file(self, path_str: str, prefer_editor: bool = False) -> None:
         """在系统默认程序（或 VS Code）中打开文件；Windows 无关联程序时文本文件回退记事本"""
@@ -1722,6 +1789,10 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             return
         before, after = outcome.plan.tokens_before, ace_context.measure(outcome.messages)
         self.messages = outcome.messages
+        # 会话事件日志：压缩是无损的（被替换的原始消息已逐条落在日志里），
+        # 这里记录压缩发生本身，让"这段历史去哪了"可审计、可追溯。
+        self.session_log.record_compaction(
+            before, after, "compacted" if outcome.compacted else "truncated")
         if outcome.compacted:
             print(c("dim", t("compact_done", before=before, after=after)))
         else:

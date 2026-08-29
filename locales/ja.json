@@ -137,5 +137,6 @@
   "compact_done": "  ⓘ コンテキストを圧縮しました：{before} → {after} tokens（過去の対話は要約に置換）",
   "compact_truncated": "  ⚠ 要約が使えないため強制切り詰め：{before} → {after} tokens（理由: {reason}）",
   "compact_failed": "  ⚠ コンテキスト圧縮でエラー、今回はスキップ: {err}",
-  "cmd_goal": "目標の表示・管理（使い方: /goal [resume|pause|complete|status]）。長いタスクはラウンドごとに自動継続"
+  "cmd_goal": "目標の表示・管理（使い方: /goal [resume|pause|complete|status]）。長いタスクはラウンドごとに自動継続",
+  "cmd_audit": "セッションイベントログを表示（全チェーン監査。使い方: /audit [件数] [種別]）"
 }

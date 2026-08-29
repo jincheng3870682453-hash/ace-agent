@@ -50,7 +50,6 @@
   "stall_abort": "⚠ Agent 已连续 {n} 轮工具调用失败/被拦截，判定陷入死循环，自动中止。可重新描述需求，或检查模型/提示词。",
   "unverified_claim": "  ⚠ 模型声称已完成操作，但本轮没有执行任何工具 —— 实际什么都没发生。已要求它真正调用工具。",
   "unverified_claim_final": "  ⚠ 上面这段「已完成」是模型编造的：本次对话没有执行过任何工具，文件系统没有任何改动。请换支持工具调用的更大模型，或用 /status 核对。",
-
   "help_title": "可用命令:",
   "help_hint": "\n提示: 输入 @ 打开快捷方式（@lang 切换语言 / @skill 切换技能 / @file 引用文件 / @folder 引用文件夹）",
   "unknown_prefix": "  没有以 '{name}' 开头的命令（输入 / 查看全部）",
@@ -140,5 +139,6 @@
   "chat_error": "对话异常: {err}",
   "compact_done": "  ⓘ 上下文已压缩：{before} → {after} tokens（早期对话已折成摘要）",
   "compact_truncated": "  ⚠ 上下文摘要不可用，已硬截断：{before} → {after} tokens（原因: {reason}）",
-  "compact_failed": "  ⚠ 上下文压缩异常，本轮跳过: {err}"
+  "compact_failed": "  ⚠ 上下文压缩异常，本轮跳过: {err}",
+  "cmd_audit": "查看会话事件日志（全链路审计，用法: /audit [条数] [类型]）"
 }

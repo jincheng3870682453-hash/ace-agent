@@ -139,5 +139,6 @@
   "compact_done": "  ⓘ Context compacted: {before} → {after} tokens (earlier turns folded into a summary)",
   "compact_truncated": "  ⚠ Summary unavailable, hard-truncated: {before} → {after} tokens (reason: {reason})",
   "compact_failed": "  ⚠ Context compaction errored, skipped this turn: {err}",
-  "cmd_goal": "View/manage the persistent goal (usage: /goal [resume|pause|complete|status]); long tasks auto-continue round by round"
+  "cmd_goal": "View/manage the persistent goal (usage: /goal [resume|pause|complete|status]); long tasks auto-continue round by round",
+  "cmd_audit": "View session event log (full-chain audit; usage: /audit [count] [kind])"
 }

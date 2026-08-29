@@ -3568,6 +3568,24 @@ check("CLI 会话日志含 system 快照",
       _K_SYS in {e["kind"] for e in _cli_log.session_log.events()},
       sorted({e["kind"] for e in _cli_log.session_log.events()}))
 
+# —— /audit 命令：从事件日志展示全链路（人可用的审计入口） ——
+_bufa = io.StringIO()
+with contextlib.redirect_stdout(_bufa):
+    _cli_log._show_audit(["/audit"])
+_outa = _bufa.getvalue()
+check("/audit 展示事件日志（含 user/assistant/tool 摘要）",
+      "会话事件日志" in _outa and "user/message" in _outa
+      and "assistant/message" in _outa, _outa[:300])
+_bufa2 = io.StringIO()
+with contextlib.redirect_stdout(_bufa2):
+    _cli_log._show_audit(["/audit", "3"])
+check("/audit 条数限制", "（3 条" in _bufa2.getvalue(), _bufa2.getvalue()[:100])
+_bufa3 = io.StringIO()
+with contextlib.redirect_stdout(_bufa3):
+    _cli_log._show_audit(["/audit", "tool"])
+check("/audit 类型过滤", "tool/call" in _bufa3.getvalue()
+      or "tool/result" in _bufa3.getvalue(), _bufa3.getvalue()[:200])
+
 # ============================================================
 
 
