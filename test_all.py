@@ -2377,8 +2377,10 @@ check("只读命令 → allow", _v("dir").allowed and _v("echo hi").allowed)
 check("git 只读子命令 → allow", _v("git status").allowed and _v("git log").allowed)
 check("工作区内写命令 → allow", _v("mkdir build").allowed)
 check("allow 档带 argv 供 shell=False 执行", _v("git status").argv == ["git", "status"])
-check("路径参数越出工作区 → prompt",
-      _v("copy a.txt C:\\Users\\Public\\a.txt", posix=False).rule == "path_escape")
+if os.name == "nt":
+    # Windows 语义：C:\... 绝对路径越出工作区 → prompt（copy 是 cmd 内建）
+    check("路径参数越出工作区 → prompt（Windows 语义）",
+          _v("copy a.txt C:\\Users\\Public\\a.txt", posix=False).rule == "path_escape")
 # POSIX 上 `/tmp/x` 是绝对路径而不是命令开关。无条件跳过 `/` 开头的 token 会让
 # `cp secret.txt /tmp/x` 落进 allow 档、不问人就跑 —— 正是路径约束要防的那件事。
 check("POSIX 下 /tmp 目标不被当成命令开关",
