@@ -116,6 +116,26 @@ def _post_chat(base_url: str, api_key: str, model: str, messages: List[Dict],
 TOOLS = openai_tools()  # 由 tools/registry.py 的 TOOL_SPECS 派生，勿在此手写工具
 
 
+def tools_for_permission(level: str) -> List[Dict]:
+    """按权限等级裁剪发给模型的工具列表。
+
+    理由：24 个工具全量发给 7B 小模型是认知超载（记不住参数、乱选工具的根源），
+    而 readonly 权限下写工具反正会被执行层 403 —— 让模型"看得见但用不了"
+    只会诱导它去申请权限。按等级裁剪后模型只在真实可用的工具里决策。
+    控制类工具（plan_propose / request_permission）任何等级都保留。
+    """
+    from execution_layer import (CONTROL_TOOLS, HIGH_RISK_TOOLS,
+                                 READ_TOOLS, WRITE_TOOLS)
+    level = (level or "readonly").lower()
+    if level == "full":
+        allowed = READ_TOOLS | WRITE_TOOLS | HIGH_RISK_TOOLS | CONTROL_TOOLS
+    elif level == "write":
+        allowed = READ_TOOLS | WRITE_TOOLS | CONTROL_TOOLS
+    else:
+        allowed = READ_TOOLS | CONTROL_TOOLS
+    return [t for t in TOOLS if t["function"]["name"] in allowed]
+
+
 
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
 
@@ -319,6 +339,8 @@ class ModelProvider:
         self.tools = bool(getattr(args, "tools", False))             # 原生工具调用开关
         self.max_history = int(getattr(args, "max_history", 0) or 0)  # 0 = 不裁剪
         self.tools_ok = self.tools                                   # 端点不支持时自动降级
+        # 按权限等级裁剪发给模型的工具列表（readonly 只给只读+控制工具）
+        self.permission_level = getattr(args, "permission", "readonly") or "readonly"
         # 把真实工作目录注入系统提示词，防止小模型臆造路径
         project_root = str(getattr(args, "project_root", "."))
         self.system_suffix = (f"\n\n【工作目录】{os.path.abspath(project_root)}\n"
@@ -375,7 +397,7 @@ class ModelProvider:
                     + self.history + [{"role": "user", "content": prompt}])
         try:
             data = _post_chat(self.base_url, self.api_key, self.model,
-                              messages, tools=TOOLS)
+                              messages, tools=tools_for_permission(self.permission_level))
         except urllib.error.HTTPError as e:
             body = ""
             try:

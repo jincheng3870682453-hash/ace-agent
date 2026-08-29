@@ -40,6 +40,40 @@ jobs:
       - name: Run tests (端到端全量)
         run: python test_all.py
 
+  go-test:
+    name: Go executor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: executor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: executor/go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+      # -race 需要 cgo；Windows 官方 runner 无 C 编译器，
+      # 这里只在 ubuntu 上跑 race 检测（ADR-002 的约定）
+      - name: Race test (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race ./...
+
   lint:
     name: Ruff lint (安全子集)
     runs-on: ubuntu-latest

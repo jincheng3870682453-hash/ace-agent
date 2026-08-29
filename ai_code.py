@@ -64,7 +64,7 @@ from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E4
                           content_to_tool_protocol, final_reply_protocol,
                           load_system_prompt, render_tool_result,
                           resolve_permission, resolve_plan,
-                          retry_notice,
+                          retry_notice, tools_for_permission,
                           sanitize_plain_content, tool_calls_to_protocol)
 from ace_isolation import wrap_untrusted  # noqa: E402
 import ace_http  # noqa: E402
@@ -546,6 +546,8 @@ class ModelClient:
         self.tools = bool(cfg.get("tools", False))
         self.tools_ok = self.tools and self.api_format == "openai"
         self.max_history = int(cfg.get("max_history", 0) or 0)
+        # 按权限等级裁剪发给模型的工具列表（readonly 只给只读+控制工具）
+        self.permission_level = str(cfg.get("permission", "readonly") or "readonly").lower()
         self._mock_provider = ModelProvider(_MockArgs()) if mock else None
 
     def describe(self) -> str:
@@ -635,7 +637,7 @@ class ModelClient:
                 "temperature": 0.2,
             }
             if self.tools_ok:
-                payload["tools"] = TOOLS
+                payload["tools"] = tools_for_permission(self.permission_level)
                 payload["tool_choice"] = "auto"
             full = ""
             tool_calls: Dict[int, Dict] = {}

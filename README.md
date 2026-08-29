@@ -110,6 +110,7 @@ docker compose up               # ACE + Ollama 编排
 | 能力 | 说明 |
 |---|---|
 | 三级权限裁决 | `readonly` / `write` / `full`，工具与权限组在 `tools/registry.py` 单点声明，schema 与权限集合全部由它派生 |
+| 按权限裁剪工具表 | 发给模型的工具列表随权限档位裁剪（readonly 只给 16 个只读+控制工具）——模型只在真实可用的工具里决策，小模型不再为"看得见用不了"的写工具分心 |
 | 写入前物理快照 | 每次写操作前自动快照，`/undo` 一键回滚；HMAC 签名防元信息伪造，快照目录自身不可被 Agent 改写 |
 | Plan Mode | 复杂任务先提议分步计划（`plan_propose`），用户批准后才放行，杜绝"边想边干" |
 | 行为检测闸门 | 诱饵验证（首次 `code_execute` 注入语义诱饵）+ AST 检测（6 规则：无限递归 / 硬编码密钥 / SQL 注入等） |
@@ -287,6 +288,8 @@ python ai_code.py --sandbox job
 ```
 
 命令会跑在一个 Windows Job Object 里：内存与子进程数上限、限制性令牌 + 中等完整性级别、退出时整棵进程树一起回收。最后那条是宿主直跑做不到的——Python 的 `Process.kill()` 只杀直接子进程，孙进程会变孤儿留在后台。
+
+`terminal_exec` 与 `code_execute` 都走这条边界（代码片段经 `exec_python`：临时文件落盘、`-I -B` 隔离运行，源码不经命令行避免 32K 上限与引号改写）。
 
 执行器同时是第二道判定闸：宿主已经判过的 `policy_decision` 会在独立进程里再检一次，宿主侧写错一处逻辑时它还拦得住。
 

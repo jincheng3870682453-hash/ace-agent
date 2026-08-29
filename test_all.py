@@ -518,6 +518,24 @@ check("tools 模式加载精简提示词", "工具" in load_system_prompt(tools_
 check("默认加载 v8 文本协议提示词", "<INTERNAL>" in load_system_prompt(),
       load_system_prompt()[:40])
 
+# —— 按权限裁剪工具列表（readonly 不给写工具，减小小模型决策负担） ——
+from agent_runner import tools_for_permission as _tfp  # noqa: E402
+_ro_names = {t["function"]["name"] for t in _tfp("readonly")}
+_wr_names = {t["function"]["name"] for t in _tfp("write")}
+_fu_names = {t["function"]["name"] for t in _tfp("full")}
+check("readonly 裁剪：不含写工具，含只读与控制工具",
+      "file_write" not in _ro_names and "terminal_exec" not in _ro_names
+      and "file_read" in _ro_names and "plan_propose" in _ro_names
+      and "request_permission" in _ro_names, sorted(_ro_names))
+check("write 含写工具", "file_write" in _wr_names and "terminal_exec" in _wr_names,
+      sorted(_wr_names))
+check("工具裁剪单调：readonly ⊆ write ⊆ full",
+      _ro_names <= _wr_names <= _fu_names,
+      (len(_ro_names), len(_wr_names), len(_fu_names)))
+check("readonly 裁剪显著小于全量（小模型决策负担减半）",
+      len(_ro_names) < len(TOOLS) and len(_ro_names) < len(_wr_names),
+      (len(_ro_names), len(_wr_names), len(TOOLS)))
+
 # —— 历史裁剪 ——
 class _ArgsTrim:
     mock = True
