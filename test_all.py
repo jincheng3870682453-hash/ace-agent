@@ -1263,6 +1263,28 @@ _sp = cli_cmd._build_system_prompt()
 check("系统提示词含用户桌面目录",
       "用户桌面目录" in _sp and "Desktop" in _sp and "工作目录" in _sp, _sp[:300])
 
+# —— 项目指令（AGENTS.md 层级发现，借鉴 Codex agents_md.rs） ——
+from ai_code import load_project_instructions as _lp  # noqa: E402
+_proj = mktemp()
+(_proj / ".git").mkdir(parents=True)
+(_proj / "AGENTS.md").write_text("# 项目规范\n- 用中文写注释\n", encoding="utf-8")
+_sub = _proj / "src" / "deep"
+_sub.mkdir(parents=True)
+(_sub / "CLAUDE.md").write_text("## 子目录规则\n此目录代码必须带类型注解\n", encoding="utf-8")
+_agg = _lp(str(_sub))
+check("AGENTS.md 层级发现：根到叶拼接，AGENTS.md 优先于 CLAUDE.md",
+      "项目规范" in _agg and "子目录规则" in _agg
+      and "用中文写注释" in _agg and "类型注解" in _agg, _agg[:300])
+check("AGENTS.md 拼接按 根→叶 顺序（根在前）",
+      _agg.index("项目规范") < _agg.index("子目录规则"), _agg[:200])
+check("无指令文件返回空串", _lp(str(mktemp())) == "", "")
+_giant = mktemp()
+(_giant / ".git").mkdir(parents=True)
+(_giant / "AGENTS.md").write_text("x" * 100_000, encoding="utf-8")
+check("AGENTS.md 32KiB 预算硬截断",
+      len(_lp(str(_giant))) <= ai_code.AGENTS_MD_MAX_BYTES,
+      len(_lp(str(_giant))))
+
 # —— 残缺 </EXTERNAL / 裸 </ 标签清理 ——
 _clean = ai_code._sanitize_display_text("你好！\n</")
 check("裸 </ 残标签被清理", "</" not in _clean, repr(_clean))
@@ -1803,6 +1825,30 @@ check("run_shell / run_python 都走 _ensure_ready（不各自只 probe）",
       _sbx_src.count("self._ensure_ready()") == 2
       and _sbx_src.count("def run_shell") == 1
       and _sbx_src.count("def run_python") == 1, _sbx_src.count("self._ensure_ready()"))
+
+# —— 沙箱拒绝方言分类：策略拒绝 ≠ 命令失败（借鉴 DSH DENIAL_SIGNATURES / Codex violation.rs） ——
+el_den = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False},
+                                "sandbox": {"mode": "docker"}})
+el_den.executor.docker_sandbox._available = True
+el_den.executor.docker_sandbox._image_ok = True
+import unittest.mock as _mock_den
+_denied_out = {"stdout": "", "stderr": "mkdir: cannot create directory 'x': read-only file system",
+               "returncode": 1, "timeout": False, "sandbox_denied": True}
+_ok_out = {"stdout": "hi", "stderr": "", "returncode": 0, "timeout": False, "sandbox_denied": False}
+with _mock_den.patch.object(el_den.executor.docker_sandbox, "run_shell",
+                            return_value=_denied_out):
+    r = run_confirmed(el_den, "terminal_exec", command="mkdir /x")
+    check("拒绝方言被标记 sandbox_denied（模型不会当命令失败重试）",
+          r["status"] == "SUCCESS" and r["data"].get("sandbox_denied") is True
+          and "denied_hint" in r["data"].get("sandbox", {}),
+          (r.get("status"), r.get("data", {}).get("sandbox_denied")))
+with _mock_den.patch.object(el_den.executor.docker_sandbox, "run_shell",
+                            return_value=_ok_out):
+    r = run_confirmed(el_den, "terminal_exec", command="echo hi")
+    check("正常输出不误标 sandbox_denied",
+          r["status"] == "SUCCESS" and r["data"].get("sandbox_denied") is False,
+          r.get("data", {}).get("sandbox_denied"))
 
 
 # ============================================================

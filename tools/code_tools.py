@@ -122,14 +122,19 @@ class CodeTools:
             if out["timeout"]:
                 return ExecutionResult(status="error", error_code="504",
                                        message=out["stderr"])
+            denied = bool(out.get("sandbox_denied"))
             return ExecutionResult(status="success", data={
                 "stdout": out["stdout"],
                 "stderr": out["stderr"],
                 "returncode": out["returncode"],
+                "sandbox_denied": denied,
                 "sandbox": {"kind": "docker", "image": self.docker_sandbox.image,
                             "network": self.docker_sandbox.network,
                             "memory": self.docker_sandbox.memory,
-                            "timeout": self.docker_sandbox.timeout},
+                            "timeout": self.docker_sandbox.timeout,
+                            "denied_hint": ("沙箱策略拒绝（只读根文件系统/权限），"
+                                            "不是命令失败——请改用不触碰该边界的方式"
+                                            if denied else None)},
             })
 
         # Go 执行器（Tier-1 Job Object）：与 docker 同级的"跑起来能碰到什么"边界。

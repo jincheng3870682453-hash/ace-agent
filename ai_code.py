@@ -203,6 +203,62 @@ def _model_error_hint(e: Exception) -> str:
     return ""
 
 
+# —— 项目指令（AGENTS.md，借鉴 Codex agents_md.rs） ——
+AGENTS_MD_MAX_BYTES = 32 * 1024   # 与 Codex project_doc_max_bytes 同级预算
+AGENTS_MD_FILENAMES = ("AGENTS.md", "CLAUDE.md")   # AGENTS.md 优先，CLAUDE.md 兼容
+
+
+def load_project_instructions(cwd: str) -> str:
+    """Codex 式 AGENTS.md 层级发现：cwd 向上找项目根（最近的 .git 标记），
+    收集 根 → cwd 每层 的 AGENTS.md（无则 CLAUDE.md，每层至多一个），根到叶拼接，
+    32 KiB 预算硬截断。无任何指令文件返回空串。纯只读，不执行任何内容。"""
+    root = Path(cwd).resolve()
+    git_root = None
+    probe = root
+    while True:
+        if (probe / ".git").exists():
+            git_root = probe
+            break
+        if probe.parent == probe:
+            break
+        probe = probe.parent
+    base = git_root or root
+
+    layers = []   # (相对路径, 文本)，从 cwd 向上收集，最后反转成根→叶
+    cur = root
+    while True:
+        for name in AGENTS_MD_FILENAMES:
+            f = cur / name
+            if f.is_file():
+                try:
+                    text = f.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    break
+                if text.strip():
+                    rel = str(f.relative_to(base)) if git_root else str(f)
+                    layers.append((rel, text))
+                break
+        if cur == base:
+            break
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    layers.reverse()
+
+    parts: List[str] = []
+    total = 0
+    for rel, text in layers:
+        block = f"# {rel}\n\n{text.strip()}"
+        if total + len(block) > AGENTS_MD_MAX_BYTES:
+            remain = AGENTS_MD_MAX_BYTES - total
+            if remain > 0:
+                parts.append(block[:remain])
+            break
+        parts.append(block)
+        total += len(block)
+    return "\n\n".join(parts)
+
+
 # 支持"无空格参数"的斜杠命令：/search关键词 → /search 关键词
 ARG_COMMANDS = {"/search", "/open", "/edit", "/model", "/provider",
                 "/rollback", "/permission"}
@@ -1551,6 +1607,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         set_language(self.lang)  # 界面语言跟随配置/@lang
         self.skill = str(cfg.get("skill", "general"))
         self.context_refs: List[str] = []
+        # 项目指令（AGENTS.md）会话缓存：None = 未计算
+        self._project_instructions: Optional[str] = None
         # SEC-011：隔离块的 id 按会话固定。每轮换 id 会让系统提示词逐轮变化，
         # 白费上游 KV 缓存；要防的是引用文件的作者猜中 id，不是同会话内的重放。
         self._ctx_nonce = secrets.token_hex(4)
@@ -1652,6 +1710,15 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         if skill and self.skill != "general":
             parts.append(f"【当前技能】{skill['name']}：{skill['desc']}。"
                          f"推荐工具：{', '.join(skill['tools'])}。")
+        # 项目指令（AGENTS.md / CLAUDE.md）：项目所有者的约定，性质介于指令与数据之间，
+        # 注入时明确标注来源；会话内缓存一次（project_root 不变则不复读盘）。
+        if self._project_instructions is None:
+            self._project_instructions = load_project_instructions(
+                self.cfg.get("project_root", "."))
+        if self._project_instructions:
+            parts.append("【项目指令】以下内容来自项目目录里的约定文件"
+                         "（AGENTS.md / CLAUDE.md，项目所有者写的规则，应遵循）：\n"
+                         + self._project_instructions)
         if self.context_refs:
             # SEC-011：@file / @folder 的内容进的是**系统提示词**，比工具结果那条路径更
             # 危险 —— 系统 role 天然被模型当成最高权威。文件正文可能来自任何地方

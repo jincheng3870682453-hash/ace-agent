@@ -45,6 +45,19 @@ DEFAULT_CPUS = "1.0"
 DEFAULT_PIDS = 128
 DEFAULT_TMPFS_SIZE = "64m"
 
+# 沙箱策略拒绝的 stderr 方言（借鉴 DSH sandbox-local DENIAL_SIGNATURES / Codex violation.rs）。
+# 语义必须与"命令自身失败"分开：前者是限制在按预期生效（模型应换做法），
+# 后者才该当普通失败重试。--read-only 根文件系统 + cap-drop ALL 下，
+# 越界写/越界操作会稳定产出这些关键词。
+DENIAL_SIGNATURES = (
+    "permission denied",
+    "read-only file system",
+    "read-only file",
+    "operation not permitted",
+    "cannot create directory: read-only",
+    "is a read-only file system",
+)
+
 # docker daemon 探测的超时。探测本身要快——它挡在每次工具调用前面，
 # 不能因为 daemon 卡住就让整个 agent 跟着卡 30 秒。
 PROBE_TIMEOUT = 8
@@ -172,14 +185,17 @@ class DockerSandbox:
                 args, capture_output=True, text=True, timeout=self.timeout,
                 input=stdin_data if stdin_data is not None else "",
                 encoding="utf-8", errors="replace")
-            return {"stdout": r.stdout, "stderr": r.stderr,
-                    "returncode": r.returncode, "timeout": False}
+            stderr = r.stderr or ""
+            denied = any(sig in stderr.lower() for sig in DENIAL_SIGNATURES)
+            return {"stdout": r.stdout, "stderr": stderr,
+                    "returncode": r.returncode, "timeout": False,
+                    "sandbox_denied": denied}
         except subprocess.TimeoutExpired:
             # subprocess 超时只杀掉 docker 客户端，容器还在跑。必须显式清掉，
             # 否则超时一次就漏一个吃着 CPU 的容器。
             self._force_remove(name)
             return {"stdout": "", "stderr": f"容器执行超时（{self.timeout} 秒），已强制清理",
-                    "returncode": 124, "timeout": True}
+                    "returncode": 124, "timeout": True, "sandbox_denied": False}
 
     @staticmethod
     def _force_remove(name: str) -> None:
