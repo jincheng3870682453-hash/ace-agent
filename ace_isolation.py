@@ -57,6 +57,7 @@ UNTRUSTED_SOURCES: Dict[str, str] = {
     "db_write": "执行层状态", "notify_send": "执行层状态",
     "image_generate": "执行层状态", "browser_screenshot": "执行层状态",
     "browser_open": "执行层状态", "open_file": "执行层状态", "edit_file": "执行层状态",
+    "browser_navigate": "执行层状态", "browser_click": "执行层状态", "browser_type": "执行层状态",
     "math_calc": "执行层状态", "datetime_now": "执行层状态",
     "plan_propose": "执行层状态", "request_permission": "执行层状态",
     # goal 状态机：回显的是目标文本与状态机字段（目标文本是模型自己写的）

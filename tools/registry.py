@@ -226,15 +226,24 @@ TOOL_SPECS: List[ToolSpec] = [
         example='{"tool":"code_execute","language":"python","code":"print(1)"}',
     ),
     ToolSpec(
+        name="browser_navigate", permission=PERM_READ, handler="_exec_browser_navigate",
+        description="在 Playwright 受控页面打开 URL（与 browser_open 的系统浏览器不同："
+                    "打开后可用 browser_click / browser_type 操作页面）",
+        parameters=_obj({"url": {"type": "string"}}, ["url"]),
+        example='{"tool":"browser_navigate","url":"https://example.com"}',
+    ),
+    ToolSpec(
         name="browser_click", permission=PERM_WRITE, handler="_exec_browser_click",
-        description="点击页面元素（未实现）", expose=False,
+        description="在受控页面点击元素（CSS selector；需先 browser_navigate 打开页面）",
         parameters=_obj({"selector": {"type": "string"}}, ["selector"]),
+        example='{"tool":"browser_click","selector":"#submit-btn"}',
     ),
     ToolSpec(
         name="browser_type", permission=PERM_WRITE, handler="_exec_browser_type",
-        description="在页面元素中输入文本（未实现）", expose=False,
+        description="在受控页面输入框输入文本（CSS selector；需先 browser_navigate）",
         parameters=_obj({"selector": {"type": "string"}, "text": {"type": "string"}},
                         ["selector", "text"]),
+        example='{"tool":"browser_type","selector":"#search","text":"python"}',
     ),
     ToolSpec(
         name="db_write", permission=PERM_WRITE, handler="_exec_db_write",

@@ -246,13 +246,101 @@ class WebTools:
             return ExecutionResult(status="error", error_code="500", message=str(e))
         return ExecutionResult(status="success", data={"url": url, "opened": bool(ok)})
 
+    # ---------- Playwright 受控浏览器（browser_navigate / click / type） ----------
+
+    def _browser_page(self):
+        """懒启动 Playwright 受控页面（用系统 Edge/Chrome channel，免下载浏览器）。
+        返回 None = playwright 未安装或浏览器不可用。"""
+        if getattr(self, "_browser_ctx", None) is not None:
+            return self._browser_ctx
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return None
+        try:
+            pw = sync_playwright().start()
+            # 优先系统 Edge（Windows 常见），回退 Chrome / 默认 chromium
+            browser = None
+            for channel in ("msedge", "chrome"):
+                try:
+                    browser = pw.chromium.launch(channel=channel, headless=True)
+                    break
+                except Exception:
+                    continue
+            if browser is None:
+                try:
+                    browser = pw.chromium.launch(headless=True)
+                except Exception:
+                    pw.stop()
+                    return None
+            page = browser.new_page()
+            self._browser_ctx = (pw, browser, page)
+            self._browser_pw = pw
+            return self._browser_ctx
+        except Exception:
+            return None
+
+    def _exec_browser_navigate(self, params: Dict) -> ExecutionResult:
+        """Playwright 受控页面打开 URL（与 browser_open 的系统浏览器不同：可后续点击/输入）"""
+        url = str(params.get("url", ""))
+        url_err = self._check_url(url)
+        if url_err:
+            return ExecutionResult(status="error", error_code="400", message=url_err)
+        ctx = self._browser_page()
+        if ctx is None:
+            return ExecutionResult(status="error", error_code="501",
+                                   message="浏览器自动化不可用（需要 playwright: "
+                                           "pip install playwright）")
+        try:
+            ctx[2].goto(url, timeout=30000, wait_until="domcontentloaded")
+            title = ctx[2].title()
+            return ExecutionResult(status="success", data={
+                "url": url, "title": title, "ok": True})
+        except Exception as e:
+            return ExecutionResult(status="error", error_code="500",
+                                   message=f"导航失败: {type(e).__name__}: {e}")
+
     def _exec_browser_click(self, params: Dict) -> ExecutionResult:
-        return ExecutionResult(status="error", error_code="501",
-                               message="browser_click 尚未接入浏览器（POC 占位）")
+        """在受控页面点击元素（CSS selector）"""
+        selector = str(params.get("selector", "")).strip()
+        if not selector:
+            return ExecutionResult(status="error", error_code="400",
+                                   message="selector 参数为空（CSS 选择器）")
+        ctx = self._browser_page()
+        if ctx is None:
+            return ExecutionResult(status="error", error_code="501",
+                                   message="浏览器自动化不可用（需要 playwright: "
+                                           "pip install playwright；先 browser_navigate 打开页面）")
+        try:
+            ctx[2].click(selector, timeout=10000)
+            return ExecutionResult(status="success", data={
+                "selector": selector, "clicked": True,
+                "url": ctx[2].url})
+        except Exception as e:
+            return ExecutionResult(status="error", error_code="500",
+                                   message=f"点击失败（{type(e).__name__}: {e}）——"
+                                           "确认 selector 正确，且页面已用 browser_navigate 打开")
 
     def _exec_browser_type(self, params: Dict) -> ExecutionResult:
-        return ExecutionResult(status="error", error_code="501",
-                               message="browser_type 尚未接入浏览器（POC 占位）")
+        """在受控页面元素中输入文本（CSS selector）"""
+        selector = str(params.get("selector", "")).strip()
+        text = str(params.get("text", ""))
+        if not selector:
+            return ExecutionResult(status="error", error_code="400",
+                                   message="selector 参数为空（CSS 选择器）")
+        ctx = self._browser_page()
+        if ctx is None:
+            return ExecutionResult(status="error", error_code="501",
+                                   message="浏览器自动化不可用（需要 playwright: "
+                                           "pip install playwright；先 browser_navigate 打开页面）")
+        try:
+            ctx[2].fill(selector, text, timeout=10000)
+            return ExecutionResult(status="success", data={
+                "selector": selector, "typed": True, "url": ctx[2].url})
+        except Exception as e:
+            return ExecutionResult(status="error", error_code="500",
+                                   message=f"输入失败（{type(e).__name__}: {e}）——"
+                                           "确认 selector 是输入框，且页面已用 browser_navigate 打开")
 
     def _exec_image_generate(self, params: Dict) -> ExecutionResult:
         """真实图像生成（pollinations.ai 免费端点，无需密钥），保存到项目 .ace_images/"""

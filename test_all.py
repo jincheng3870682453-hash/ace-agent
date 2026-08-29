@@ -3649,6 +3649,58 @@ if _sub_files:
     check("子代理日志含工具往返（tool/call + tool/result）",
           _K_CALL in _sub_kinds and K_TOOL_RESULT in _sub_kinds, sorted(_sub_kinds))
 
+# ============================================================
+print("[28] 浏览器自动化 —— Playwright 受控页面（navigate / click / type）")
+# ============================================================
+from types import SimpleNamespace as _NS  # noqa: E402
+from tools import ToolExecutor as _TE_BR  # noqa: E402
+
+_el_br = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False}})
+_br_te = _el_br.executor
+# 无 Playwright 可用（mock _browser_page 返回 None）→ 501
+with _mock_den.patch.object(_br_te, "_browser_page", return_value=None):
+    r = _br_te.execute({"tool": "browser_navigate", "url": "https://example.com"})
+    check("browser_navigate 无 playwright → 501",
+          r.status == "error" and r.error_code == "501", r.message)
+    r = _br_te.execute({"tool": "browser_click", "selector": "#btn"})
+    check("browser_click 无 playwright → 501", r.status == "error"
+          and r.error_code == "501", r.message)
+# 参数校验
+r = _br_te.execute({"tool": "browser_navigate", "url": "file:///etc/passwd"})
+check("browser_navigate 协议校验", r.status == "error" and r.error_code == "400",
+      r.message)
+r = _br_te.execute({"tool": "browser_click"})
+check("browser_click 空 selector → 400",
+      r.status == "error" and r.error_code == "400", r.message)
+# mock 受控页面：navigate → click → type 全链路
+_events_br = []
+_fake_page = _NS(
+    goto=lambda url, timeout=0, wait_until="": _events_br.append(("goto", url)),
+    title=lambda: "Mock Page",
+    click=lambda s, timeout=0: _events_br.append(("click", s)),
+    fill=lambda s, t, timeout=0: _events_br.append(("fill", s, t)),
+    url="https://example.com")
+_fake_ctx = (None, None, _fake_page)
+with _mock_den.patch.object(_br_te, "_browser_page", return_value=_fake_ctx):
+    r = _br_te.execute({"tool": "browser_navigate", "url": "https://example.com"})
+    check("browser_navigate 打开受控页面",
+          r.status == "success" and r.data["title"] == "Mock Page", r.data)
+    r = _br_te.execute({"tool": "browser_click", "selector": "#submit-btn"})
+    check("browser_click 点击元素",
+          r.status == "success" and r.data["clicked"] is True, r.data)
+    r = _br_te.execute({"tool": "browser_type", "selector": "#search",
+                        "text": "python"})
+    check("browser_type 输入文本",
+          r.status == "success" and r.data["typed"] is True, r.data)
+check("受控页面操作顺序：goto → click → fill",
+      [e[0] for e in _events_br] == ["goto", "click", "fill"], _events_br)
+check("浏览器工具已注册（navigate/click/type）",
+      "browser_navigate" in _READ_TOOLS and "browser_click" in _WRITE_TOOLS
+      and "browser_type" in _WRITE_TOOLS,
+      [t for t in ("browser_navigate", "browser_click", "browser_type")
+       if t not in _READ_TOOLS and t not in _WRITE_TOOLS])
+
 # —— 会话恢复：重启后从上次会话日志重建消息历史（DSH「历史 = 日志派生」落地） ——
 _res_root = Path(tempfile.mkdtemp(prefix="ace_resume_"))
 _cli_r1 = ai_code.AgentCLI({"project_root": str(_res_root), "permission": "write",
