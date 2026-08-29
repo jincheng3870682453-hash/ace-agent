@@ -188,19 +188,18 @@ def _looks_like_cli_command(line: str) -> bool:
 
 
 def _model_error_hint(e: Exception) -> str:
-    """根据 HTTP 错误码返回中文排查指引（401 等常见错误不再只甩英文）"""
+    """根据 HTTP 错误码返回排查提示（401 等常见错误不再只甩英文；跟随界面语言）"""
     code = getattr(getattr(e, "response", None), "status_code", None)
     if code == 401:
-        return ("API Key 无效或已过期。请用 /config 重新配置完整密钥（注意智谱新版 key 以 "
-                "id. 开头、不要带空格换行），或到服务商控制台重新生成")
+        return t("model_err_401")
     if code == 403:
-        return "密钥无权限访问该模型：请检查账户权限/额度，或更换模型名"
+        return t("model_err_403")
     if code == 404:
-        return "接口或模型不存在：请检查 base_url 与模型名（如 glm-4-flash / deepseek-chat）"
+        return t("model_err_404")
     if code == 429:
-        return "请求过于频繁或额度用尽：请稍后重试，或到控制台检查余额"
+        return t("model_err_429")
     if code and 500 <= code < 600:
-        return "服务端错误：请稍后重试"
+        return t("model_err_5xx")
     return ""
 
 
@@ -1283,44 +1282,44 @@ class _SlashCommands:
         try:
             if action == "resume":
                 if snap is None:
-                    print(c("yellow", "当前没有目标。用 goal_create 创建一个（或直接对话让 Agent 创建）。"))
+                    print(c("yellow", t("goal_no_goal")))
                     return
                 store.resume(snap["id"], snap["revision"])
-                print(c("green", f"目标已恢复：{snap['objective'][:60]}（armed，可自动续跑）"))
+                print(c("green", t("goal_resumed", obj=snap['objective'][:60])))
                 return
             if action == "pause":
                 if snap is None or snap["phase"] != "active":
-                    print(c("yellow", "没有可暂停的活动目标。"))
+                    print(c("yellow", t("goal_no_pauseable")))
                     return
                 store.update(snap["id"], snap["revision"], phase="paused")
-                print(c("green", "目标已暂停。"))
+                print(c("green", t("goal_paused")))
                 return
             if action == "complete":
                 if snap is None or snap["phase"] != "active":
-                    print(c("yellow", "没有可完成的活动目标。"))
+                    print(c("yellow", t("goal_no_completable")))
                     return
                 store.update(snap["id"], snap["revision"], phase="complete")
-                print(c("green", "目标已标记完成。"))
+                print(c("green", t("goal_completed")))
                 return
             if action not in ("", "status"):
-                print(c("yellow", "用法: /goal [resume|pause|complete|status]"))
+                print(c("yellow", t("goal_usage")))
                 return
         except GoalError as e:
             print(c("red", f"goal: {e.message}"))
             return
         if snap is None:
-            print(c("dim", "当前没有活动目标（goal_create 创建，或对话中让 Agent 创建）。"))
+            print(c("dim", t("goal_no_active")))
             return
         phase = snap["phase"]
-        armed = "armed" if snap["armed"] else "disarmed（重启后需 /goal resume）"
-        print(c("bold", "目标状态"))
+        armed = "armed" if snap["armed"] else "disarmed"
+        print(c("bold", t("goal_status_title")))
         print(f"  {c('magenta', 'objective')}: {snap['objective']}")
         print(f"  {c('magenta', 'phase')}: {phase} | {c('magenta', 'rounds')}: "
               f"{snap['rounds_started']}/{snap['max_rounds']} | {c('magenta', 'armed')}: {armed}")
         if snap.get("blocked_reason_code"):
             print(f"  {c('red', 'blocked')}: [{snap['blocked_reason_code']}] "
                   f"{snap.get('blocked_reason_message', '')}")
-        print(c("dim", "  操作: /goal resume | /goal pause | /goal complete"))
+        print(c("dim", t("goal_ops")))
 
     # ---------- 子代理（/subagent 工具的执行钩子，由执行层回调） ----------
 
@@ -1367,9 +1366,7 @@ class _SlashCommands:
                 if status in ("PLAN_PROPOSED", "PERMISSION_REQUEST"):
                     # 子代理环境无人批准：明确告知后让它换方式
                     msgs.append({"role": "assistant", "content": output})
-                    msgs.append({"role": "user", "content":
-                                 "子代理环境无人批准计划/授权。不要再用 plan_propose / "
-                                 "request_permission，改用不需要批准的方式完成，或直接给出结论。"})
+                    msgs.append({"role": "user", "content": t("subagent_no_approval")})
                     continue
                 if status == "SUCCESS":
                     msgs.append({"role": "assistant", "content": output})
@@ -1381,7 +1378,7 @@ class _SlashCommands:
                 msgs.append({"role": "user", "content":
                              PROMPT_ERROR_RETRY.format(rendered=render_result(result))})
                 continue
-            return False, "（子代理达到 8 轮上限未给出结论）"
+            return False, t("subagent_limit")
         except Exception as e:
             return False, f"子代理执行失败: {type(e).__name__}: {e}"
 
@@ -1403,18 +1400,19 @@ class _SlashCommands:
             events = [e for e in events if kind_filter in e.get("kind", "")]
         events = events[-n:]
         if not events:
-            print(c("dim", "会话日志为空。"))
+            print(c("dim", t("audit_empty")))
             return
-        print(c("bold", f"会话事件日志（{len(events)} 条"
-                        f"{'，过滤: ' + kind_filter if kind_filter else ''}，"
-                        f"文件: {self.session_log.path.name}）"))
+        print(c("bold", t("audit_title",
+                          n=len(events),
+                          filter=t("audit_filter", kind=kind_filter) if kind_filter else "",
+                          file=self.session_log.path.name)))
         for ev in events:
             kind = ev.get("kind", "?")
             seq = ev.get("seq", "?")
             ts = ev.get("ts", "")
             detail = self._audit_summary(kind, ev)
             print(f"  {c('dim', f'#{seq} {ts}')} {c('magenta', kind):<22} {detail[:100]}")
-        print(c("dim", "  完整文件: " + str(self.session_log.path)))
+        print(c("dim", t("audit_file", path=str(self.session_log.path))))
 
     @staticmethod
     def _audit_summary(kind: str, ev: Dict) -> str:
@@ -1692,15 +1690,16 @@ class _LandingUI:
         lines = []
         sandbox = str(self.cfg.get("sandbox", "off") or "off")
         if sandbox == "job":
-            lines.append(c("dim", "  沙箱: Job Object（Windows 进程树/资源隔离）"))
+            lines.append(c("dim", t("banner_sandbox_job")))
         elif sandbox == "docker":
-            lines.append(c("dim", "  沙箱: Docker 一次性容器（network none）"))
+            lines.append(c("dim", t("banner_sandbox_docker")))
         else:
-            lines.append(c("dim", "  沙箱: off（Python 层策略校验，无内核边界）"))
+            lines.append(c("dim", t("banner_sandbox_off")))
         kb = self.cfg.get("kb_root")
-        lines.append(c("dim", f"  知识库: {kb or (os.path.abspath(self.cfg['project_root']) + os.sep + '.ace_kb')}"
-                              f"{'（外挂）' if kb else ''}"))
-        lines.append(c("dim", "  会话日志: .ace_sessions/（/audit 查看全链路）"))
+        kb_path = kb or (os.path.abspath(self.cfg['project_root']) + os.sep + '.ace_kb')
+        lines.append(c("dim", t("banner_kb", path=kb_path,
+                                ext=t("banner_kb_ext") if kb else "")))
+        lines.append(c("dim", t("banner_sesslog")))
         return lines
 
     def _draw_landing(self, sel: int) -> None:
@@ -2240,8 +2239,9 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 _g = self.el.goal_store.start_round()
                 if _g is None:
                     return
-                print(c("dim", f"  目标续跑 R{_g.rounds_started}/{_g.max_rounds}"
-                               f"：{_g.objective[:60]}"))
+                print(c("dim", t("goal_continue",
+                                 r=_g.rounds_started, m=_g.max_rounds,
+                                 obj=_g.objective[:60])))
                 self.session_log.record_goal_round(_g.rounds_started, _g.max_rounds)
                 next_user = (f"【目标续跑】目标：{_g.objective}\n"
                              f"轮次 {_g.rounds_started}/{_g.max_rounds}。"
@@ -2364,8 +2364,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
 
         # 会话恢复提示：从上次会话日志重建的消息历史
         if getattr(self, "_resumed_from", None):
-            print(c("dim", f"  已恢复上次会话（{len(self.messages)} 条消息，"
-                           f"{self._resumed_from}），/clear 可清空"))
+            print(c("dim", t("session_resumed", n=len(self.messages),
+                             file=self._resumed_from)))
 
         # 目标状态机：重启后自动 disarmed（不无授权续跑），提示未完成目标
         try:
@@ -2374,9 +2374,9 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             pass
         _g = self.el.goal_store.snapshot()
         if _g and _g["phase"] in ("active", "paused", "blocked"):
-            print(c("dim", f"  有未完成目标（{_g['phase']}）："
-                           f"{_g['objective'][:50]}{'…' if len(_g['objective']) > 50 else ''}"
-                           f"  /goal 查看或恢复"))
+            print(c("dim", t("goal_pending", phase=_g["phase"],
+                             obj=_g["objective"][:50]
+                             + ("…" if len(_g["objective"]) > 50 else ""))))
 
         # 实时补全：有 prompt_toolkit 就上 Claude Code 同款弹窗菜单，没有则降级普通输入
         session = None

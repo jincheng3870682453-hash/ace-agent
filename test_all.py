@@ -1826,6 +1826,25 @@ with contextlib.redirect_stdout(io.StringIO()):
     cli_i18n._handle_at_command("@lang zh")
 check("切回中文后全局翻译复位", i18n_mod.current_lang() == "zh")
 
+# —— 新增界面键三语齐全（中英文可切换的完整性保证） ——
+_ui_keys = ("model_err_401", "banner_sandbox_off", "banner_kb", "banner_sesslog",
+            "goal_no_goal", "goal_status_title", "goal_continue", "session_resumed",
+            "goal_pending", "trunc_hint", "audit_title", "subagent_no_approval")
+for _lang in ("zh", "en", "ja"):
+    _p = json.loads((Path(__file__).resolve().parent / "locales"
+                     / f"{_lang}.json").read_text(encoding="utf-8"))
+    _miss = [k for k in _ui_keys if not _p.get(k)]
+    check(f"i18n 界面键 {_lang} 齐全（{len(_ui_keys)} 个）",
+          not _miss, _miss)
+# 语言切换后界面文本确实变化（英文界面不再显示中文硬编码）
+from i18n import set_language as _sl  # noqa: E402
+_sl("en")
+check("英文界面错误提示为英文",
+      "API Key invalid" in i18n_mod.t("model_err_401"), i18n_mod.t("model_err_401"))
+check("英文界面 goal 提示为英文",
+      "No active goal" in i18n_mod.t("goal_no_goal"), i18n_mod.t("goal_no_goal"))
+_sl("zh")
+
 # —— COMMANDS 描述键必须全部有翻译（防止补全菜单泄漏键名 cmd_xxx） ——
 _zh_pack = json.loads(
     (Path(__file__).resolve().parent / "locales" / "zh.json").read_text(encoding="utf-8"))

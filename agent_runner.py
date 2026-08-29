@@ -472,8 +472,9 @@ def truncate_tool_output(text: str, *, head_chars: int = 4000,
     head = text[:head_chars]
     tail = text[-tail_chars:] if tail_chars else ""
     cut = len(text) - head_chars - (tail_chars or 0)
-    return (f"{head}\n…[已裁剪 {cut} 字符，原始长度 {len(text)}；"
-            f"需要完整内容请用 file_read 读取]\n{tail}")
+    # 裁剪标记跟随界面语言（i18n 全局切换）
+    from i18n import t as _t
+    return (f"{head}\n…[{_t('trunc_hint', cut=cut, total=len(text))}]\n{tail}")
 
 
 def render_tool_result(r: Dict) -> str:
