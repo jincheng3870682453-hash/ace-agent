@@ -1686,6 +1686,22 @@ class _LandingUI:
         print(c("dim", "  按任意键返回..."))
         self._read_key()
 
+    def _banner_extras(self) -> List[str]:
+        """启动信息行：沙箱档位 / 知识库 / 会话日志（一眼看清当前运行环境）"""
+        lines = []
+        sandbox = str(self.cfg.get("sandbox", "off") or "off")
+        if sandbox == "job":
+            lines.append(c("dim", f"  🛡 沙箱: Job Object（Windows 进程树/资源隔离）"))
+        elif sandbox == "docker":
+            lines.append(c("dim", f"  🛡 沙箱: Docker 一次性容器（network none）"))
+        else:
+            lines.append(c("dim", f"  🛡 沙箱: off（Python 层策略校验，无内核边界）"))
+        kb = self.cfg.get("kb_root")
+        lines.append(c("dim", f"  📚 知识库: {kb or (os.path.abspath(self.cfg['project_root']) + os.sep + '.ace_kb')}"
+                              f"{'（外挂）' if kb else ''}"))
+        lines.append(c("dim", f"  📋 会话日志: .ace_sessions/（/audit 查看全链路）"))
+        return lines
+
     def _draw_landing(self, sel: int) -> None:
         self._clear_screen()
         for line in ACE_LOGO.split("\n"):
@@ -1696,6 +1712,8 @@ class _LandingUI:
         print(t("banner_permission",
                 perm=self.cfg.get("permission", "readonly"),
                 root=self.cfg.get("project_root", ".")))
+        for line in self._banner_extras():
+            print(line)
         if not self.cfg.get("api_key") and not self.client.mock:
             print(c("yellow", t("banner_missing_key")))
         print()
@@ -2250,6 +2268,11 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                         line += c("dim", t("elapsed", sec=elapsed))
                     if result.get("snapshot_id"):
                         line += c("dim", t("snapshotted"))
+                else:
+                    # 失败：附带原因摘要（截断），一眼看到为什么失败
+                    _why = str(result.get("message") or "")[:60]
+                    if _why:
+                        line += c("dim", f"  {_why}")
                 print(line)
                 if result["status"] == "SUCCESS":
                     self._print_clickables(result)
@@ -2326,6 +2349,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         print(t("banner_model", desc=self.client.describe()))
         print(t("banner_permission",
                 perm=self.cfg["permission"], root=self.cfg["project_root"]))
+        for line in self._banner_extras():
+            print(line)
         if self.cfg["permission"] != "readonly":
             print(c("yellow", t("banner_warn_write")))
         print(t("banner_hint",
@@ -2395,6 +2420,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     key_bindings=kb,
                     style=Style.from_dict({
                         "prompt": "ansimagenta bold",
+                        "perm": "ansicyan bold",
                         "completion-menu.completion": "bg:#2b2b3c #ffffff",
                         "completion-menu.completion.current": "bg:#5f3dc4 #ffffff",
                         "completion-menu.completion.meta": "bg:#1e1e2e #aaaaaa",
@@ -2412,10 +2438,17 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
 
         while True:
             try:
+                # 提示符带权限状态（readonly=蓝 / write=黄 / full=红），一眼看清当前权限
+                _perm = str(self.cfg.get("permission", "readonly"))
+                _perm_color = {"readonly": "ansiblue", "write": "ansiyellow",
+                               "full": "ansired"}.get(_perm, "ansicyan")
                 if session is not None:
-                    line = session.prompt([("class:prompt", "❯ ")]).strip()
+                    line = session.prompt([
+                        ("class:perm", f"[{_perm}] "),
+                        ("class:prompt", "❯ "),
+                    ]).strip()
                 else:
-                    line = input(c("magenta", "❯ ")).strip()
+                    line = input(c(_perm_color, f"[{_perm}] ") + c("magenta", "❯ ")).strip()
                 line = line.lstrip("\ufeff")  # 兼容带 UTF-8 BOM 的管道/重定向输入
             except (EOFError, KeyboardInterrupt):
                 print()
