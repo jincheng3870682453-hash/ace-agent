@@ -3484,6 +3484,49 @@ check("新会话启动后目标自动 disarmed（不无授权续跑）",
       _cli_g2.el.goal_store.snapshot())
 
 # ============================================================
+print("[26] 会话事件日志 —— append-only JSONL（模型可见⟺可记录，阶段 1）")
+# ============================================================
+from ace_sessionlog import SessionLog  # noqa: E402
+from ace_sessionlog import (K_ASSISTANT_MESSAGE, K_REQUEST_SNAPSHOT,
+                            K_TOOL_RESULT, K_USER_MESSAGE)  # noqa: E402
+
+_sl_root = Path(tempfile.mkdtemp(prefix="ace_slog_"))
+_sl = SessionLog(str(_sl_root / "s.jsonl"))
+check("append 返回递增 seq", _sl.record_user("你好") == 1
+      and _sl.record_assistant("你好！") == 2, _sl.tail(2))
+_sl.record_request(model="m1", base_url="http://x", permission="write",
+                   system_len=100, messages_count=2)
+_sl.record_tool_result("search", "SUCCESS", "结果摘要")
+check("事件种类齐全（user/assistant/request/tool_result）",
+      {e["kind"] for e in _sl.events()} == {
+          K_USER_MESSAGE, K_ASSISTANT_MESSAGE, K_REQUEST_SNAPSHOT, K_TOOL_RESULT},
+      [e["kind"] for e in _sl.events()])
+check("seq 连续无跳号", _sl.seq_contiguous() and _sl.count() == 4, _sl.tail(10))
+# 深冻结：不可序列化 payload 在追加点被拒（不落盘坏事件）
+try:
+    _sl.append("bad", {"obj": object()})
+    check("不可序列化 payload 被拒", False, "未抛异常")
+except ValueError:
+    check("不可序列化 payload 被拒", True, "")
+check("坏事件未落盘（count 不变）", _sl.count() == 4, _sl.count())
+# 持久化：重建后 seq 接着写（跨进程续记，不重复）
+_sl2 = SessionLog(str(_sl_root / "s.jsonl"))
+_sl2.record_user("续记")
+check("重建后 seq 接着写（不重复不跳号）",
+      _sl2.seq_contiguous() and _sl2.count() == 5
+      and _sl2.tail(1)[0]["seq"] == 5, _sl2.tail(2))
+# CLI 集成：mock 对话一轮后日志含 user/assistant/request 事件
+_cli_log = ai_code.AgentCLI({"project_root": str(mktemp()), "permission": "write",
+                             "bait": False, "base_url": "", "api_key": "",
+                             "model": "m1", "tools": False}, mock=True)
+with contextlib.redirect_stdout(io.StringIO()):
+    _cli_log.converse("你好", echo_input=False)
+_kinds = {e["kind"] for e in _cli_log.session_log.events()}
+check("mock 对话一轮后日志含 user/assistant/request",
+      K_USER_MESSAGE in _kinds and K_ASSISTANT_MESSAGE in _kinds
+      and K_REQUEST_SNAPSHOT in _kinds, sorted(_kinds))
+
+# ============================================================
 
 
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")

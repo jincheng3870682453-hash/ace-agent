@@ -55,6 +55,7 @@ FOLDER = Path(__file__).resolve().parent
 sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
+from ace_sessionlog import SessionLog  # noqa: E402
 from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E402
                           PROMPT_EXEC_EXCEPTION, PROMPT_ERROR_RETRY,
                           PROMPT_PLAN_APPROVED, PROMPT_TOOL_RESULT,
@@ -1668,6 +1669,11 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         self.messages: List[Dict] = []
         self.session = {"rounds": 0, "tools": 0, "violations": 0, "start": time.time()}
         self._init_execution_layer()
+        # 会话事件日志（DSH「模型可见⟺可记录」）：append-only JSONL，可审计可重放。
+        # 任何到达模型的输入、模型输出、工具往返都在这里，出问题可逐事件重放。
+        self.session_log = SessionLog(str(Path(self.cfg.get("project_root", "."))
+                                          / ".ace_sessions"
+                                          / f"{int(time.time() * 1000)}.jsonl"))
         # 目标状态机：每次启动自动 disarm（保留 phase，但不无授权续跑；
         # 重启后须 /goal resume 或会话内重试才重新武装）。
         try:
@@ -1884,6 +1890,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             # 交互模式：输入已由终端回显，只留一个空行分隔，避免重复显示
             print()
         t0 = time.time()
+        # 会话事件日志：记录用户输入（可审计、可重放）
+        self.session_log.record_user(user_input)
         # 记忆预注入：模型生成前把相关历史记忆放进 prompt（无记忆时原样返回）
         next_user = self.el.prepare_context(user_input)
         fail_streak = 0
@@ -1899,6 +1907,13 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             try:
                 # 基础提示词 + 语言/技能/引用上下文
                 system = self._build_system_prompt()
+                # 会话事件日志：记录每次模型请求的 envelope（可重建"模型看到了什么"）
+                self.session_log.record_request(
+                    model=self.client.model,
+                    base_url=self.client.base_url,
+                    permission=str(self.cfg.get("permission", "readonly")),
+                    system_len=len(system),
+                    messages_count=len(msgs))
                 output = self.client.stream_generate(system, msgs,
                                                      on_delta=disp["on_delta"])
             except KeyboardInterrupt:
@@ -1919,6 +1934,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 print()
             else:
                 spinner.stop()
+            # 会话事件日志：记录模型本轮完整输出（原文，可重放）
+            self.session_log.record_assistant(output)
             self.messages = self.client.trim_messages(
                 msgs + [{"role": "assistant", "content": output}],
                 self.max_history)
@@ -2032,6 +2049,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     return
                 print(c("dim", f"  ⏭ 目标续跑 R{_g.rounds_started}/{_g.max_rounds}"
                                f"：{_g.objective[:60]}"))
+                self.session_log.record_goal_round(_g.rounds_started, _g.max_rounds)
                 next_user = (f"【目标续跑】目标：{_g.objective}\n"
                              f"轮次 {_g.rounds_started}/{_g.max_rounds}。"
                              "继续推进目标；完成用 goal_update(phase=complete)，"
@@ -2049,6 +2067,9 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 next_user = PROMPT_ERROR_RETRY.format(rendered=render_tool_result(result))
             else:
                 self.session["tools"] += 1
+                # 会话事件日志：记录工具往返（tool + status + message 摘要）
+                self.session_log.record_tool_result(
+                    result.get("tool", ""), result["status"], result.get("message", ""))
                 status_mark = c("green", "✓") if result["status"] == "SUCCESS" else c("yellow", "⚠")
                 line = t("tool_line", tool=result.get("tool"),
                          mark=status_mark, status=result["status"])

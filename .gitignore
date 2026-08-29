@@ -13,6 +13,7 @@ __pycache__/
 .ace_shots/
 .ace_images/
 .ace_goals.json
+.ace_sessions/
 agent.db
 notifications.log
 *.jsonl
