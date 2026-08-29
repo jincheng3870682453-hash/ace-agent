@@ -3587,6 +3587,56 @@ check("/audit 类型过滤", "tool/call" in _bufa3.getvalue()
       or "tool/result" in _bufa3.getvalue(), _bufa3.getvalue()[:200])
 
 # ============================================================
+print("[27] 子代理 —— spawn/fork 独立上下文（阶段 1：纯生成，不调工具）")
+# ============================================================
+from tools.subagent_tools import SubagentTools  # noqa: E402
+
+# 无 hook：501（脱离 CLI 环境）
+_el_sa = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False}})
+r = _el_sa.executor.execute({"tool": "subagent", "prompt": "研究一下"})
+check("无 hook 时 subagent → 501", r.status == "error" and r.error_code == "501",
+      (r.error_code, r.message))
+r = _el_sa.executor.execute({"tool": "subagent", "mode": "bogus", "prompt": "x"})
+check("非法 mode → 400", r.status == "error" and r.error_code == "400", r.message)
+r = _el_sa.executor.execute({"tool": "subagent", "prompt": ""})
+check("空 prompt → 400", r.status == "error" and r.error_code == "400", r.message)
+
+# 注入 hook：模拟子代理执行
+_el_sa.executor.subagent_hook = lambda mode, prompt: (True, f"[{mode}] 子代理结果: {prompt[:20]}")
+r = _el_sa.executor.execute({"tool": "subagent", "mode": "spawn",
+                             "prompt": "审查这段代码"})
+check("spawn 子代理返回结果",
+      r.status == "success" and "[spawn]" in r.data["result"]
+      and "整合" in r.data["hint"], r.data)
+r = _el_sa.executor.execute({"tool": "subagent", "mode": "fork",
+                             "prompt": "继续分析"})
+check("fork 子代理返回结果",
+      r.status == "success" and "[fork]" in r.data["result"], r.data)
+# hook 抛异常 → 500
+_el_sa.executor.subagent_hook = lambda m, p: (_ for _ in ()).throw(RuntimeError("boom"))
+r = _el_sa.executor.execute({"tool": "subagent", "prompt": "x"})
+check("hook 异常 → 500", r.status == "error" and r.error_code == "500"
+      and "boom" in r.message, r.message)
+# 工具注册进权限集（对模型暴露）
+from execution_layer import WRITE_TOOLS as _WRITE_TOOLS  # noqa: E402
+check("subagent 工具已注册", "subagent" in _WRITE_TOOLS,
+      "subagent" not in _WRITE_TOOLS)
+# CLI 集成：mock 模式跑 _run_subagent（fork 继承父消息）
+_cli_sa = ai_code.AgentCLI({"project_root": str(mktemp()), "permission": "write",
+                            "bait": False, "base_url": "", "api_key": "",
+                            "model": "m1", "tools": False}, mock=True)
+_cli_sa.messages = [{"role": "user", "content": "父问题"},
+                    {"role": "assistant", "content": "父回答"}]
+_ok_sa, _txt_sa = _cli_sa._run_subagent("fork", "子任务")
+check("CLI 子代理 fork 返回结果且日志记录 subagent 请求",
+      _ok_sa and bool(_txt_sa.strip())
+      and any(e.get("subagent") == "fork"
+              for e in _cli_sa.session_log.events()
+              if e.get("kind") == "request/snapshot"),
+      (_ok_sa, _txt_sa[:40]))
+
+# ============================================================
 
 
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")

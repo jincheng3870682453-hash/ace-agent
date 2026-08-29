@@ -1321,6 +1321,33 @@ class _SlashCommands:
                   f"{snap.get('blocked_reason_message', '')}")
         print(c("dim", "  操作: /goal resume | /goal pause | /goal complete"))
 
+    # ---------- 子代理（/subagent 工具的执行钩子，由执行层回调） ----------
+
+    def _run_subagent(self, mode: str, prompt: str):
+        """执行 subagent 工具：spawn=全新上下文；fork=继承父会话最近几轮。
+        子代理不调工具（阶段 1），输出经 sanitize 清理协议残留后作为结果回传。
+        返回 (ok, text)。"""
+        msgs: List[Dict] = []
+        if mode == "fork":
+            msgs = list(self.messages[-6:])   # 最近几轮上下文（3 个来回）
+        msgs.append({"role": "user", "content": prompt})
+        system = (load_system_prompt(tools_mode=False)
+                  + f"\n【工作目录】{os.path.abspath(self.cfg['project_root'])}。"
+                    "你是被父代理派来的子代理，专注完成上面的子任务，直接给出结果，不要输出工具调用。")
+        try:
+            # 会话日志：记录子代理请求（带 subagent 标记，replay 时可区分）
+            self.session_log.record_request(
+                model=self.client.model, base_url=self.client.base_url,
+                permission=str(self.cfg.get("permission", "readonly")),
+                system_len=len(system), messages_count=len(msgs),
+                subagent=mode)
+            output = self.client.stream_generate(system, msgs)
+            self.session_log.record_assistant(output)
+        except Exception as e:
+            return False, f"子代理模型调用失败: {type(e).__name__}: {e}"
+        text = sanitize_plain_content(output)
+        return bool(text.strip()), (text or "（子代理未返回内容）")
+
     # ---------- 会话审计（/audit：从事件日志展示全链路） ----------
 
     def _show_audit(self, parts: List[str]) -> None:
@@ -1742,6 +1769,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                                       / f"{int(time.time() * 1000)}.jsonl")
         self._init_execution_layer()
         self.session_log = self.el.session_log
+        # 子代理钩子：执行层的 subagent 工具通过它调用真实模型（与 approval_hook 同模式）
+        self.el.executor.subagent_hook = self._run_subagent
         # 目标状态机：每次启动自动 disarm（保留 phase，但不无授权续跑；
         # 重启后须 /goal resume 或会话内重试才重新武装）。
         try:

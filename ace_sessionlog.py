@@ -131,11 +131,14 @@ class SessionLog:
         return self.append(K_ASSISTANT_MESSAGE, {"content": content})
 
     def record_request(self, *, model: str, base_url: str, permission: str,
-                       system_len: int, messages_count: int) -> int:
-        """每次模型请求的 envelope 摘要：足够重建"这次请求模型看到了什么"的结构。"""
+                       system_len: int, messages_count: int,
+                       subagent: str = "") -> int:
+        """每次模型请求的 envelope 摘要：足够重建"这次请求模型看到了什么"的结构。
+        subagent 非空表示这是子代理请求（spawn/fork），replay 时可区分。"""
         return self.append(K_REQUEST_SNAPSHOT, {
             "model": model, "base_url": base_url, "permission": permission,
             "system_len": system_len, "messages_count": messages_count,
+            "subagent": subagent,
         })
 
     def record_tool_call(self, tool: str, params: Dict[str, Any]) -> int:

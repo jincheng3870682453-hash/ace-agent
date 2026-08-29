@@ -287,6 +287,16 @@ TOOL_SPECS: List[ToolSpec] = [
         parameters=_obj({}),
         example='{"tool":"goal_status"}',
     ),
+    ToolSpec(
+        name="subagent", permission=PERM_WRITE, handler="_exec_subagent",
+        description="把子任务交给独立上下文的子代理执行（spawn=全新上下文，fork=继承父会话最近几轮），"
+                    "返回子代理的结果文本。适合研究/草案/独立验证/代码审查——子代理不受父会话历史干扰。"
+                    "结果需要父代理整合，不要原样转述",
+        parameters=_obj({"mode": {"type": "string"}, "prompt": {"type": "string"}},
+                        ["prompt"]),
+        example='{"tool":"subagent","mode":"spawn",'
+                '"prompt":"审查这段代码的安全问题：\\n\\n```python\\n..."}',
+    ),
 
     # —— 高危：已登记但未实现，需 full 权限（占位，防止名字被误当未知工具而静默通过分级）——
     ToolSpec(name="terminal_dangerous", permission=PERM_HIGH_RISK,

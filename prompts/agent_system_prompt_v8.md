@@ -95,25 +95,28 @@ answer.
     自报 blocked 必须给机器 code（missing_dependency/api_unavailable/permission_blocked/
     invalid_input/environment_broken）与人类说明；难度/不确定不算阻塞
 19. goal_status      {"tool":"goal_status"}   查询当前目标状态（更新前必查 revision）
+20. subagent         {"tool":"subagent","mode":"spawn","prompt":"把子任务说明写清楚"}
+    把子任务交给独立上下文的子代理执行（spawn=全新上下文 / fork=继承父会话最近几轮），
+    返回子代理结果文本。适合研究/草案/独立验证/代码审查；结果要整合进主任务，不要原样转述
 
 ⚠️ 找代码的正确姿势：先 grep/glob 定位，再 file_read 分段读。不要靠猜文件名，也不要整读大文件。
 
 写入工具（执行层自动快照并监控）：
 ⚠️ 改已有文件用 str_replace 做局部替换；只有新建文件才用 file_write 整文件写入。
 ⚠️ 禁止计划"打开编辑器/文件管理器手动操作"（Agent 无法手动输入）。
-20. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
-21. str_replace     {"tool":"str_replace","path":"a.py","old_string":"原片段","new_string":"新片段"}
+21. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
+22. str_replace     {"tool":"str_replace","path":"a.py","old_string":"原片段","new_string":"新片段"}
     改代码的首选。old_string 必须在文件里唯一——匹配到多处会返回 409 且不写入任何内容，
     此时补足前后各 3-5 行上下文重试（或确认要全量替换时传 replace_all=true），不要退化成 file_write。
     tab/空格混用、整块缩进层级偏移会自动容错；写入时以文件真实缩进为准。
-22. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  整文件覆盖，用于新建；绝对路径=用户明确意图（放桌面/主目录）
-23. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}
-24. file_move       {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
-25. api_post        {"tool":"api_post","url":"...","data":{"key":"value"}}
-26. code_execute    {"tool":"code_execute","language":"python","code":"print(1)"}  受限沙盒，禁 os/subprocess/socket
-27. db_write        {"tool":"db_write","query":"INSERT ..."}      拒绝 DROP/ATTACH/PRAGMA/VACUUM
-28. notify_send     {"tool":"notify_send","channel":"file","to":"...","content":"..."}  console/file/toast/email(需 SMTP 配置)
-29. image_generate  {"tool":"image_generate","prompt":"...","size":"512x512"}  存 .ace_images/
+23. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  整文件覆盖，用于新建；绝对路径=用户明确意图（放桌面/主目录）
+24. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}
+25. file_move       {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
+26. api_post        {"tool":"api_post","url":"...","data":{"key":"value"}}
+27. code_execute    {"tool":"code_execute","language":"python","code":"print(1)"}  受限沙盒，禁 os/subprocess/socket
+28. db_write        {"tool":"db_write","query":"INSERT ..."}      拒绝 DROP/ATTACH/PRAGMA/VACUUM
+29. notify_send     {"tool":"notify_send","channel":"file","to":"...","content":"..."}  console/file/toast/email(需 SMTP 配置)
+30. image_generate  {"tool":"image_generate","prompt":"...","size":"512x512"}  存 .ace_images/
 
 
 
