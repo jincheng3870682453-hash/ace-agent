@@ -3137,11 +3137,13 @@ check("browser_open 里清单判定排在 DNS 解析之前",
       _bo_src.index("self._egress_reason(url)") < _bo_src.index("self._check_url(url)"))
 
 # 源码守卫：每条出站都得把 on_hop 接上，少一处清单就是装饰品。
-# 五处而不是四处：_search_engine 只有一个 safe_request，但 _exec_search 会分别用
-# DuckDuckGo 和 Bing 调它两次，两个调用点都要显式带上闸门。
-check("web_tools 五处 safe_request 全部接了 on_hop",
-      _web_src.count("on_hop=self._egress_hop_gate()") == 5,
-      _web_src.count("on_hop=self._egress_hop_gate()"))
+# on_hop 传参点 ≥ safe_request 调用点：_search_engine 内部一处调用，但 _exec_search
+# 对 DDG/Bing 各传一次闸门（多出的传参点正是两引擎各自带闸）。新增出站点忘了接
+# on_hop 时（传参点 < 调用点）会在这里红。
+check("web_tools 所有 safe_request 调用都接了 on_hop",
+      _web_src.count("on_hop=self._egress_hop_gate()")
+      >= _web_src.count("safe_request("),
+      (_web_src.count("safe_request("), _web_src.count("on_hop=self._egress_hop_gate()")))
 check("execution_layer 把 egress_allowlist 透给执行器",
       "egress_allowlist=(config or {}).get(\"egress_allowlist\")" in
       (Path(__file__).parent / "execution_layer.py").read_text(encoding="utf-8"))
@@ -3700,6 +3702,63 @@ check("浏览器工具已注册（navigate/click/type）",
       and "browser_type" in _WRITE_TOOLS,
       [t for t in ("browser_navigate", "browser_click", "browser_type")
        if t not in _READ_TOOLS and t not in _WRITE_TOOLS])
+
+# ============================================================
+print("[29] 知识库 + 联网读取 —— kb_search/kb_add/kb_list + search_read")
+# ============================================================
+_kb_root = Path(tempfile.mkdtemp(prefix="ace_kb_"))
+_el_kb = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False},
+                                "kb_root": str(_kb_root)})
+_kb_te = _el_kb.executor
+# kb_add：写入知识库（含子目录 + 防穿越）
+r = _kb_te.execute({"tool": "kb_add", "filename": "notes/sql-tips.md",
+                    "content": "参数化查询防注入。\nSQL 注入防护要点：永远用参数化。\n"})
+check("kb_add 写入知识库", r.status == "success"
+      and (_kb_root / "notes" / "sql-tips.md").exists(), r.data)
+r = _kb_te.execute({"tool": "kb_add", "filename": "../escape.md", "content": "x"})
+check("kb_add 防路径穿越", r.status == "error" and r.error_code == "400", r.message)
+r = _kb_te.execute({"tool": "kb_add", "filename": "a.md"})
+check("kb_add 空 content → 400",
+      r.status == "error" and r.error_code == "400", r.message)
+# kb_search：检索命中
+r = _kb_te.execute({"tool": "kb_search", "query": "参数化"})
+check("kb_search 命中知识库内容",
+      r.status == "success" and "sql-tips.md" in r.data["content"]
+      and "参数化" in r.data["content"], (r.data.get("content") or "")[:200])
+r = _kb_te.execute({"tool": "kb_search", "query": "不存在的关键词xyz"})
+check("kb_search 无命中给出提示",
+      r.status == "success" and "无匹配" in r.data["content"], r.data["content"][:100])
+r = _kb_te.execute({"tool": "kb_search"})
+check("kb_search 空 query → 400",
+      r.status == "error" and r.error_code == "400", r.message)
+# kb_list
+r = _kb_te.execute({"tool": "kb_list"})
+check("kb_list 列出知识库文件",
+      r.status == "success" and r.data["count"] >= 1
+      and any("sql-tips.md" in f for f in r.data["files"]), r.data)
+# 外挂知识库（绝对路径 kb_root）已生效（上面就是外挂目录）
+check("知识库工具已注册",
+      "kb_search" in _READ_TOOLS and "kb_add" in _WRITE_TOOLS
+      and "kb_list" in _READ_TOOLS, "")
+
+# search_read：mock 搜索 + 抓正文（复用 _exec_search，mock safe_request）
+import unittest.mock as _mocksr  # noqa: E402
+_el_sr = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False}})
+_sr_te = _el_sr.executor
+_fake_resp = _NS(text="<html><body><p>异步 IO 的最佳实践是 asyncio。</p></body></html>")
+_fake_search_data = {"status": "success",
+                     "data": {"engine": "duckduckgo",
+                              "results": [{"title": "Python Async", "url": "https://example.com/a"},
+                                          {"title": "T2", "url": "https://example.com/b"}]}}
+with _mocksr.patch.object(_sr_te, "_exec_search", return_value=_NS(**_fake_search_data)), \
+     _mocksr.patch("ace_net.safe_request", return_value=(_fake_resp, [])):
+    r = _sr_te.execute({"tool": "search_read", "query": "python async", "top_k": 2})
+check("search_read 搜索+抓正文（RAG 式联网）",
+      r.status == "success" and r.data["count"] == 2
+      and "asyncio" in r.data["pages"][0]["content"], r.data)
+check("search_read 工具已注册", "search_read" in _READ_TOOLS, "")
 
 # —— 会话恢复：重启后从上次会话日志重建消息历史（DSH「历史 = 日志派生」落地） ——
 _res_root = Path(tempfile.mkdtemp(prefix="ace_resume_"))

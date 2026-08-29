@@ -528,6 +528,7 @@ def merge_config(args) -> Dict:
     cfg.update({k: v for k, v in {
         "base_url": args.base_url, "api_key": args.api_key, "model": args.model,
         "permission": args.permission, "project_root": args.project_root,
+        "kb_root": getattr(args, "kb", None),
     }.items() if v})
     cfg.setdefault("base_url", os.environ.get("AGENT_BASE_URL", ""))
     cfg.setdefault("api_key", os.environ.get("AGENT_API_KEY", ""))
@@ -1855,6 +1856,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                             "image": self.cfg.get("sandbox_image")},
                 # 会话事件日志（全链路）：执行层记录权限/守卫/快照/工具往返
                 "session_log": self.cfg.get("session_log"),
+                # 自定义外挂知识库（kb_search/kb_add 的根目录）
+                "kb_root": self.cfg.get("kb_root"),
             },
         )
 
@@ -2465,6 +2468,8 @@ def main() -> None:
                              "docker = 一次性容器（--network none，只挂工作目录）。"
                              "job 与 docker 都不做静默回退：拿不到边界直接报错，"
                              "绝不偷偷改回宿主执行。")
+    parser.add_argument("--kb", help="自定义外挂知识库目录（默认项目 .ace_kb/）。"
+                                     "知识库里的资料 kb_search 可检索、kb_add 可写入，跨会话持久")
     parser.add_argument("--sandbox-image", help="沙箱镜像（默认 ace-sandbox:latest，"
                                                "用 docker/Dockerfile.sandbox 构建）")
     parser.add_argument("--tools", action="store_true",

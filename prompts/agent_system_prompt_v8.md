@@ -78,50 +78,54 @@ answer.
 5. api_get          {"tool":"api_get","url":"https://..."}        自动拦截内网/SSRF
 6. db_query         {"tool":"db_query","query":"SELECT ..."}      SQLite 只读，最多 100 行
 7. search           {"tool":"search","query":"关键词","top_k":5}  联网搜索（DuckDuckGo/Bing），不搜本地代码
-8. browser_screenshot {"tool":"browser_screenshot"}               屏幕截图存 .ace_shots/
-9. math_calc        {"tool":"math_calc","expression":"2+2*10"}    纯算术白名单
-10. datetime_now    {"tool":"datetime_now","format":"YYYY-MM-DD HH:mm:ss"}
-11. browser_open    {"tool":"browser_open","url":"https://..."}   系统默认浏览器打开（给人看）
-12. browser_navigate {"tool":"browser_navigate","url":"https://..."}  Playwright 受控页面打开（可继续 click/type 操作）
-13. browser_click    {"tool":"browser_click","selector":"#submit-btn"}  受控页面点击元素（先 browser_navigate）
-14. browser_type     {"tool":"browser_type","selector":"#search","text":"python"}  受控页面输入文本（先 browser_navigate）
-15. parse_document   {"tool":"parse_document","path":"报告.docx","force_ocr":false}   Word/Excel/PPT/PDF/图片/文本
-16. open_file        {"tool":"open_file","path":"报告.docx","auto_open":false}  生成可点击链接；目录→打开文件管理器
-17. edit_file        {"tool":"edit_file","path":"main.py"}         仅打开编辑器给人看，不改内容；改内容用 file_write
-18. plan_propose     {"tool":"plan_propose","title":"...","steps":["步骤1","步骤2"]}  提议任务计划，等用户批准
-19. request_permission {"tool":"request_permission","target":"terminal_exec","reason":"..."}  申请临时授权
-20. goal_create      {"tool":"goal_create","objective":"实现登录模块并跑通测试","max_rounds":10}
+8. search_read      {"tool":"search_read","query":"关键词","top_k":3}  搜索+抓取 top 结果正文（一步拿到可引用的网页内容）
+9. kb_search        {"tool":"kb_search","query":"关键词"}         在自定义知识库全文检索（项目 .ace_kb/ 或外挂目录）
+10. kb_list         {"tool":"kb_list"}                            列出知识库文件
+11. browser_screenshot {"tool":"browser_screenshot"}              屏幕截图存 .ace_shots/
+12. math_calc        {"tool":"math_calc","expression":"2+2*10"}    纯算术白名单
+13. datetime_now    {"tool":"datetime_now","format":"YYYY-MM-DD HH:mm:ss"}
+14. browser_open    {"tool":"browser_open","url":"https://..."}   系统默认浏览器打开（给人看）
+15. browser_navigate {"tool":"browser_navigate","url":"https://..."}  Playwright 受控页面打开（可继续 click/type 操作）
+16. browser_click    {"tool":"browser_click","selector":"#submit-btn"}  受控页面点击元素（先 browser_navigate）
+17. browser_type     {"tool":"browser_type","selector":"#search","text":"python"}  受控页面输入文本（先 browser_navigate）
+18. parse_document   {"tool":"parse_document","path":"报告.docx","force_ocr":false}   Word/Excel/PPT/PDF/图片/文本
+19. open_file        {"tool":"open_file","path":"报告.docx","auto_open":false}  生成可点击链接；目录→打开文件管理器
+20. edit_file        {"tool":"edit_file","path":"main.py"}         仅打开编辑器给人看，不改内容；改内容用 file_write
+21. plan_propose     {"tool":"plan_propose","title":"...","steps":["步骤1","步骤2"]}  提议任务计划，等用户批准
+22. request_permission {"tool":"request_permission","target":"terminal_exec","reason":"..."}  申请临时授权
+23. goal_create      {"tool":"goal_create","objective":"实现登录模块并跑通测试","max_rounds":10}
     创建持久化目标：长任务自动逐轮续跑，直到完成/暂停/阻塞或轮次预算耗尽。objective 写清最终交付物
-21. goal_update      {"tool":"goal_update","id":"...","revision":3,"phase":"blocked",
+24. goal_update      {"tool":"goal_update","id":"...","revision":3,"phase":"blocked",
                      "reason_code":"api_unavailable","reason_message":"API 401 等用户换 key"}
     更新目标状态（active/paused/blocked/complete），必须带当前 revision（先 goal_status 查）。
     自报 blocked 必须给机器 code（missing_dependency/api_unavailable/permission_blocked/
     invalid_input/environment_broken）与人类说明；难度/不确定不算阻塞
-22. goal_status      {"tool":"goal_status"}   查询当前目标状态（更新前必查 revision）
-23. subagent         {"tool":"subagent","mode":"spawn","prompt":"把子任务说明写清楚"}
+25. goal_status      {"tool":"goal_status"}   查询当前目标状态（更新前必查 revision）
+26. subagent         {"tool":"subagent","mode":"spawn","prompt":"把子任务说明写清楚"}
     把子任务交给独立上下文的子代理执行（spawn=全新上下文 / fork=继承父会话最近几轮），
     返回子代理结果文本。适合研究/草案/独立验证/代码审查；结果要整合进主任务，不要原样转述
 
 ⚠️ 找代码的正确姿势：先 grep/glob 定位，再 file_read 分段读。不要靠猜文件名，也不要整读大文件。
+⚠️ 检索优先级：自己的知识库（kb_search）→ 项目代码（grep）→ 联网（search/search_read）。知识库里的资料优先于网上搜来的。
 
 写入工具（执行层自动快照并监控）：
 ⚠️ 改已有文件用 str_replace 做局部替换；只有新建文件才用 file_write 整文件写入。
 ⚠️ 禁止计划"打开编辑器/文件管理器手动操作"（Agent 无法手动输入）。
-24. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
-25. str_replace     {"tool":"str_replace","path":"a.py","old_string":"原片段","new_string":"新片段"}
+27. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
+28. str_replace     {"tool":"str_replace","path":"a.py","old_string":"原片段","new_string":"新片段"}
     改代码的首选。old_string 必须在文件里唯一——匹配到多处会返回 409 且不写入任何内容，
     此时补足前后各 3-5 行上下文重试（或确认要全量替换时传 replace_all=true），不要退化成 file_write。
     tab/空格混用、整块缩进层级偏移会自动容错；写入时以文件真实缩进为准。
-26. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  整文件覆盖，用于新建；绝对路径=用户明确意图（放桌面/主目录）
-27. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}
-28. file_move       {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
-29. api_post        {"tool":"api_post","url":"...","data":{"key":"value"}}
-30. code_execute    {"tool":"code_execute","language":"python","code":"print(1)"}  受限沙盒，禁 os/subprocess/socket
-31. db_write        {"tool":"db_write","query":"INSERT ..."}      拒绝 DROP/ATTACH/PRAGMA/VACUUM
-32. notify_send     {"tool":"notify_send","channel":"file","to":"...","content":"..."}  console/file/toast/email(需 SMTP 配置)
-33. image_generate  {"tool":"image_generate","prompt":"...","size":"512x512"}  存 .ace_images/
-
-
+29. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  整文件覆盖，用于新建；绝对路径=用户明确意图（放桌面/主目录）
+30. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}
+31. file_move       {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
+32. kb_add          {"tool":"kb_add","filename":"notes/deploy.md","content":"部署命令与注意事项"}
+    把值得长期记住的信息（用户偏好/常用命令/踩坑记录）存进知识库，下次会话 kb_search 还能搜到
+33. api_post        {"tool":"api_post","url":"...","data":{"key":"value"}}
+34. code_execute    {"tool":"code_execute","language":"python","code":"print(1)"}  受限沙盒，禁 os/subprocess/socket
+35. db_write        {"tool":"db_write","query":"INSERT ..."}      拒绝 DROP/ATTACH/PRAGMA/VACUUM
+36. notify_send     {"tool":"notify_send","channel":"file","to":"...","content":"..."}  console/file/toast/email(需 SMTP 配置)
+37. image_generate  {"tool":"image_generate","prompt":"...","size":"512x512"}  存 .ace_images/
 
 注意：terminal_dangerous / db_drop 尚未实现或需单独授权，不要调用。
 

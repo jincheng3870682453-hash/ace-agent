@@ -413,6 +413,7 @@ class ExecutionLayer:
             egress_allowlist=(config or {}).get("egress_allowlist"),
             sandbox_policy=(config or {}).get("sandbox_policy"),
             approval_hook=self._exec_approval_hook,
+            kb_root=(config or {}).get("kb_root"),
         )
         # 逐次确认闸门是否已就本轮调用放行；供 _exec_approval_hook 读取。
         self._round_confirmed = False

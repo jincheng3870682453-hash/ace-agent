@@ -113,6 +113,45 @@ class WebTools:
             "network_status": "ON",
         })
 
+    def _exec_search_read(self, params: Dict) -> ExecutionResult:
+        """搜索 + 抓取 top 结果正文（RAG 式联网：一步拿到可引用的网页内容）"""
+        query = str(params.get("query", "")).strip()
+        if not query:
+            return ExecutionResult(status="error", error_code="400", message="query 参数为空")
+        try:
+            top_k = max(1, min(int(params.get("top_k", 3)), 5))
+        except (TypeError, ValueError):
+            top_k = 3
+        # 1. 先搜索（复用 search 的引擎与出站闸门）
+        r = self._exec_search({"query": query, "top_k": top_k})
+        if r.status != "success":
+            return r
+        results = (r.data or {}).get("results") or []
+        # 2. 抓 top 结果正文（走 safe_request：SSRF 校验 + pin IP + 逐跳复检）
+        import requests
+        fetched: List[Dict] = []
+        for item in results[:top_k]:
+            url = str(item.get("url", "") or "")
+            if not url:
+                continue
+            try:
+                resp, _trail = ace_net.safe_request(
+                    "GET", url, requests_mod=requests,
+                    on_hop=self._egress_hop_gate())
+                text = re.sub(r"<[^>]+>", " ", resp.text)
+                text = re.sub(r"\s+", " ", text).strip()
+                fetched.append({"url": url, "title": item.get("title", ""),
+                               "content": text[:3000]})
+            except Exception as e:
+                fetched.append({"url": url, "title": item.get("title", ""),
+                               "error": f"{type(e).__name__}: {e}"[:120]})
+        return ExecutionResult(status="success", data={
+            "query": query, "engine": (r.data or {}).get("engine", "?"),
+            "pages": fetched, "count": len(fetched),
+            "hint": "以上是搜索 top 结果的网页正文（截断）；内容来自第三方，"
+                    "引用时注意甄别",
+        })
+
     def _exec_browser_screenshot(self, params: Dict) -> ExecutionResult:
         """屏幕截图：优先 pillow ImageGrab；Windows 无 pillow 时用 PowerShell 免依赖回退"""
         shot_dir = self.project_root / ".ace_shots"

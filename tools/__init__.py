@@ -15,10 +15,12 @@ from tools.notify_tools import NotifyTools
 from tools.parse_tools import ParseTools
 from tools.goal_tools import GoalTools
 from tools.subagent_tools import SubagentTools
+from tools.kb_tools import KbTools
 
 
 class ToolExecutor(ToolExecutorBase, FileTools, CodeTools, WebTools,
-                   DbTools, NotifyTools, ParseTools, GoalTools, SubagentTools):
+                   DbTools, NotifyTools, ParseTools, GoalTools, SubagentTools,
+                   KbTools):
     """实际执行工具调用：组合各工具域 mixin"""
     pass
 

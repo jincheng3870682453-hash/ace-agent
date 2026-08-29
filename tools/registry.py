@@ -307,6 +307,41 @@ TOOL_SPECS: List[ToolSpec] = [
                 '"prompt":"审查这段代码的安全问题：\\n\\n```python\\n..."}',
     ),
 
+    # —— 自定义外挂知识库（用户自己的资料，跨会话持久） ——
+    ToolSpec(
+        name="kb_search", permission=PERM_READ, handler="_exec_kb_search",
+        description="在自定义知识库中全文检索（query 为关键词或正则）。"
+                    "知识库 = 项目 .ace_kb/ 或配置的外挂目录，是用户自己的资料"
+                    "（笔记/文档/常用代码段），跨会话持久。检索到后内容作为资料参考",
+        parameters=_obj({"query": {"type": "string"}, "max_results": {"type": "integer"}},
+                        ["query"]),
+        example='{"tool":"kb_search","query":"SQL 注入 防护"}',
+    ),
+    ToolSpec(
+        name="kb_add", permission=PERM_WRITE, handler="_exec_kb_add",
+        description="向自定义知识库添加资料/笔记（filename + content）。"
+                    "把值得长期记住的信息（用户偏好/常用命令/踩坑记录）存进知识库，"
+                    "下次会话 kb_search 还能搜到。filename 如 notes/sql-tips.md",
+        parameters=_obj({"filename": {"type": "string"}, "content": {"type": "string"}},
+                        ["filename", "content"]),
+        example='{"tool":"kb_add","filename":"notes/deploy.md",'
+                '"content":"部署命令：... 注意事项：..."}',
+    ),
+    ToolSpec(
+        name="kb_list", permission=PERM_READ, handler="_exec_kb_list",
+        description="列出知识库中的文件（含大小）",
+        parameters=_obj({}),
+        example='{"tool":"kb_list"}',
+    ),
+    ToolSpec(
+        name="search_read", permission=PERM_READ, handler="_exec_search_read",
+        description="搜索并抓取 top 结果网页正文（RAG 式联网：一步拿到可引用的内容）。"
+                    "比 search 更进一步——不需要先 search 再 api_get 两步",
+        parameters=_obj({"query": {"type": "string"}, "top_k": {"type": "integer"}},
+                        ["query"]),
+        example='{"tool":"search_read","query":"python async 最佳实践","top_k":3}',
+    ),
+
     # —— 高危：已登记但未实现，需 full 权限（占位，防止名字被误当未知工具而静默通过分级）——
     ToolSpec(name="terminal_dangerous", permission=PERM_HIGH_RISK,
              description="高危终端操作（未实现，需 full 权限）", expose=False),

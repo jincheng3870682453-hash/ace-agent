@@ -14,6 +14,7 @@ __pycache__/
 .ace_images/
 .ace_goals.json
 .ace_sessions/
+.ace_kb/
 agent.db
 notifications.log
 *.jsonl

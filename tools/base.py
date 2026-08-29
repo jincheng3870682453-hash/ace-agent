@@ -116,11 +116,14 @@ class ToolExecutorBase:
                  approval_policy: Optional[str] = None,
                  sandbox_policy: Optional[str] = None,
                  egress_allowlist=None,
-                 approval_hook=None):
+                 approval_hook=None,
+                 kb_root: Optional[str] = None):
         self.project_root = Path(project_root).resolve()
         self.sandbox_base = sandbox_base  # code_execute 沙箱临时目录基路径（None = 系统临时目录）
         self.confine_files = confine_files  # 文件工具是否强制限制在项目目录内
         self.email_smtp = email_smtp or {}  # {"host","port","user","password","use_tls"}
+        # 自定义外挂知识库：config kb_root 或 --kb；None = 项目 .ace_kb/（kb_tools 懒解析）
+        self.kb_root = kb_root
         # docker 一次性容器执行层（None = 未启用，命令仍在宿主跑）。
         # 只有 terminal_exec / code_execute 走它——那两个才是真正需要内核边界的地方。
         self.docker_sandbox = build_sandbox(sandbox, str(self.project_root))
