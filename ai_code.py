@@ -1767,8 +1767,12 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         self.cfg["session_log"] = str(Path(self.cfg.get("project_root", "."))
                                       / ".ace_sessions"
                                       / f"{int(time.time() * 1000)}.jsonl")
+        self._resumed_from: Optional[str] = None
         self._init_execution_layer()
         self.session_log = self.el.session_log
+        # 会话恢复：从上次会话的事件日志重建消息历史（DSH「消息历史 = 日志派生」）。
+        # 重启后对话接着来，而不是从零开始。
+        self._resume_previous_session()
         # 子代理钩子：执行层的 subagent 工具通过它调用真实模型（与 approval_hook 同模式）
         self.el.executor.subagent_hook = self._run_subagent
         # 目标状态机：每次启动自动 disarm（保留 phase，但不无授权续跑；
@@ -1777,6 +1781,31 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             self.el.goal_store.disarm()
         except Exception:
             pass
+
+    def _resume_previous_session(self) -> None:
+        """启动时从 .ace_sessions/ 里最近一次**非本次**会话日志重建消息历史。
+
+        事件日志是事实源：上次会话的 user/assistant 事件逐条在盘上，replay_messages
+        就能重建"上次聊到哪"。恢复上限 20 条（10 轮），防止旧会话无限膨胀。
+        """
+        try:
+            sess_dir = Path(self.cfg.get("project_root", ".")) / ".ace_sessions"
+            if not sess_dir.is_dir():
+                return
+            current = Path(self.cfg["session_log"])
+            candidates = [p for p in sorted(sess_dir.glob("*.jsonl"),
+                                            key=lambda p: p.stat().st_mtime, reverse=True)
+                          if p != current]
+            if not candidates:
+                return
+            from ace_sessionlog import SessionLog as _SL
+            prev = _SL(str(candidates[0]))
+            history = prev.replay_messages()[-20:]
+            if history:
+                self.messages = history
+                self._resumed_from = candidates[0].name
+        except Exception:
+            self._resumed_from = None
 
     def _init_execution_layer(self) -> None:
         self.el = ExecutionLayer(
@@ -2267,6 +2296,11 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         # 启动自检：配置防蠢提示
         for hint in _config_sanity_hints(self.cfg):
             print(c("yellow", f"  ⚠ {hint}"))
+
+        # 会话恢复提示：从上次会话日志重建的消息历史
+        if getattr(self, "_resumed_from", None):
+            print(c("dim", f"  ↻ 已恢复上次会话（{len(self.messages)} 条消息，"
+                           f"{self._resumed_from}），/clear 可清空"))
 
         # 目标状态机：重启后自动 disarmed（不无授权续跑），提示未完成目标
         try:

@@ -3636,6 +3636,29 @@ check("CLI 子代理 fork 返回结果且日志记录 subagent 请求",
               if e.get("kind") == "request/snapshot"),
       (_ok_sa, _txt_sa[:40]))
 
+# —— 会话恢复：重启后从上次会话日志重建消息历史（DSH「历史 = 日志派生」落地） ——
+_res_root = Path(tempfile.mkdtemp(prefix="ace_resume_"))
+_cli_r1 = ai_code.AgentCLI({"project_root": str(_res_root), "permission": "write",
+                            "bait": False, "base_url": "", "api_key": "",
+                            "model": "m1", "tools": False}, mock=True)
+with contextlib.redirect_stdout(io.StringIO()):
+    _cli_r1.converse("第一轮问题", echo_input=False)
+    _cli_r1.converse("第二轮问题", echo_input=False)
+check("第一次会话产生日志（含 user/assistant）",
+      _cli_r1.session_log.count() >= 4
+      and any(e["kind"] == K_USER_MESSAGE for e in _cli_r1.session_log.events()), "")
+# 第二次构造（同项目根）= 重启 → 消息从日志恢复
+_cli_r2 = ai_code.AgentCLI({"project_root": str(_res_root), "permission": "write",
+                            "bait": False, "base_url": "", "api_key": "",
+                            "model": "m1", "tools": False}, mock=True)
+check("重启后消息历史从上次日志恢复（含两轮对话）",
+      len(_cli_r2.messages) >= 4
+      and any(m.get("content") == "第一轮问题" for m in _cli_r2.messages)
+      and any(m.get("content") == "第二轮问题" for m in _cli_r2.messages),
+      [m.get("content", "")[:20] for m in _cli_r2.messages][-6:])
+check("恢复标记 _resumed_from 已设置", _cli_r2._resumed_from is not None,
+      _cli_r2._resumed_from)
+
 # ============================================================
 
 
