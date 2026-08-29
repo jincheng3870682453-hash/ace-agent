@@ -1323,30 +1323,66 @@ class _SlashCommands:
 
     # ---------- 子代理（/subagent 工具的执行钩子，由执行层回调） ----------
 
+    def _build_subagent_system(self) -> str:
+        return (load_system_prompt(tools_mode=True)
+                + f"\n【工作目录】{os.path.abspath(self.cfg['project_root'])}。"
+                  "你是被父代理派来的子代理：专注完成上面的子任务，可以调用工具（终端/文件/代码执行），"
+                  "完成后给出结论。禁止调用 subagent（不允许再开子代理），禁止 plan_propose 和 "
+                  "request_permission（子代理环境无人批准，需要批准的操作换用不需要批准的方式）。")
+
     def _run_subagent(self, mode: str, prompt: str):
-        """执行 subagent 工具：spawn=全新上下文；fork=继承父会话最近几轮。
-        子代理不调工具（阶段 1），输出经 sanitize 清理协议残留后作为结果回传。
-        返回 (ok, text)。"""
-        msgs: List[Dict] = []
-        if mode == "fork":
-            msgs = list(self.messages[-6:])   # 最近几轮上下文（3 个来回）
-        msgs.append({"role": "user", "content": prompt})
-        system = (load_system_prompt(tools_mode=False)
-                  + f"\n【工作目录】{os.path.abspath(self.cfg['project_root'])}。"
-                    "你是被父代理派来的子代理，专注完成上面的子任务，直接给出结果，不要输出工具调用。")
+        """执行 subagent 工具（阶段 2：子代理拥有自己的工具执行循环）。
+
+        spawn=全新上下文；fork=继承父会话最近 6 轮。子代理有独立的 ExecutionLayer
+        （独立消息历史、独立日志、独立权限裁决），最多 8 轮内 模型↔工具 循环，
+        直到给出最终结论。结果作为文本回传父代理整合。
+        返回 (ok, text)。
+        """
         try:
+            root = self.cfg.get("project_root", ".")
+            sub_slog = str(Path(root) / ".ace_sessions"
+                           / f"{int(time.time() * 1000)}_sub.jsonl")
+            sub_el = ExecutionLayer(
+                project_root=root,
+                permission_level=str(self.cfg.get("permission", "readonly")),
+                config={"bait": {"enabled": False},
+                        "session_log": sub_slog})
+            sub_el.executor.subagent_hook = None   # 子代理不允许再开子代理（防无限递归）
+            sub_sys = self._build_subagent_system()
+            msgs: List[Dict] = list(self.messages[-6:]) if mode == "fork" else []
+            msgs.append({"role": "user", "content": prompt})
             # 会话日志：记录子代理请求（带 subagent 标记，replay 时可区分）
             self.session_log.record_request(
                 model=self.client.model, base_url=self.client.base_url,
                 permission=str(self.cfg.get("permission", "readonly")),
-                system_len=len(system), messages_count=len(msgs),
-                subagent=mode)
-            output = self.client.stream_generate(system, msgs)
-            self.session_log.record_assistant(output)
+                system_len=len(sub_sys), messages_count=len(msgs), subagent=mode)
+            for _r in range(1, 9):
+                output = self.client.stream_generate(sub_sys, msgs)
+                self.session_log.record_assistant(output)
+                result = sub_el.process_agent_output(output, prompt)
+                status = result["status"]
+                if status == "FINAL_REPLY":
+                    return True, result["message"]
+                if status in ("PLAN_PROPOSED", "PERMISSION_REQUEST"):
+                    # 子代理环境无人批准：明确告知后让它换方式
+                    msgs.append({"role": "assistant", "content": output})
+                    msgs.append({"role": "user", "content":
+                                 "子代理环境无人批准计划/授权。不要再用 plan_propose / "
+                                 "request_permission，改用不需要批准的方式完成，或直接给出结论。"})
+                    continue
+                if status == "SUCCESS":
+                    msgs.append({"role": "assistant", "content": output})
+                    msgs.append({"role": "user", "content":
+                                 PROMPT_TOOL_RESULT.format(rendered=render_tool_result(result))})
+                    continue
+                # 错误态：回喂修正
+                msgs.append({"role": "assistant", "content": output})
+                msgs.append({"role": "user", "content":
+                             PROMPT_ERROR_RETRY.format(rendered=render_result(result))})
+                continue
+            return False, "（子代理达到 8 轮上限未给出结论）"
         except Exception as e:
-            return False, f"子代理模型调用失败: {type(e).__name__}: {e}"
-        text = sanitize_plain_content(output)
-        return bool(text.strip()), (text or "（子代理未返回内容）")
+            return False, f"子代理执行失败: {type(e).__name__}: {e}"
 
     # ---------- 会话审计（/audit：从事件日志展示全链路） ----------
 

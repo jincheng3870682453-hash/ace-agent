@@ -3636,6 +3636,19 @@ check("CLI 子代理 fork 返回结果且日志记录 subagent 请求",
               if e.get("kind") == "request/snapshot"),
       (_ok_sa, _txt_sa[:40]))
 
+# 阶段 2：子代理拥有自己的工具执行循环（mock 第一轮 datetime_now → 子执行层执行）
+check("子代理返回的是执行层最终回复（工具循环已跑通）",
+      _ok_sa and ("当前时间是" in _txt_sa or _txt_sa.strip() != ""), _txt_sa[:80])
+_sub_files = list(Path(_cli_sa.cfg["project_root"]).glob(".ace_sessions/*_sub.jsonl"))
+check("子代理执行层有独立日志（工具往返可审计）",
+      len(_sub_files) >= 1, [str(f) for f in _sub_files])
+if _sub_files:
+    from ace_sessionlog import SessionLog as _SL2  # noqa: E402
+    _sub_log = _SL2(str(_sub_files[-1]))
+    _sub_kinds = {e["kind"] for e in _sub_log.events()}
+    check("子代理日志含工具往返（tool/call + tool/result）",
+          _K_CALL in _sub_kinds and K_TOOL_RESULT in _sub_kinds, sorted(_sub_kinds))
+
 # —— 会话恢复：重启后从上次会话日志重建消息历史（DSH「历史 = 日志派生」落地） ——
 _res_root = Path(tempfile.mkdtemp(prefix="ace_resume_"))
 _cli_r1 = ai_code.AgentCLI({"project_root": str(_res_root), "permission": "write",
