@@ -1058,7 +1058,7 @@ class _AtCommands:
             return
         if len(content) > 4000:
             content = content[:4000] + "\n…(已截断)"
-        self.context_refs.append(f"📄 {p}\n{content}")
+        self.context_refs.append(f"{p}\n{content}")
         self.context_refs = self.context_refs[-3:]
         print(c("green", t("at_file_added", path=p, n=len(content))))
 
@@ -1077,7 +1077,7 @@ class _AtCommands:
             return
         if len(items) > 30:
             items = items[:30] + ["…(更多)"]
-        self.context_refs.append(f"📁 {p}\n" + "\n".join(items))
+        self.context_refs.append(f"{p}\n" + "\n".join(items))
         self.context_refs = self.context_refs[-3:]
         print(c("green", t("at_folder_added", path=p, n=len(items))))
 
@@ -1687,19 +1687,20 @@ class _LandingUI:
         self._read_key()
 
     def _banner_extras(self) -> List[str]:
-        """启动信息行：沙箱档位 / 知识库 / 会话日志（一眼看清当前运行环境）"""
+        """启动信息行：沙箱档位 / 知识库 / 会话日志（一眼看清当前运行环境）。
+        刻意不用 emoji：Windows 旧终端（conhost）会渲染成方框。"""
         lines = []
         sandbox = str(self.cfg.get("sandbox", "off") or "off")
         if sandbox == "job":
-            lines.append(c("dim", f"  🛡 沙箱: Job Object（Windows 进程树/资源隔离）"))
+            lines.append(c("dim", "  沙箱: Job Object（Windows 进程树/资源隔离）"))
         elif sandbox == "docker":
-            lines.append(c("dim", f"  🛡 沙箱: Docker 一次性容器（network none）"))
+            lines.append(c("dim", "  沙箱: Docker 一次性容器（network none）"))
         else:
-            lines.append(c("dim", f"  🛡 沙箱: off（Python 层策略校验，无内核边界）"))
+            lines.append(c("dim", "  沙箱: off（Python 层策略校验，无内核边界）"))
         kb = self.cfg.get("kb_root")
-        lines.append(c("dim", f"  📚 知识库: {kb or (os.path.abspath(self.cfg['project_root']) + os.sep + '.ace_kb')}"
+        lines.append(c("dim", f"  知识库: {kb or (os.path.abspath(self.cfg['project_root']) + os.sep + '.ace_kb')}"
                               f"{'（外挂）' if kb else ''}"))
-        lines.append(c("dim", f"  📋 会话日志: .ace_sessions/（/audit 查看全链路）"))
+        lines.append(c("dim", "  会话日志: .ace_sessions/（/audit 查看全链路）"))
         return lines
 
     def _draw_landing(self, sel: int) -> None:
@@ -1940,7 +1941,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 click = f"\x1b]8;;{uri}\x1b\\{val}\x1b]8;;\x1b\\"
             else:
                 click = val
-            print(c("dim", f"  🔗 {label}: {click}"))
+            print(c("dim", f"  {label}: {click}"))
 
     # ---------- 对话循环 ----------
 
@@ -2116,7 +2117,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 hint = _model_error_hint(e)
                 self.session_log.record_model_error(str(e), hint)
                 print(c("red", "\n" + t("model_call_failed", err=e)
-                        + (f"\n  💡 {hint}" if hint else "")))
+                        + (f"\n  提示: {hint}" if hint else "")))
                 return
             # 状态行/流式正文收尾换行
             if disp["state"]["state"] in ("thinking", "tool"):
@@ -2239,7 +2240,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 _g = self.el.goal_store.start_round()
                 if _g is None:
                     return
-                print(c("dim", f"  ⏭ 目标续跑 R{_g.rounds_started}/{_g.max_rounds}"
+                print(c("dim", f"  目标续跑 R{_g.rounds_started}/{_g.max_rounds}"
                                f"：{_g.objective[:60]}"))
                 self.session_log.record_goal_round(_g.rounds_started, _g.max_rounds)
                 next_user = (f"【目标续跑】目标：{_g.objective}\n"
@@ -2363,7 +2364,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
 
         # 会话恢复提示：从上次会话日志重建的消息历史
         if getattr(self, "_resumed_from", None):
-            print(c("dim", f"  ↻ 已恢复上次会话（{len(self.messages)} 条消息，"
+            print(c("dim", f"  已恢复上次会话（{len(self.messages)} 条消息，"
                            f"{self._resumed_from}），/clear 可清空"))
 
         # 目标状态机：重启后自动 disarmed（不无授权续跑），提示未完成目标
@@ -2373,7 +2374,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             pass
         _g = self.el.goal_store.snapshot()
         if _g and _g["phase"] in ("active", "paused", "blocked"):
-            print(c("dim", f"  📌 有未完成目标（{_g['phase']}）："
+            print(c("dim", f"  有未完成目标（{_g['phase']}）："
                            f"{_g['objective'][:50]}{'…' if len(_g['objective']) > 50 else ''}"
                            f"  /goal 查看或恢复"))
 
@@ -2428,7 +2429,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 )
                 print(c("dim", "  ✓ 实时补全已启用（输入 / 或 @ 弹出菜单）"))
             except ImportError:
-                print(c("dim", "  💡 提示: 运行 ace --install-ui 一键安装实时补全依赖（Claude Code 同款 / 弹窗菜单）"))
+                print(c("dim", "  提示: 运行 ace --install-ui 一键安装实时补全依赖（Claude Code 同款 / 弹窗菜单）"))
             except Exception as e:
                 # 构造失败（终端/版本兼容等）：降级为普通 input()，但明示原因便于排查
                 print(c("yellow", f"  ⚠ 补全菜单未启用（{type(e).__name__}: {e}），已降级为普通输入"))
