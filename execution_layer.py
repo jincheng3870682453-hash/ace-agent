@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 
 from tools import ExecutionResult, ToolExecutor, repair_backslash_json
 from ace_isolation import wrap_untrusted
+from ace_sessionlog import (K_PERMISSION, K_SNAPSHOT_CREATE, K_SNAPSHOT_ROLLBACK,
+                            K_TOOL_CALL, K_TOOL_RESULT, SessionLog)
 import ace_execpolicy as execpolicy  # noqa: E402
 
 # ============================================================
@@ -418,6 +420,10 @@ class ExecutionLayer:
         self._approved_prefixes: List[str] = []
         # 目标状态机（持久化长任务）：CLI 轮次驱动与工具共用同一个 store
         self.goal_store = self.executor._goal_store()
+        # 会话事件日志（全链路）：CLI 通过 config["session_log"] 注入 path；None = 禁用。
+        # 执行层记录权限裁决/守卫/快照/工具往返，CLI 记录模型请求/输出 —— 同一份事实源。
+        _slog_path = (config or {}).get("session_log")
+        self.session_log = SessionLog(_slog_path) if _slog_path else None
 
 
         self.parser = AgentOutputParser()
@@ -688,6 +694,9 @@ class ExecutionLayer:
                 if len(preview) > 300:
                     preview = preview[:300] + " …（已截断）"
                 self.pending_permission = {"tool": tool_name, "reason": preview}
+                if self.session_log:
+                    self.session_log.record_permission(
+                        tool_name, "confirm", self.permission.level, preview[:100])
                 return {
                     "status": "PERMISSION_REQUEST",
                     "tool": tool_name,
@@ -697,6 +706,9 @@ class ExecutionLayer:
                     **route_meta,
                 }
         if not self.permission.can_execute(tool_name):
+            if self.session_log:
+                self.session_log.record_permission(
+                    tool_name, "denied", self.permission.level)
             return {
                 "status": "403",
                 "message": f"权限不足: 工具 '{tool_name}' 需要更高权限",
@@ -704,6 +716,9 @@ class ExecutionLayer:
                 "instruction": "请调用 request_permission 向用户申请该工具的临时授权",
                 **route_meta,
             }
+        if self.session_log:
+            self.session_log.record_permission(
+                tool_name, "allowed", self.permission.level)
 
         # 6. code_execute 专属安全闸门：诱饵验证 + AST 检测（work.py）
         gate_warnings: Optional[Dict] = None
@@ -719,12 +734,21 @@ class ExecutionLayer:
             try:
                 round_snapshot_id = self.guardian.snapshot(
                     f"before_{tool_name}_{int(time.time())}")
+                if self.session_log and round_snapshot_id:
+                    self.session_log.record_snapshot(K_SNAPSHOT_CREATE,
+                                                     round_snapshot_id, tool_name)
             except Exception:
                 round_snapshot_id = None
         self.current_snapshot_id = round_snapshot_id
 
-        # 8. 执行工具
+        # 8. 执行工具（全链路日志：调用原始参数 + 结果）
+        if self.session_log:
+            self.session_log.record_tool_call(
+                tool_name, {k: v for k, v in tool_call.items() if k != "tool"})
         result = self.executor.execute(tool_call)
+        if self.session_log:
+            self.session_log.record_tool_result(
+                tool_name, result.status, result.message)
 
         # 9. L4 守门检测（gateway_v2 InstinctGuard，喂原始值避免 JSON 转义漏检；
         #    代码风格规则仅作用于生成/写入类工具，读文件等输出只过文本规则）
@@ -996,6 +1020,9 @@ class ExecutionLayer:
         except Exception:
             pass
         self.violation_count += 1
+        if self.session_log:
+            self.session_log.record_guard(guard_result.failed_rule,
+                                          guard_result.action, str(guard_result.details)[:200])
         return {
             "status": "GUARD_VIOLATION",
             "message": f"守门拦截: {guard_result.failed_rule}",
@@ -1016,6 +1043,8 @@ class ExecutionLayer:
             return False
         try:
             ok = self.guardian.rollback(snapshot_id)
+            if self.session_log:
+                self.session_log.record_snapshot(K_SNAPSHOT_ROLLBACK, snapshot_id)
             if not ok:
                 print(f"警告: 快照 {snapshot_id} 回滚未完成，改动仍在磁盘上，"
                       f"备份见 .guardian/rollback_backups/", file=sys.stderr)

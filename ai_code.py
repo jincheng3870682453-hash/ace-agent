@@ -1668,12 +1668,13 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         self._ctx_nonce = secrets.token_hex(4)
         self.messages: List[Dict] = []
         self.session = {"rounds": 0, "tools": 0, "violations": 0, "start": time.time()}
+        # 会话事件日志（全链路）：CLI 建一份，传给执行层共用 —— 权限/守卫/快照/
+        # 工具往返（执行层）+ 模型请求/输出（CLI）都进同一份 append-only 事实源。
+        self.cfg["session_log"] = str(Path(self.cfg.get("project_root", "."))
+                                      / ".ace_sessions"
+                                      / f"{int(time.time() * 1000)}.jsonl")
         self._init_execution_layer()
-        # 会话事件日志（DSH「模型可见⟺可记录」）：append-only JSONL，可审计可重放。
-        # 任何到达模型的输入、模型输出、工具往返都在这里，出问题可逐事件重放。
-        self.session_log = SessionLog(str(Path(self.cfg.get("project_root", "."))
-                                          / ".ace_sessions"
-                                          / f"{int(time.time() * 1000)}.jsonl"))
+        self.session_log = self.el.session_log
         # 目标状态机：每次启动自动 disarm（保留 phase，但不无授权续跑；
         # 重启后须 /goal resume 或会话内重试才重新武装）。
         try:
@@ -1691,6 +1692,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 # docker 一次性容器执行层：mode="off" 时整块失效，行为与以前一致
                 "sandbox": {"mode": self.cfg.get("sandbox", "off"),
                             "image": self.cfg.get("sandbox_image")},
+                # 会话事件日志（全链路）：执行层记录权限/守卫/快照/工具往返
+                "session_log": self.cfg.get("session_log"),
             },
         )
 
@@ -1907,13 +1910,15 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             try:
                 # 基础提示词 + 语言/技能/引用上下文
                 system = self._build_system_prompt()
-                # 会话事件日志：记录每次模型请求的 envelope（可重建"模型看到了什么"）
+                # 会话事件日志：记录每次模型请求的 envelope 与完整系统提示词
+                # （可重建"模型看到了什么"——含 AGENTS.md/记忆注入/目标）
                 self.session_log.record_request(
                     model=self.client.model,
                     base_url=self.client.base_url,
                     permission=str(self.cfg.get("permission", "readonly")),
                     system_len=len(system),
                     messages_count=len(msgs))
+                self.session_log.record_system(system)
                 output = self.client.stream_generate(system, msgs,
                                                      on_delta=disp["on_delta"])
             except KeyboardInterrupt:
@@ -1923,6 +1928,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
             except Exception as e:
                 spinner.stop(newline=True)
                 hint = _model_error_hint(e)
+                self.session_log.record_model_error(str(e), hint)
                 print(c("red", "\n" + t("model_call_failed", err=e)
                         + (f"\n  💡 {hint}" if hint else "")))
                 return
@@ -2067,9 +2073,6 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 next_user = PROMPT_ERROR_RETRY.format(rendered=render_tool_result(result))
             else:
                 self.session["tools"] += 1
-                # 会话事件日志：记录工具往返（tool + status + message 摘要）
-                self.session_log.record_tool_result(
-                    result.get("tool", ""), result["status"], result.get("message", ""))
                 status_mark = c("green", "✓") if result["status"] == "SUCCESS" else c("yellow", "⚠")
                 line = t("tool_line", tool=result.get("tool"),
                          mark=status_mark, status=result["status"])

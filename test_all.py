@@ -3526,6 +3526,48 @@ check("mock 对话一轮后日志含 user/assistant/request",
       K_USER_MESSAGE in _kinds and K_ASSISTANT_MESSAGE in _kinds
       and K_REQUEST_SNAPSHOT in _kinds, sorted(_kinds))
 
+# —— 全链路：执行层记录权限/工具/快照（同一份事实源） ——
+from ace_sessionlog import K_PERMISSION as _K_PERM  # noqa: E402
+from ace_sessionlog import K_SYSTEM_SNAPSHOT as _K_SYS  # noqa: E402
+from ace_sessionlog import K_TOOL_CALL as _K_CALL  # noqa: E402
+from ace_sessionlog import K_SNAPSHOT_CREATE as _K_SNAP  # noqa: E402
+_slfull_root = Path(tempfile.mkdtemp(prefix="ace_slogfull_"))
+_slfull_path = str(_slfull_root / "full.jsonl")
+_el_sl = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False},
+                                "sandbox_base": str(TEST_TMP),
+                                "session_log": _slfull_path})
+check("execution_layer 持有 session_log（config 注入）",
+      _el_sl.session_log is not None, "")
+# 空项目无内容可快照（guardian 预期行为），放个种子文件让快照有内容
+(_el_sl.project_root / "seed.txt").write_text("seed", encoding="utf-8")
+# 一轮工具调用（file_write → 快照 + tool_call + tool_result）
+r = run_agent(_el_sl, "file_write", path="log_test.txt", content="x", user="全链路")
+check("工具执行成功", r["status"] == "SUCCESS", r.get("status"))
+_evs = {e["kind"] for e in _el_sl.session_log.events()}
+check("全链路事件：tool_call + tool_result + 权限放行 + 写入前快照",
+      _K_CALL in _evs and K_TOOL_RESULT in _evs and _K_PERM in _evs
+      and _K_SNAP in _evs, sorted(_evs))
+# 越权调用 → permission/decision denied
+_el_ro = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
+                        config={"bait": {"enabled": False},
+                                "session_log": _slfull_path})
+r = run_agent(_el_ro, "file_write", path="x.txt", content="x", user="全链路")
+check("readonly 下写被拒", r["status"] == "403", r.get("status"))
+_evs2 = list(_el_ro.session_log.events())
+check("越权记录 permission denied",
+      any(e["kind"] == _K_PERM and e.get("decision") == "denied"
+          and e.get("tool") == "file_write" for e in _evs2), _evs2[-3:])
+# replay_messages：从 CLI 会话日志重建消息序列（user/assistant 交替）
+_sl_msgs = _cli_log.session_log.replay_messages()
+check("replay_messages 从日志重建消息序列",
+      len(_sl_msgs) >= 1 and _sl_msgs[0]["role"] == "user"
+      and any(m["role"] == "assistant" for m in _sl_msgs), _sl_msgs[:4])
+# CLI 会话日志含 system 快照（模型看到了什么全文可重建）
+check("CLI 会话日志含 system 快照",
+      _K_SYS in {e["kind"] for e in _cli_log.session_log.events()},
+      sorted({e["kind"] for e in _cli_log.session_log.events()}))
+
 # ============================================================
 
 

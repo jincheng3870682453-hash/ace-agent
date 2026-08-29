@@ -28,9 +28,17 @@ from typing import Any, Dict, Iterator, List, Optional
 K_USER_MESSAGE = "user/message"          # 到达模型的用户输入（含注入的记忆/目标续跑）
 K_ASSISTANT_MESSAGE = "assistant/message"  # 模型本轮完整输出（原文，含协议/JSON）
 K_REQUEST_SNAPSHOT = "request/snapshot"  # 每次模型请求的 envelope 摘要（可重建"模型看到了什么"）
+K_SYSTEM_SNAPSHOT = "system/snapshot"    # 每次模型请求的完整系统提示词（含 AGENTS.md/记忆/目标）
 K_TOOL_CALL = "tool/call"                # 模型发出的工具调用（原始参数）
 K_TOOL_RESULT = "tool/result"            # 工具执行结果（状态 + 摘要）
+K_PERMISSION = "permission/decision"    # 执行层权限裁决（allow/deny/confirm/grant）
+K_GUARD = "guard/verdict"                # 守卫违规 / 诱饵 / AST 拦截
+K_SNAPSHOT_CREATE = "snapshot/create"    # 写入前快照
+K_SNAPSHOT_ROLLBACK = "snapshot/rollback"  # 回滚
 K_GOAL_ROUND = "goal/round"              # 目标轮次推进
+K_MODEL_ERROR = "model/error"            # 模型 API 调用失败
+K_COMPACTION = "compaction/event"        # 上下文压缩
+K_MODEL_SWITCH = "model/switch"          # 模型/提供商切换
 
 
 class SessionLog:
@@ -141,3 +149,45 @@ class SessionLog:
     def record_goal_round(self, rounds_started: int, max_rounds: int) -> int:
         return self.append(K_GOAL_ROUND, {
             "rounds_started": rounds_started, "max_rounds": max_rounds})
+
+    def record_system(self, system: str) -> int:
+        """每次请求的完整系统提示词（含 AGENTS.md/记忆注入/目标——"模型看到了什么"的全文）。"""
+        return self.append(K_SYSTEM_SNAPSHOT, {"system": system})
+
+    def record_permission(self, tool: str, decision: str,
+                          level: str, detail: str = "") -> int:
+        return self.append(K_PERMISSION, {
+            "tool": tool, "decision": decision, "level": level,
+            "detail": (detail or "")[:200]})
+
+    def record_guard(self, rule: str, action: str, detail: str = "") -> int:
+        return self.append(K_GUARD, {"rule": rule, "action": action,
+                                     "detail": (detail or "")[:200]})
+
+    def record_snapshot(self, kind: str, snapshot_id: str, tag: str = "") -> int:
+        return self.append(kind, {"snapshot_id": snapshot_id, "tag": tag})
+
+    def record_model_error(self, err: str, hint: str = "") -> int:
+        return self.append(K_MODEL_ERROR, {"error": (err or "")[:300],
+                                           "hint": (hint or "")[:200]})
+
+    def record_compaction(self, before: int, after: int, reason: str) -> int:
+        return self.append(K_COMPACTION, {
+            "before": before, "after": after, "reason": reason})
+
+    # ---------- 从日志重建（DSH B2：消息历史 = 日志派生，不单独存储） ----------
+
+    def replay_messages(self) -> List[Dict[str, str]]:
+        """从事件日志重建模型看到的消息序列（user/assistant 交替，按 seq 排序）。
+
+        阶段 2a 能力：消息历史是日志的派生视图 —— 审计、调试、未来的 resume
+        重放重建都从这一份事实源来，而不是各自维护一份内存副本。
+        """
+        msgs: List[Dict[str, str]] = []
+        for ev in self.events():
+            kind = ev.get("kind")
+            if kind == K_USER_MESSAGE:
+                msgs.append({"role": "user", "content": ev.get("content", "")})
+            elif kind == K_ASSISTANT_MESSAGE:
+                msgs.append({"role": "assistant", "content": ev.get("content", "")})
+        return msgs
