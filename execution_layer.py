@@ -711,11 +711,20 @@ class ExecutionLayer:
             if self.session_log:
                 self.session_log.record_permission(
                     tool_name, "denied", self.permission.level)
+            # 权限不足 → 自动弹出临时授权请求（用户 y/a/n），而不是把 403 甩回模型
+            # 让模型自己调 request_permission——小模型总是漏 target 参数，最后熔断死循环。
+            # 人批准才 grant_temp 放行一次（用后即焚），非交互 fail-close（SEC-004）。
+            preview = str(tool_call.get("command") or tool_call.get("code") or "")
+            if len(preview) > 300:
+                preview = preview[:300] + " …"
+            self.pending_permission = {"tool": tool_name, "reason": preview}
             return {
-                "status": "403",
-                "message": f"权限不足: 工具 '{tool_name}' 需要更高权限",
-                "current_permission": self.permission.get_status(),
-                "instruction": "请调用 request_permission 向用户申请该工具的临时授权",
+                "status": "PERMISSION_REQUEST",
+                "tool": tool_name,
+                "reason": preview,
+                "message": (f"权限不足: 工具 '{tool_name}' 需要更高权限"
+                            f"{'：' + preview[:100] if preview else ''}。是否临时授权？"),
+                "instruction": "等待用户确认结果：批准后重试该工具；拒绝则换其他方式",
                 **route_meta,
             }
         if self.session_log:

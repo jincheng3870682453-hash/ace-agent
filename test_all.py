@@ -255,7 +255,8 @@ el = ExecutionLayer(project_root=str(sandbox_root), permission_level="readonly",
 
 # —— 权限 ——
 r = run_agent(el, "terminal_exec", command="echo hi")
-check("readonly 拒绝 terminal_exec", r["status"] == "403", r)
+check("readonly 下权限不足 → 自动临时授权请求（不再甩 403 让模型自己申请）",
+      r["status"] == "PERMISSION_REQUEST" and r["tool"] == "terminal_exec", r)
 r = run_agent(el, "terminal_view", command="whoami")
 check("terminal_view 拦截非白名单命令", r["status"] == "403", r.get("message"))
 r = run_agent(el, "terminal_view", command="echo hello world")
@@ -349,7 +350,8 @@ el_t.permission.grant_temp("terminal_exec")
 r = run_agent(el_t, "terminal_exec", command="echo ok")
 check("临时授权可用", r["status"] == "SUCCESS", r)
 r = run_agent(el_t, "terminal_exec", command="echo ok")
-check("临时授权单次有效", r["status"] == "403", r)
+check("临时授权单次有效（再次调用回到授权请求）",
+      r["status"] == "PERMISSION_REQUEST", r)
 
 # —— 主题切换记忆注入（切到无关话题不注入噪声；切回相关话题注入记忆） ——
 el_m = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly")
@@ -404,23 +406,26 @@ el_plan2 = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
 run_agent(el_plan2, "plan_propose", title="t", steps=["a"], user="u1")
 check("拒绝计划后清空", el_plan2.reject_plan() is True and el_plan2.pending_plan is None)
 
-# —— 权限申请：403 → request_permission → 批准后临时放行一次 ——
+# —— 权限申请：权限不足 → 自动授权请求（执行层弹窗，不必模型 request_permission） ——
 el_perm = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
                          config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
 r = run_agent(el_perm, "terminal_exec", command="echo ok", user="测试")
-check("readonly 下 terminal_exec 被拒", r["status"] == "403", r)
+check("readonly 下权限不足 → 自动 PERMISSION_REQUEST（不再 403 甩给模型）",
+      r["status"] == "PERMISSION_REQUEST" and r["tool"] == "terminal_exec", r)
+check("批准自动授权请求", el_perm.grant_pending_permission() is True)
+r = run_agent(el_perm, "terminal_exec", command="echo ok", user="测试")
+check("批准后临时放行一次", r["status"] == "SUCCESS", r)
+r = run_agent(el_perm, "terminal_exec", command="echo ok", user="测试")
+check("临时授权仅一次有效（再次自动请求）",
+      r["status"] == "PERMISSION_REQUEST", r)
+# request_permission 工具仍可用（模型主动申请场景）
 r = el_perm.process_agent_output(
     "<INTERNAL>\n[INTERNAL_THINKING]\n[ACT] x\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
     "<EXTERNAL>\nanswer.\n{\"tool\": \"request_permission\", \"target\": \"terminal_exec\", "
     "\"reason\": \"需要执行命令\"}\n</EXTERNAL>",
     "测试")
-check("request_permission 生成授权请求",
+check("request_permission 仍生成授权请求",
       r["status"] == "PERMISSION_REQUEST" and r["tool"] == "terminal_exec", r)
-check("批准权限申请", el_perm.grant_pending_permission() is True)
-r = run_agent(el_perm, "terminal_exec", command="echo ok", user="测试")
-check("批准后临时放行一次", r["status"] == "SUCCESS", r)
-r = run_agent(el_perm, "terminal_exec", command="echo ok", user="测试")
-check("临时授权仅一次有效", r["status"] == "403", r)
 
 # —— 同前缀免确认（借鉴 Codex exec_policy 的"同前缀不再问"，会话级） ——
 from execution_layer import command_prefix as _cp  # noqa: E402
@@ -1524,7 +1529,8 @@ check("ask_grant 解析 y/a/其他三态",
 _el_s = ExecutionLayer(project_root=str(sandbox_root), permission_level="readonly",
                        config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
 r = run_agent(_el_s, "file_write", path="sess.txt", content="a")
-check("readonly 下写工具先被 403", r["status"] == "403", r.get("message"))
+check("readonly 下写工具 → 自动授权请求",
+      r["status"] == "PERMISSION_REQUEST", r.get("message"))
 _el_s.pending_permission = {"tool": "file_write", "reason": "需要写文件"}
 _el_s.grant_pending_permission(session=True)
 r = run_agent(_el_s, "file_write", path="sess.txt", content="b")
@@ -1606,7 +1612,8 @@ check("str_replace 属写权限组（可拿到快照）",
       "str_replace" in _WT and "str_replace" not in _READ_TOOLS)
 r = run_agent(el_search, "str_replace", path="long.txt",
               old_string="line1", new_string="lineX")
-check("readonly 下 str_replace 被权限门拦截", r["status"] == "403", r.get("message"))
+check("readonly 下 str_replace 被权限门拦为授权请求",
+      r["status"] == "PERMISSION_REQUEST", r.get("message"))
 
 _edit_root = mktemp()
 el_edit = ExecutionLayer(project_root=str(_edit_root), permission_level="write",
@@ -3585,7 +3592,8 @@ _el_ro = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
                         config={"bait": {"enabled": False},
                                 "session_log": _slfull_path})
 r = run_agent(_el_ro, "file_write", path="x.txt", content="x", user="全链路")
-check("readonly 下写被拒", r["status"] == "403", r.get("status"))
+check("readonly 下写 → 自动授权请求（日志记 permission denied）",
+      r["status"] == "PERMISSION_REQUEST", r.get("status"))
 _evs2 = list(_el_ro.session_log.events())
 check("越权记录 permission denied",
       any(e["kind"] == _K_PERM and e.get("decision") == "denied"
