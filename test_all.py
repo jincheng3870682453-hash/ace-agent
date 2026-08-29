@@ -422,6 +422,58 @@ check("批准后临时放行一次", r["status"] == "SUCCESS", r)
 r = run_agent(el_perm, "terminal_exec", command="echo ok", user="测试")
 check("临时授权仅一次有效", r["status"] == "403", r)
 
+# —— 同前缀免确认（借鉴 Codex exec_policy 的"同前缀不再问"，会话级） ——
+from execution_layer import command_prefix as _cp  # noqa: E402
+from execution_layer import BANNED_AUTO_PREFIXES as _banned  # noqa: E402
+check("前缀提取：2-token 小写",
+      _cp("pip install numpy") == "pip install"
+      and _cp("Git Clone https://x") == "git clone"
+      and _cp("") == "" and _cp("python") == "python",
+      (_cp("pip install numpy"), _cp("Git Clone https://x")))
+check("BANNED 名单含危险包装（永不自动放行）",
+      "python -c" in _banned and "bash -c" in _banned
+      and "cmd /c" in _banned and "node -e" in _banned, sorted(_banned))
+
+import unittest.mock as _mockp  # noqa: E402
+from tools import ExecutionResult as _ER  # noqa: E402
+_OK_RES = _ER(status="success", data={"stdout": "", "stderr": "", "returncode": 0})
+el_pref = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                         config={"bait": {"enabled": False},
+                                 "sandbox_base": str(TEST_TMP)})
+el_pref._approved_prefixes.append("pip install")
+with _mockp.patch.object(el_pref.executor, "execute", return_value=_OK_RES):
+    r = run_agent(el_pref, "terminal_exec", command="pip install requests", user="前缀测试")
+check("同前缀命令跳过确认闸门（不再弹确认）",
+      r["status"] != "PERMISSION_REQUEST", r.get("status"))
+el_pref._approved_prefixes.clear()
+el_pref._approved_prefixes.append("pip install")
+with _mockp.patch.object(el_pref.executor, "execute", return_value=_OK_RES):
+    r = run_agent(el_pref, "terminal_exec", command="npm install x", user="前缀测试")
+check("不同前缀仍走逐次确认", r["status"] == "PERMISSION_REQUEST", r.get("status"))
+el_pref._approved_prefixes.append("python -c")
+with _mockp.patch.object(el_pref.executor, "execute", return_value=_OK_RES):
+    r = run_agent(el_pref, "terminal_exec", command="python -c 'print(1)'", user="前缀测试")
+check("BANNED 前缀确认过也不自动放行", r["status"] == "PERMISSION_REQUEST",
+      r.get("status"))
+# 确认后记住前缀：hook 在 _round_confirmed 时记一次
+el_pref2 = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                          config={"bait": {"enabled": False},
+                                  "sandbox_base": str(TEST_TMP)})
+class _V:
+    def __init__(self, norm): self.normalized = norm
+el_pref2._round_confirmed = True
+_okv = el_pref2._exec_approval_hook(_V("git pull origin main"))
+check("确认后 hook 放行并记住前缀",
+      _okv is True and "git pull" in el_pref2._approved_prefixes,
+      (el_pref2._approved_prefixes, _okv))
+el_pref2._round_confirmed = False
+check("同前缀未确认也自动放行（前缀已被记住）",
+      el_pref2._exec_approval_hook(_V("git pull upstream")) is True, "")
+el_pref2._round_confirmed = True
+el_pref2._exec_approval_hook(_V("bash -c 'rm -rf /'"))
+check("BANNED 前缀确认后不被记住", "bash -c" not in el_pref2._approved_prefixes,
+      el_pref2._approved_prefixes)
+
 # —— 五层网关 L1/L2 接入执行循环 ——
 el_route = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
                           config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})

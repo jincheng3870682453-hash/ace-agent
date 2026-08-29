@@ -159,6 +159,25 @@ AST_RULE_DESCRIPTIONS = {
     "sql_injection": "SQL 注入风险",
 }
 
+# —— 同前缀免确认（借鉴 Codex exec_policy 的"同前缀不再问"，会话级、不落盘） ——
+# 用户确认过 `pip install numpy` 后，`pip install requests` 不再弹窗；但危险包装
+# 前缀**永不**自动放行 —— 自动批准 `python -c` 等于没有审批（它正是策略层
+# 明说拦不住的等价路径，见 CONFIRM_TOOLS 注释）。
+BANNED_AUTO_PREFIXES = {
+    "bash -c", "sh -c", "zsh -c", "dash -c",
+    "python -c", "python3 -c", "py -c",
+    "node -e", "node -p", "node --eval", "node --print",
+    "cmd /c", "cmd.exe /c", "powershell", "powershell -c",
+    "pwsh", "pwsh -c", "powershell.exe",
+}
+
+
+def command_prefix(cmd: str) -> str:
+    """提取命令的 2-token 前缀（小写），用于同前缀匹配。不做 shell 解析：
+    只取前两个空白分隔 token，够用于分类，不需要（也不该）信任分词结果。"""
+    parts = (cmd or "").strip().split()
+    return " ".join(parts[:2]).lower()
+
 # 参数报错时给模型的具体示例：见文件顶部 TOOL_EXAMPLES（由注册表 example 字段派生）
 
 # terminal_view 只读白名单（修复：只读工具绝不允许 shell=True 执行任意命令）
@@ -394,6 +413,8 @@ class ExecutionLayer:
         )
         # 逐次确认闸门是否已就本轮调用放行；供 _exec_approval_hook 读取。
         self._round_confirmed = False
+        # 同前缀免确认白名单（会话级）：用户确认过的命令前缀，同前缀 prompt 档自动放行
+        self._approved_prefixes: List[str] = []
 
 
         self.parser = AgentOutputParser()
@@ -471,7 +492,27 @@ class ExecutionLayer:
         单独构造（测试和嵌入方都这么用）。那种情况下 approval_hook 是 None，
         prompt 档一律拒绝——方向朝安全。
         """
-        return self._round_confirmed
+        if self._round_confirmed:
+            # 人刚刚确认过本次调用：记住其命令前缀，后续同前缀命令免问。
+            # 只在确认当下记一次（且不在 BANNED 名单时），不重复入列。
+            prefix = command_prefix(verdict.normalized or "")
+            if prefix and prefix not in BANNED_AUTO_PREFIXES \
+                    and prefix not in self._approved_prefixes:
+                self._approved_prefixes.append(prefix)
+            return True
+        # 未确认但前缀已在本会话确认过 → 自动放行（与 CONFIRM_TOOLS 闸门同口径）
+        return self._prefix_auto_approved(verdict.normalized or "")
+
+    def _prefix_auto_approved(self, cmd: str) -> bool:
+        """前缀白名单判定：前缀已在会话内被用户确认过，且不是 BANNED 危险包装。
+
+        CONFIRM_TOOLS 闸门与 _exec_approval_hook 都走这里，保证同一条命令
+        在两个出口的判定一致。只匹配完整 2-token 前缀（pip install 不会自动
+        放行 pip uninstall）；BANNED 前缀即使被确认过也永不自动放行。
+        """
+        prefix = command_prefix(cmd)
+        return bool(prefix and prefix not in BANNED_AUTO_PREFIXES
+                    and prefix in self._approved_prefixes)
 
     # ---------- 记忆预注入（在模型生成前调用） ----------
 
@@ -630,18 +671,22 @@ class ExecutionLayer:
 
                 and tool_name not in self.permission.temp_grants
                 and tool_name in self.permission.allowed_tools(self.permission.level)):
-            preview = str(tool_call.get("command") or tool_call.get("code") or "")
-            if len(preview) > 300:
-                preview = preview[:300] + " …（已截断）"
-            self.pending_permission = {"tool": tool_name, "reason": preview}
-            return {
-                "status": "PERMISSION_REQUEST",
-                "tool": tool_name,
-                "reason": preview,
-                "message": f"'{tool_name}' 需要用户逐次确认: {preview}",
-                "instruction": "等待用户确认结果，不要重复调用，也不要改用其他工具绕过确认",
-                **route_meta,
-            }
+            # 同前缀免确认：用户之前确认过同前缀命令（且不是 BANNED 危险包装）→ 跳过确认闸门。
+            # 确认逻辑与 _exec_approval_hook 共用同一套前缀判定，避免两处口径漂移。
+            _cmd = str(tool_call.get("command") or tool_call.get("code") or "")
+            if not self._prefix_auto_approved(_cmd):
+                preview = _cmd
+                if len(preview) > 300:
+                    preview = preview[:300] + " …（已截断）"
+                self.pending_permission = {"tool": tool_name, "reason": preview}
+                return {
+                    "status": "PERMISSION_REQUEST",
+                    "tool": tool_name,
+                    "reason": preview,
+                    "message": f"'{tool_name}' 需要用户逐次确认: {preview}",
+                    "instruction": "等待用户确认结果，不要重复调用，也不要改用其他工具绕过确认",
+                    **route_meta,
+                }
         if not self.permission.can_execute(tool_name):
             return {
                 "status": "403",
