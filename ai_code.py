@@ -1111,6 +1111,7 @@ class _SlashCommands:
         "/model": "cmd_model",
         "/provider": "cmd_provider",
         "/config": "cmd_config",
+        "/goal": "cmd_goal",
         "/open": "cmd_open",
         "/edit": "cmd_edit",
         "/search": "cmd_search",
@@ -1214,6 +1215,8 @@ class _SlashCommands:
             self._handle_provider(parts)
         elif name == "/config":
             self._config_wizard()
+        elif name == "/goal":
+            self._show_goal(parts)
         elif name == "/open":
             self._open_file(" ".join(parts[1:]), prefer_editor=False)
         elif name == "/edit":
@@ -1263,6 +1266,56 @@ class _SlashCommands:
             print(c("red", f"文件不存在: {p}"))
             return None
         return p
+
+    # ---------- 目标状态机（/goal：查看 / 恢复 / 暂停 / 完成） ----------
+
+    def _show_goal(self, parts: List[str]) -> None:
+        """/goal：无参查看；resume 恢复（重启后自动 disarmed）；pause 暂停；complete 完成"""
+        from tools.goal_tools import GoalError  # noqa: E402
+        store = self.el.goal_store
+        snap = store.snapshot()
+        action = parts[1].lower() if len(parts) > 1 else ""
+        try:
+            if action == "resume":
+                if snap is None:
+                    print(c("yellow", "当前没有目标。用 goal_create 创建一个（或直接对话让 Agent 创建）。"))
+                    return
+                store.resume(snap["id"], snap["revision"])
+                print(c("green", f"目标已恢复：{snap['objective'][:60]}（armed，可自动续跑）"))
+                return
+            if action == "pause":
+                if snap is None or snap["phase"] != "active":
+                    print(c("yellow", "没有可暂停的活动目标。"))
+                    return
+                store.update(snap["id"], snap["revision"], phase="paused")
+                print(c("green", "目标已暂停。"))
+                return
+            if action == "complete":
+                if snap is None or snap["phase"] != "active":
+                    print(c("yellow", "没有可完成的活动目标。"))
+                    return
+                store.update(snap["id"], snap["revision"], phase="complete")
+                print(c("green", "目标已标记完成。"))
+                return
+            if action not in ("", "status"):
+                print(c("yellow", "用法: /goal [resume|pause|complete|status]"))
+                return
+        except GoalError as e:
+            print(c("red", f"goal: {e.message}"))
+            return
+        if snap is None:
+            print(c("dim", "当前没有活动目标（goal_create 创建，或对话中让 Agent 创建）。"))
+            return
+        phase = snap["phase"]
+        armed = "armed" if snap["armed"] else "disarmed（重启后需 /goal resume）"
+        print(c("bold", "目标状态"))
+        print(f"  {c('magenta', 'objective')}: {snap['objective']}")
+        print(f"  {c('magenta', 'phase')}: {phase} | {c('magenta', 'rounds')}: "
+              f"{snap['rounds_started']}/{snap['max_rounds']} | {c('magenta', 'armed')}: {armed}")
+        if snap.get("blocked_reason_code"):
+            print(f"  {c('red', 'blocked')}: [{snap['blocked_reason_code']}] "
+                  f"{snap.get('blocked_reason_message', '')}")
+        print(c("dim", "  操作: /goal resume | /goal pause | /goal complete"))
 
     def _open_file(self, path_str: str, prefer_editor: bool = False) -> None:
         """在系统默认程序（或 VS Code）中打开文件；Windows 无关联程序时文本文件回退记事本"""
@@ -1615,6 +1668,12 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         self.messages: List[Dict] = []
         self.session = {"rounds": 0, "tools": 0, "violations": 0, "start": time.time()}
         self._init_execution_layer()
+        # 目标状态机：每次启动自动 disarm（保留 phase，但不无授权续跑；
+        # 重启后须 /goal resume 或会话内重试才重新武装）。
+        try:
+            self.el.goal_store.disarm()
+        except Exception:
+            pass
 
     def _init_execution_layer(self) -> None:
         self.el = ExecutionLayer(
@@ -1965,7 +2024,23 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     print(result["message"], end="", flush=True)
                 print(c("green", t("done", round=_round,
                                    sec=time.time() - t0)))
-                return
+                # 目标轮次驱动（借鉴 DSH goal-round-driver）：goal active+armed+预算内
+                # → 自动进入下一轮（不返回主界面），直到模型标记 complete/blocked、
+                # 预算耗尽或用户中断。start_round() 返回 None 即不可续。
+                _g = self.el.goal_store.start_round()
+                if _g is None:
+                    return
+                print(c("dim", f"  ⏭ 目标续跑 R{_g.rounds_started}/{_g.max_rounds}"
+                               f"：{_g.objective[:60]}"))
+                next_user = (f"【目标续跑】目标：{_g.objective}\n"
+                             f"轮次 {_g.rounds_started}/{_g.max_rounds}。"
+                             "继续推进目标；完成用 goal_update(phase=complete)，"
+                             "遇到无法继续的阻塞用 goal_update(phase=blocked, "
+                             "reason_code=..., reason_message=...)。")
+                fail_streak = 0
+                tool_ran = False
+                claim_nudges = 0
+                continue
 
             if result["status"] in ERROR_STATUSES:
                 self.session["violations"] += 1
@@ -2068,6 +2143,17 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
         # 启动自检：配置防蠢提示
         for hint in _config_sanity_hints(self.cfg):
             print(c("yellow", f"  ⚠ {hint}"))
+
+        # 目标状态机：重启后自动 disarmed（不无授权续跑），提示未完成目标
+        try:
+            self.el.goal_store.disarm()
+        except Exception:
+            pass
+        _g = self.el.goal_store.snapshot()
+        if _g and _g["phase"] in ("active", "paused", "blocked"):
+            print(c("dim", f"  📌 有未完成目标（{_g['phase']}）："
+                           f"{_g['objective'][:50]}{'…' if len(_g['objective']) > 50 else ''}"
+                           f"  /goal 查看或恢复"))
 
         # 实时补全：有 prompt_toolkit 就上 Claude Code 同款弹窗菜单，没有则降级普通输入
         session = None

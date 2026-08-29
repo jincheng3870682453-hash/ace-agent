@@ -3338,10 +3338,152 @@ except OSError:
 
 # ============================================================
 
+# ============================================================
+print("[25] goal 状态机 —— 持久化目标（revision CAS / blocked 白名单 / 轮次驱动）")
+# ============================================================
+from tools.goal_tools import GoalStore, GoalError  # noqa: E402
+from tools.goal_tools import (BLOCKED_CODES, NOT_BLOCKED_CODES,
+                              PHASE_ACTIVE, PHASE_BLOCKED,
+                              PHASE_COMPLETE, PHASE_PAUSED)  # noqa: E402
 
+_groot = Path(tempfile.mkdtemp(prefix="ace_goal_"))
+_gs = GoalStore(str(_groot))
+_ge = _TE_CLS(project_root=str(_groot))
 
+# 创建
+r = _ge.execute({"tool": "goal_create", "objective": "实现登录模块并跑通测试"})
+check("goal_create 创建 active 目标（revision=1）",
+      r.status == "success" and r.data["goal"]["phase"] == PHASE_ACTIVE
+      and r.data["goal"]["revision"] == 1 and r.data["goal"]["armed"] is True,
+      r.data.get("goal"))
+_gid = r.data["goal"]["id"]
+r = _ge.execute({"tool": "goal_status"})
+check("goal_status 返回快照", r.status == "success"
+      and r.data["goal"]["id"] == _gid, r.data)
+r = _ge.execute({"tool": "goal_create", "objective": ""})
+check("goal_create 空目标 → GOAL_EMPTY_OBJECTIVE",
+      r.status == "error" and r.error_code == "GOAL_EMPTY_OBJECTIVE",
+      (r.error_code, r.message))
 
+# revision CAS：旧修订号被拒
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 1,
+                 "phase": PHASE_PAUSED})
+check("goal_update 正确 revision → paused 且 revision 递增",
+      r.status == "success" and r.data["goal"]["phase"] == PHASE_PAUSED
+      and r.data["goal"]["revision"] == 2, r.data)
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 1,
+                 "phase": PHASE_ACTIVE})
+check("goal_update 过期 revision → GOAL_STALE_REVISION",
+      r.status == "error" and "修订号过期" in r.message, r.message)
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 2,
+                 "phase": PHASE_ACTIVE})
+check("恢复 active", r.status == "success"
+      and r.data["goal"]["phase"] == PHASE_ACTIVE, r.data)
 
+# blocked：必须 code+message，白名单校验，difficulty 不算
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 3,
+                 "phase": PHASE_BLOCKED})
+check("blocked 缺 reason → 400", r.status == "error"
+      and "code" in r.message, r.message)
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 3,
+                 "phase": PHASE_BLOCKED, "reason_code": "difficulty",
+                 "reason_message": "这个很难"})
+check("difficulty 不算阻塞 → 400",
+      r.status == "error" and "不算阻塞" in r.message, r.message)
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 3,
+                 "phase": PHASE_BLOCKED, "reason_code": "bogus_code",
+                 "reason_message": "x"})
+check("未知 blocked code → 400", r.status == "error" and "未知阻塞" in r.message,
+      r.message)
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 3,
+                 "phase": PHASE_BLOCKED, "reason_code": "api_unavailable",
+                 "reason_message": "API 401，等待用户换 key"})
+check("合法 blocked → 进入 blocked 且自动 disarm",
+      r.status == "success" and r.data["goal"]["phase"] == PHASE_BLOCKED
+      and r.data["goal"]["armed"] is False
+      and r.data["goal"]["blocked_reason_code"] == "api_unavailable",
+      r.data.get("goal"))
+
+# blocked → 恢复 active（清 reason）
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 4,
+                 "phase": PHASE_ACTIVE})
+check("blocked → active 恢复且清 reason",
+      r.status == "success" and r.data["goal"]["phase"] == PHASE_ACTIVE
+      and r.data["goal"]["blocked_reason_code"] == "", r.data)
+
+# complete 只能从 active
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 5,
+                 "phase": PHASE_COMPLETE})
+check("active → complete", r.status == "success"
+      and r.data["goal"]["phase"] == PHASE_COMPLETE
+      and r.data["goal"]["armed"] is False, r.data)
+r = _ge.execute({"tool": "goal_update", "id": _gid, "revision": 6,
+                 "phase": PHASE_ACTIVE})
+check("complete 不能恢复 active → GOAL_BAD_TRANSITION",
+      r.status == "error" and r.error_code == "GOAL_BAD_TRANSITION",
+      (r.error_code, r.message))
+
+# 轮次驱动 + 持久化
+_g2root = Path(tempfile.mkdtemp(prefix="ace_goal2_"))
+_gs2 = GoalStore(str(_g2root))
+_g = _gs2.create("写 README", max_rounds=3)
+check("start_round 递增轮次", _gs2.start_round().rounds_started == 1
+      and _gs2.start_round().rounds_started == 2, _gs2.snapshot())
+_gs2.disarm()
+check("disarm 后不再自动续跑", _gs2.start_round() is None
+      and _gs2.snapshot()["armed"] is False, _gs2.snapshot())
+_gs2.resume(_g.id, _g.revision)
+check("人类 resume 重新武装", _gs2.start_round().rounds_started == 3,
+      _gs2.snapshot())
+check("轮次预算耗尽后不续跑", _gs2.start_round() is None, _gs2.snapshot())
+# 持久化：重建 store 读到同一目标（跨进程恢复）
+_gs3 = GoalStore(str(_g2root))
+check("持久化：重建后目标仍在（含轮次进度）",
+      _gs3.snapshot() is not None
+      and _gs3.snapshot()["id"] == _g.id
+      and _gs3.snapshot()["rounds_started"] == 3, _gs3.snapshot())
+# 工具层走执行层（goal 工具对模型可用，注册进 READ_TOOLS）
+check("goal 工具已注册（对模型暴露）",
+      "goal_create" in _READ_TOOLS and "goal_update" in _READ_TOOLS
+      and "goal_status" in _READ_TOOLS,
+      [t for t in ("goal_create", "goal_update", "goal_status")
+       if t not in _READ_TOOLS])
+
+# —— CLI 集成：ExecutionLayer.goal_store 属性 + /goal 命令 ——
+_cli_g = ai_code.AgentCLI({"project_root": str(mktemp()), "permission": "write",
+                           "bait": False, "base_url": "", "api_key": "",
+                           "model": "m1", "tools": False}, mock=True)
+check("ExecutionLayer 暴露 goal_store（与工具同源）",
+      _cli_g.el.goal_store is _cli_g.el.executor._goal_store(), "")
+_bufg = io.StringIO()
+with contextlib.redirect_stdout(_bufg):
+    _cli_g.el.goal_store.create("写一份项目文档", max_rounds=5)
+    _cli_g._show_goal(["/goal"])
+_outg = _bufg.getvalue()
+check("/goal 显示目标状态", "目标状态" in _outg and "写一份项目文档" in _outg
+      and "rounds" in _outg, _outg[:200])
+_bufg = io.StringIO()
+with contextlib.redirect_stdout(_bufg):
+    _cli_g._show_goal(["/goal", "pause"])
+_outg2 = _bufg.getvalue()
+check("/goal pause 暂停", "已暂停" in _outg2
+      and _cli_g.el.goal_store.snapshot()["phase"] == "paused", _outg2[:100])
+_bufg = io.StringIO()
+with contextlib.redirect_stdout(_bufg):
+    _cli_g._show_goal(["/goal", "resume"])
+check("/goal resume 恢复 armed",
+      "已恢复" in _bufg.getvalue()
+      and _cli_g.el.goal_store.snapshot()["armed"] is True, "")
+# 重启语义：新进程（新 AgentCLI）启动时 disarm
+_cli_g2 = ai_code.AgentCLI({"project_root": _cli_g.cfg["project_root"],
+                            "permission": "write", "bait": False,
+                            "base_url": "", "api_key": "", "model": "m1",
+                            "tools": False}, mock=True)
+check("新会话启动后目标自动 disarmed（不无授权续跑）",
+      _cli_g2.el.goal_store.snapshot()["armed"] is False,
+      _cli_g2.el.goal_store.snapshot())
+
+# ============================================================
 
 
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")

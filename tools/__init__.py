@@ -13,10 +13,11 @@ from tools.web_tools import WebTools
 from tools.db_tools import DbTools
 from tools.notify_tools import NotifyTools
 from tools.parse_tools import ParseTools
+from tools.goal_tools import GoalTools
 
 
 class ToolExecutor(ToolExecutorBase, FileTools, CodeTools, WebTools,
-                   DbTools, NotifyTools, ParseTools):
+                   DbTools, NotifyTools, ParseTools, GoalTools):
     """实际执行工具调用：组合各工具域 mixin"""
     pass
 

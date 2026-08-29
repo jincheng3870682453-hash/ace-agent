@@ -416,6 +416,8 @@ class ExecutionLayer:
         self._round_confirmed = False
         # 同前缀免确认白名单（会话级）：用户确认过的命令前缀，同前缀 prompt 档自动放行
         self._approved_prefixes: List[str] = []
+        # 目标状态机（持久化长任务）：CLI 轮次驱动与工具共用同一个 store
+        self.goal_store = self.executor._goal_store()
 
 
         self.parser = AgentOutputParser()

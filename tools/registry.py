@@ -256,6 +256,38 @@ TOOL_SPECS: List[ToolSpec] = [
         example='{"tool":"image_generate","prompt":"a cat","size":"512x512"}',
     ),
 
+    # —— 目标状态机（持久化长任务：goal_create / goal_update / goal_status） ——
+    ToolSpec(
+        name="goal_create", permission=PERM_READ, handler="_exec_goal_create",
+        description="创建持久化目标：长任务自动逐轮续跑，直到完成/暂停/阻塞或轮次预算耗尽。"
+                    "objective 写清最终交付物；max_rounds 默认 20",
+        parameters=_obj({"objective": {"type": "string"},
+                         "max_rounds": {"type": "integer"}}, ["objective"]),
+        example='{"tool":"goal_create","objective":"实现登录模块并跑通测试","max_rounds":10}',
+    ),
+    ToolSpec(
+        name="goal_update", permission=PERM_READ, handler="_exec_goal_update",
+        description="更新目标状态（phase: active/paused/blocked/complete）。"
+                    "必须携带当前 revision（用 goal_status 查）。"
+                    "自报 blocked 必须给机器 code（missing_dependency/api_unavailable/"
+                    "permission_blocked/invalid_input/environment_broken）与人类说明；"
+                    "难度/不确定不算阻塞",
+        parameters=_obj({"id": {"type": "string"}, "revision": {"type": "integer"},
+                         "phase": {"type": "string"},
+                         "reason_code": {"type": "string"},
+                         "reason_message": {"type": "string"}},
+                        ["id", "revision", "phase"]),
+        example='{"tool":"goal_update","id":"...","revision":3,'
+                '"phase":"blocked","reason_code":"api_unavailable",'
+                '"reason_message":"DeepSeek API 401，等待用户换 key"}',
+    ),
+    ToolSpec(
+        name="goal_status", permission=PERM_READ, handler="_exec_goal_status",
+        description="查询当前目标状态（含 revision，更新前必查）",
+        parameters=_obj({}),
+        example='{"tool":"goal_status"}',
+    ),
+
     # —— 高危：已登记但未实现，需 full 权限（占位，防止名字被误当未知工具而静默通过分级）——
     ToolSpec(name="terminal_dangerous", permission=PERM_HIGH_RISK,
              description="高危终端操作（未实现，需 full 权限）", expose=False),

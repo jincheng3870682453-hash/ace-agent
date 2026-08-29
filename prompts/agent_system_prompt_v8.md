@@ -87,25 +87,33 @@ answer.
 14. edit_file       {"tool":"edit_file","path":"main.py"}         仅打开编辑器给人看，不改内容；改内容用 file_write
 15. plan_propose    {"tool":"plan_propose","title":"...","steps":["步骤1","步骤2"]}  提议任务计划，等用户批准
 16. request_permission {"tool":"request_permission","target":"terminal_exec","reason":"..."}  申请临时授权
+17. goal_create      {"tool":"goal_create","objective":"实现登录模块并跑通测试","max_rounds":10}
+    创建持久化目标：长任务自动逐轮续跑，直到完成/暂停/阻塞或轮次预算耗尽。objective 写清最终交付物
+18. goal_update      {"tool":"goal_update","id":"...","revision":3,"phase":"blocked",
+                     "reason_code":"api_unavailable","reason_message":"API 401 等用户换 key"}
+    更新目标状态（active/paused/blocked/complete），必须带当前 revision（先 goal_status 查）。
+    自报 blocked 必须给机器 code（missing_dependency/api_unavailable/permission_blocked/
+    invalid_input/environment_broken）与人类说明；难度/不确定不算阻塞
+19. goal_status      {"tool":"goal_status"}   查询当前目标状态（更新前必查 revision）
 
 ⚠️ 找代码的正确姿势：先 grep/glob 定位，再 file_read 分段读。不要靠猜文件名，也不要整读大文件。
 
 写入工具（执行层自动快照并监控）：
 ⚠️ 改已有文件用 str_replace 做局部替换；只有新建文件才用 file_write 整文件写入。
 ⚠️ 禁止计划"打开编辑器/文件管理器手动操作"（Agent 无法手动输入）。
-17. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
-18. str_replace     {"tool":"str_replace","path":"a.py","old_string":"原片段","new_string":"新片段"}
+20. terminal_exec   {"tool":"terminal_exec","command":"touch /tmp/test"}
+21. str_replace     {"tool":"str_replace","path":"a.py","old_string":"原片段","new_string":"新片段"}
     改代码的首选。old_string 必须在文件里唯一——匹配到多处会返回 409 且不写入任何内容，
     此时补足前后各 3-5 行上下文重试（或确认要全量替换时传 replace_all=true），不要退化成 file_write。
     tab/空格混用、整块缩进层级偏移会自动容错；写入时以文件真实缩进为准。
-19. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  整文件覆盖，用于新建；绝对路径=用户明确意图（放桌面/主目录）
-20. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}
-21. file_move       {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
-22. api_post        {"tool":"api_post","url":"...","data":{"key":"value"}}
-23. code_execute    {"tool":"code_execute","language":"python","code":"print(1)"}  受限沙盒，禁 os/subprocess/socket
-24. db_write        {"tool":"db_write","query":"INSERT ..."}      拒绝 DROP/ATTACH/PRAGMA/VACUUM
-25. notify_send     {"tool":"notify_send","channel":"file","to":"...","content":"..."}  console/file/toast/email(需 SMTP 配置)
-26. image_generate  {"tool":"image_generate","prompt":"...","size":"512x512"}  存 .ace_images/
+22. file_write      {"tool":"file_write","path":"C:\\Users\\用户名\\Desktop\\example.py","content":"hello"}  整文件覆盖，用于新建；绝对路径=用户明确意图（放桌面/主目录）
+23. file_delete     {"tool":"file_delete","path":"/tmp/test.txt"}
+24. file_move       {"tool":"file_move","source":"/tmp/a.txt","dest":"/tmp/b.txt"}
+25. api_post        {"tool":"api_post","url":"...","data":{"key":"value"}}
+26. code_execute    {"tool":"code_execute","language":"python","code":"print(1)"}  受限沙盒，禁 os/subprocess/socket
+27. db_write        {"tool":"db_write","query":"INSERT ..."}      拒绝 DROP/ATTACH/PRAGMA/VACUUM
+28. notify_send     {"tool":"notify_send","channel":"file","to":"...","content":"..."}  console/file/toast/email(需 SMTP 配置)
+29. image_generate  {"tool":"image_generate","prompt":"...","size":"512x512"}  存 .ace_images/
 
 
 

@@ -136,5 +136,6 @@
   "stall_abort": "警告: Agent が{n}ラウンド連続で失敗/ブロックされ、自動中止しました。リクエストを言い直すか、モデルを確認してください。",
   "compact_done": "  ⓘ コンテキストを圧縮しました：{before} → {after} tokens（過去の対話は要約に置換）",
   "compact_truncated": "  ⚠ 要約が使えないため強制切り詰め：{before} → {after} tokens（理由: {reason}）",
-  "compact_failed": "  ⚠ コンテキスト圧縮でエラー、今回はスキップ: {err}"
+  "compact_failed": "  ⚠ コンテキスト圧縮でエラー、今回はスキップ: {err}",
+  "cmd_goal": "目標の表示・管理（使い方: /goal [resume|pause|complete|status]）。長いタスクはラウンドごとに自動継続"
 }

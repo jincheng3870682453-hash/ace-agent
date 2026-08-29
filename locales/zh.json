@@ -71,6 +71,7 @@
   "cmd_model": "查看/自定义模型（用法: /model <名> | base-url <url> | api-key <key>）",
   "cmd_provider": "查看/切换 AI 提供商（智谱/DeepSeek/Kimi/OpenAI/Qwen/本地…，用法: /provider [编号|id] [api-key]）",
   "cmd_config": "交互式配置模型（向导）",
+  "cmd_goal": "查看/管理目标（用法: /goal [resume|pause|complete|status]，长任务自动逐轮续跑）",
   "cmd_open": "用系统默认程序打开文件（用法: /open <路径>）",
   "cmd_edit": "用 VS Code（或默认编辑器）打开文件（用法: /edit <路径>）",
   "cmd_search": "联网搜索（DuckDuckGo/Bing，用法: /search <关键词>）",

@@ -49,7 +49,6 @@
   "max_rounds": "⚠ Reached max rounds, Agent did not give a final reply.",
   "unverified_claim": "  ⚠ The model claimed the action was done, but no tool ran this round — nothing actually happened. Asked it to call a tool for real.",
   "unverified_claim_final": "  ⚠ The \"done\" above is fabricated: no tool was executed in this turn and nothing on disk changed. Use a larger tool-calling model, or verify with /status.",
-
   "help_title": "Available commands:",
   "help_hint": "\nTip: type @ for shortcuts (@lang switch language / @skill switch skill / @file reference file / @folder reference folder)",
   "unknown_prefix": "  No command starts with '{name}' (type / to see all)",
@@ -139,5 +138,6 @@
   "stall_abort": "WARNING: Agent failed/blocked for {n} consecutive rounds and was auto-aborted. Please rephrase your request or check the model.",
   "compact_done": "  ⓘ Context compacted: {before} → {after} tokens (earlier turns folded into a summary)",
   "compact_truncated": "  ⚠ Summary unavailable, hard-truncated: {before} → {after} tokens (reason: {reason})",
-  "compact_failed": "  ⚠ Context compaction errored, skipped this turn: {err}"
+  "compact_failed": "  ⚠ Context compaction errored, skipped this turn: {err}",
+  "cmd_goal": "View/manage the persistent goal (usage: /goal [resume|pause|complete|status]); long tasks auto-continue round by round"
 }

@@ -12,6 +12,7 @@ __pycache__/
 .test_tmp/
 .ace_shots/
 .ace_images/
+.ace_goals.json
 agent.db
 notifications.log
 *.jsonl
