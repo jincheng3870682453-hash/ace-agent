@@ -68,6 +68,8 @@ UNTRUSTED_SOURCES: Dict[str, str] = {
     "kb_search": "知识库内容", "kb_add": "执行层状态", "kb_list": "执行层状态",
     # 联网读取：抓回来的网页正文，完全第三方控制
     "search_read": "网络（网页正文）",
+    # 技能库：SKILL.md 是技能作者的指令文本，等同外部内容，定界注入
+    "skill_list": "技能目录", "skill_load": "技能内容",
 }
 # 未知工具按"外部（未分类）"处理：新增工具时忘记登记，应该落在更保守的一侧。
 UNTRUSTED_DEFAULT = "外部（未分类）"

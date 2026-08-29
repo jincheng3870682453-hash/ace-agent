@@ -414,6 +414,7 @@ class ExecutionLayer:
             sandbox_policy=(config or {}).get("sandbox_policy"),
             approval_hook=self._exec_approval_hook,
             kb_root=(config or {}).get("kb_root"),
+            skills_dir=(config or {}).get("skills_dir"),
         )
         # 逐次确认闸门是否已就本轮调用放行；供 _exec_approval_hook 读取。
         self._round_confirmed = False

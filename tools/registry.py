@@ -341,6 +341,20 @@ TOOL_SPECS: List[ToolSpec] = [
                         ["query"]),
         example='{"tool":"search_read","query":"python async 最佳实践","top_k":3}',
     ),
+    ToolSpec(
+        name="skill_list", permission=PERM_READ, handler="_exec_skill_list",
+        description="列出可用的专业技能（--skills 目录里的 SKILL.md），含名称与简介。"
+                    "适合当前任务与某专业领域相关时先查看",
+        parameters=_obj({}),
+        example='{"tool":"skill_list"}',
+    ),
+    ToolSpec(
+        name="skill_load", permission=PERM_READ, handler="_exec_skill_load",
+        description="加载指定技能的完整 instructions（skill_list 查看可用技能名）。"
+                    "加载后遵循其中的规则完成相关任务",
+        parameters=_obj({"name": {"type": "string"}}, ["name"]),
+        example='{"tool":"skill_load","name":"write-swift"}',
+    ),
 
     # —— 高危：已登记但未实现，需 full 权限（占位，防止名字被误当未知工具而静默通过分级）——
     ToolSpec(name="terminal_dangerous", permission=PERM_HIGH_RISK,

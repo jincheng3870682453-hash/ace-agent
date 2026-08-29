@@ -528,6 +528,7 @@ def merge_config(args) -> Dict:
         "base_url": args.base_url, "api_key": args.api_key, "model": args.model,
         "permission": args.permission, "project_root": args.project_root,
         "kb_root": getattr(args, "kb", None),
+        "skills_dir": getattr(args, "skills", None),
     }.items() if v})
     cfg.setdefault("base_url", os.environ.get("AGENT_BASE_URL", ""))
     cfg.setdefault("api_key", os.environ.get("AGENT_API_KEY", ""))
@@ -1876,6 +1877,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 "session_log": self.cfg.get("session_log"),
                 # 自定义外挂知识库（kb_search/kb_add 的根目录）
                 "kb_root": self.cfg.get("kb_root"),
+                # 文件式技能库目录（skill_list/skill_load 扫描的目录）
+                "skills_dir": self.cfg.get("skills_dir"),
             },
         )
 
@@ -2504,6 +2507,8 @@ def main() -> None:
                              "绝不偷偷改回宿主执行。")
     parser.add_argument("--kb", help="自定义外挂知识库目录（默认项目 .ace_kb/）。"
                                      "知识库里的资料 kb_search 可检索、kb_add 可写入，跨会话持久")
+    parser.add_argument("--skills", help="文件式专业技能目录（如 G:\\AI_skils，每个技能一个 SKILL.md）。"
+                                         "skill_list 查看、skill_load 按需加载完整 instructions")
     parser.add_argument("--sandbox-image", help="沙箱镜像（默认 ace-sandbox:latest，"
                                                "用 docker/Dockerfile.sandbox 构建）")
     parser.add_argument("--tools", action="store_true",

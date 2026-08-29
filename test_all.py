@@ -3790,6 +3790,47 @@ check("search_read 搜索+抓正文（RAG 式联网）",
       and "asyncio" in r.data["pages"][0]["content"], r.data)
 check("search_read 工具已注册", "search_read" in _READ_TOOLS, "")
 
+# ============================================================
+print("[30] 文件式技能库 —— skill_list / skill_load（SKILL.md 按需加载）")
+# ============================================================
+# 用真实技能目录（G:\AI_skils）验证；不存在则用临时构造的
+_skills_dir = r"G:\AI_skils" if os.path.isdir(r"G:\AI_skils") else None
+if _skills_dir is None:
+    _skills_dir = str(Path(tempfile.mkdtemp(prefix="ace_skills_")))
+    _sk = Path(_skills_dir) / "demo-skill" / "SKILL.md"
+    _sk.parent.mkdir(parents=True)
+    _sk.write_text("---\nname: demo-skill\ndescription: 演示技能\n---\n\n规则：总是先说你好。\n",
+                   encoding="utf-8")
+_el_sk = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                        config={"bait": {"enabled": False},
+                                "skills_dir": _skills_dir})
+_sk_te = _el_sk.executor
+r = _sk_te.execute({"tool": "skill_list"})
+check("skill_list 列出技能（真实目录含 19 个以上）",
+      r.status == "success" and r.data["count"] >= 1
+      and any("description" in s for s in r.data["skills"]),
+      (r.data.get("count"), (r.data.get("skills") or [])[:2]))
+# 加载真实存在的技能（write-swift 或 demo-skill）
+_target = "write-swift" if os.path.isdir(r"G:\AI_skils") else "demo-skill"
+r = _sk_te.execute({"tool": "skill_load", "name": _target})
+check("skill_load 加载技能正文（skill_content 定界注入）",
+      r.status == "success" and r.data["name"] == _target
+      and "<skill_content" in r.data["content"], (r.status, r.data.get("name")))
+r = _sk_te.execute({"tool": "skill_load", "name": "不存在的技能xyz"})
+check("skill_load 不存在技能 → 404",
+      r.status == "error" and r.error_code == "404", r.message)
+r = _sk_te.execute({"tool": "skill_load"})
+check("skill_load 空 name → 400",
+      r.status == "error" and r.error_code == "400", r.message)
+# 未配置技能目录 → 400
+_el_nosk = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                          config={"bait": {"enabled": False}})
+r = _el_nosk.executor.execute({"tool": "skill_list"})
+check("未配置技能目录 → 400 提示",
+      r.status == "error" and r.error_code == "400" and "--skills" in r.message, r.message)
+check("skill 工具已注册",
+      "skill_list" in _READ_TOOLS and "skill_load" in _READ_TOOLS, "")
+
 # —— 会话恢复：重启后从上次会话日志重建消息历史（DSH「历史 = 日志派生」落地） ——
 _res_root = Path(tempfile.mkdtemp(prefix="ace_resume_"))
 _cli_r1 = ai_code.AgentCLI({"project_root": str(_res_root), "permission": "write",
