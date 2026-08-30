@@ -1838,7 +1838,7 @@ class _LandingUI:
     def _draw_landing(self, sel: int) -> None:
         self._clear_screen()
         for line in ACE_LOGO.split("\n"):
-            print(c("magenta", " " + line))
+            print(c("cyan", " " + line))
         print(c("bold", t("banner_title")))
         print()
         print(t("banner_model", desc=self.client.describe()))
