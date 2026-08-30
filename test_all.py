@@ -1878,6 +1878,66 @@ if _PT_AVAILABLE:
               _outs is not None and all(c.start_position <= 0 for c in _outs),
               _probe_err if _outs is None else f"positions={[c.start_position for c in _outs]}")
 
+# —— 回车决策：选定补全后回车必须应用选中项（修复：菜单消失但命令没进去） ——
+if _PT_AVAILABLE:
+    from prompt_toolkit.buffer import Buffer as _PTBuffer
+    from prompt_toolkit.buffer import CompletionState as _PTCompletionState
+    from prompt_toolkit.completion import Completion as _PTCompletion
+
+    def _enter_buf(text="/", cs=None, preview=False):
+        _b = _PTBuffer(accept_handler=lambda b: setattr(b, "_submitted", b.text))
+        _b.text = text
+        _b.complete_state = cs
+        _b._ace_preview_shown = preview
+        ai_code._handle_enter_key(_b)
+        return _b
+
+    def _cs(selected):
+        """真实 CompletionState：selected=True 时下标 0（有选中项），否则 None"""
+        return _PTCompletionState(_PTDoc("/"),
+                                  [_PTCompletion("/provider", start_position=-1)],
+                                  0 if selected else None)
+
+    # 1) 选定后回车 → 应用选中命令并提交（核心修复）
+    _b = _enter_buf("/", _cs(True))
+    check("选定补全后回车：提交的是选中命令（不再丢选中项）",
+          getattr(_b, "_submitted", None) == "/provider",
+          getattr(_b, "_submitted", None))
+    check("选定补全后回车：菜单状态已关闭", _b.complete_state is None)
+    check("选定补全后回车：预览标记复位", _b._ace_preview_shown is False)
+
+    # 2) 菜单开着但未选定（打字自动弹出）→ 这次回车算第一次（预览），不提交
+    _b = _enter_buf("/", _cs(False), preview=False)
+    check("未选定回车：标记为已预览、不提交",
+          _b._ace_preview_shown is True and not hasattr(_b, "_submitted"))
+
+    # 3) 预览态 + 未选定回车 → 发送原文本
+    _b = _enter_buf("/", _cs(False), preview=True)
+    check("预览态回车：提交原文本", getattr(_b, "_submitted", None) == "/")
+
+    # 4) 无菜单 + 斜杠 + 未预览 → 第一次回车弹菜单（select_first=False 预览）
+    _calls = []
+    _b = _PTBuffer(accept_handler=lambda b: setattr(b, "_submitted", b.text))
+    _b.text = "/"
+    _b._ace_preview_shown = False
+    _orig_start = _b.start_completion
+    _b.start_completion = lambda **kw: _calls.append(kw)
+    try:
+        ai_code._handle_enter_key(_b)
+    finally:
+        _b.start_completion = _orig_start
+    check("第一次回车：弹出补全菜单且不提交",
+          _calls == [{"select_first": False}] and _b._ace_preview_shown is True
+          and not hasattr(_b, "_submitted"), _calls)
+
+    # 5) 无菜单 + 已预览 → 第二次回车发送
+    _b = _enter_buf("/provider", None, preview=True)
+    check("预览态第二次回车：发送命令", getattr(_b, "_submitted", None) == "/provider")
+
+    # 6) 普通输入回车 → 直接发送
+    _b = _enter_buf("你好", None, preview=False)
+    check("普通输入回车：直接发送", getattr(_b, "_submitted", None) == "你好")
+
 # ============================================================
 print("[16] docker 沙箱 —— 容器执行层的开关、参数与失败语义")
 # ============================================================

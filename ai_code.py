@@ -486,6 +486,45 @@ def _build_slash_completer(commands: Dict[str, str]):
     return SlashCompleter()
 
 
+def _handle_enter_key(buf) -> None:
+    """REPL 回车键统一决策（独立成函数便于测试）：
+    - 补全菜单开着且已选定（↑↓ 移动过）→ 应用选中项并发送（Claude Code 式）
+      （修复：此前回车会把选中项丢掉——菜单关了但命令没进去）
+    - 斜杠命令第一次回车只弹出命令列表（预览，不发送）
+    - 第二次回车才真正发送
+    """
+    cs = buf.complete_state
+    if cs is not None:
+        cur = cs.current_completion
+        if cur is not None:
+            # 有选中补全：插入输入行并立即提交
+            buf.apply_completion(cur)
+            buf._ace_preview_shown = False
+            buf.validate_and_handle()
+            return
+        # 菜单开着但没选定：维持两段回车语义
+        if getattr(buf, "_ace_preview_shown", False):
+            buf._ace_preview_shown = False
+            buf.validate_and_handle()
+            return
+        # 菜单由打字自动弹出（complete_while_typing），
+        # 这次回车算第一次（预览），等第二次回车发送
+        buf._ace_preview_shown = True
+        return
+    text = buf.text.strip()
+    if text.startswith("/") and not getattr(buf, "_ace_preview_shown", False):
+        # 第一次回车：展开补全菜单（列表预览），不发送
+        buf._ace_preview_shown = True
+        try:
+            buf.start_completion(select_first=False)
+        except Exception:
+            pass
+        return
+    # 第二次回车（或非命令输入）：正常提交
+    buf._ace_preview_shown = False
+    buf.validate_and_handle()
+
+
 def mask_secret(s: str) -> str:
     s = s or ""
     if len(s) <= 8:
@@ -2520,21 +2559,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
 
                 @kb.add("enter")
                 def _two_step_enter(event):
-                    """两段回车：斜杠命令第一次回车只弹出命令列表（预览，不发送），
-                    第二次回车才真正发送。与 Claude Code 的 / 菜单体验一致。"""
-                    buf = event.current_buffer
-                    text = buf.text.strip()
-                    if text.startswith("/") and not getattr(buf, "_ace_preview_shown", False):
-                        # 第一次回车：展开补全菜单（列表预览），不发送
-                        buf._ace_preview_shown = True
-                        try:
-                            buf.start_completion(select_first=False)
-                        except Exception:
-                            pass
-                        return
-                    # 第二次回车（或非命令输入）：正常提交
-                    buf._ace_preview_shown = False
-                    buf.validate_and_handle()
+                    _handle_enter_key(event.current_buffer)
 
                 session = PromptSession(
                     completer=_build_slash_completer(self.COMMANDS),
