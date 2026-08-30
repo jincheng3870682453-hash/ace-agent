@@ -3904,6 +3904,264 @@ check("恢复标记 _resumed_from 已设置", _cli_r2._resumed_from is not None,
       _cli_r2._resumed_from)
 
 # ============================================================
+print("[33] 语义主题 —— ace_theme 双套调色板 / 自动检测 / 切换")
+# ============================================================
+import ace_theme as _theme  # noqa: E402
+# 环境变量隔离：确保测试不受宿主环境 ACE_THEME / COLORFGBG 干扰
+_env_backup = {k: os.environ.get(k) for k in ("ACE_THEME", "COLORFGBG")}
+for _k in ("ACE_THEME", "COLORFGBG"):
+    os.environ.pop(_k, None)
+try:
+    # detect_theme：ACE_THEME 显式优先
+    os.environ["ACE_THEME"] = "light"
+    check("detect_theme: ACE_THEME=light → light",
+          _theme.detect_theme() == "light", _theme.detect_theme())
+    os.environ["ACE_THEME"] = "dark"
+    check("detect_theme: ACE_THEME=dark → dark",
+          _theme.detect_theme() == "dark", _theme.detect_theme())
+    # detect_theme：COLORFGBG 推断（'15;0' = 白字黑底 → 深色；'0;15' → 浅色）
+    os.environ.pop("ACE_THEME", None)
+    os.environ["COLORFGBG"] = "15;0"
+    check("detect_theme: COLORFGBG=15;0 → dark（深底）",
+          _theme.detect_theme() == "dark", _theme.detect_theme())
+    os.environ["COLORFGBG"] = "0;15"
+    check("detect_theme: COLORFGBG=0;15 → light（浅底）",
+          _theme.detect_theme() == "light", _theme.detect_theme())
+    # 无任何提示 → 默认 dark
+    os.environ.pop("COLORFGBG", None)
+    check("detect_theme: 无环境提示 → 默认 dark",
+          _theme.detect_theme() == "dark", _theme.detect_theme())
+finally:
+    for _k, _v in _env_backup.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
+
+# tc()：按当前主题取色
+_theme.set_theme("dark")
+check('tc("error") dark 下 == "ansired"',
+      _theme.tc("error") == "ansired", _theme.tc("error"))
+_theme.set_theme("light")
+check('tc("error") light 下与 dark 不同（亮红）',
+      _theme.tc("error") == "ansibrightred" and _theme.tc("error") != "ansired",
+      _theme.tc("error"))
+check('tc("text") light 下为深色字', _theme.tc("text") == "ansiblack",
+      _theme.tc("text"))
+# 未知 token 回退不抛异常
+check('tc("不存在的token") 回退 "ansi" 不抛异常',
+      _theme.tc("no_such_token") == "ansi", _theme.tc("no_such_token"))
+# 非法主题名 set_theme 不崩溃（回退自动检测）
+_theme.set_theme("neon")
+check("set_theme 非法主题回退且不抛异常",
+      _theme.current_theme() in ("dark", "light"), _theme.current_theme())
+
+# set_theme / current_theme 切换生效
+_theme.set_theme("light")
+check("set_theme(light) 后 current_theme == light",
+      _theme.current_theme() == "light", _theme.current_theme())
+_theme.set_theme("dark")
+check("set_theme(dark) 后 current_theme == dark",
+      _theme.current_theme() == "dark", _theme.current_theme())
+check("dark 下 accent == ansiyellow", _theme.tc("accent") == "ansiyellow",
+      _theme.tc("accent"))
+# 工具三态 / 权限 / 目标 / 用户底色 token 齐备，且 dark/light 同 token 集
+for _tok in ("tool_pending", "tool_ok", "tool_fail",
+             "perm_ro", "perm_write", "perm_full",
+             "goal_active", "goal_paused", "user_bg"):
+    check(f"dark 主题含语义 token {_tok}", _tok in _theme.THEMES["dark"], "")
+check("双套调色板齐全（dark/light 同 token 集）",
+      set(_theme.THEMES["dark"]) == set(_theme.THEMES["light"])
+      and "dark" in _theme.THEMES and "light" in _theme.THEMES, "")
+# set_theme(None) 恢复自动检测
+_theme.set_theme(None)
+check("set_theme(None) 恢复自动检测",
+      _theme.current_theme() == _theme.detect_theme(), _theme.current_theme())
+# mktemp：模块独立自包含，拷贝到临时目录后仍可导入使用
+import importlib.util as _ilu  # noqa: E402
+_tdir = mktemp()
+_tcopy = _tdir / "ace_theme.py"
+_tcopy.write_text(Path(_theme.__file__).read_text(encoding="utf-8"),
+                  encoding="utf-8")
+_spec = _ilu.spec_from_file_location("ace_theme_standalone", _tcopy)
+_theme_copy = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_theme_copy)
+_theme_copy.set_theme("dark")
+check("ace_theme 独立拷贝可导入（mktemp 目录）",
+      _theme_copy.tc("success") == "ansigreen"
+      and _theme_copy.current_theme() == "dark",
+      _theme_copy.tc("success"))
+
+# ============================================================
+# [34] 工具卡片 —— ace_cards：三态标记 / 折叠 / 整卡渲染
+# ============================================================
+from ace_cards import (tool_card, status_mark, collapse_lines,
+                       TOOL_EMOJI, TOOL_GLYPH, GLYPH_FALLBACK,
+                       colorize)  # noqa: E402
+from tools.registry import TOOL_SPECS  # noqa: E402
+
+# —— 覆盖性：两张符号表都覆盖 registry 里全部工具 ——
+_ACE_ALL_TOOLS = {s.name for s in TOOL_SPECS}
+check("TOOL_GLYPH 覆盖 registry 全部工具",
+      _ACE_ALL_TOOLS.issubset(set(TOOL_GLYPH)),
+      sorted(_ACE_ALL_TOOLS - set(TOOL_GLYPH)))
+check("TOOL_EMOJI 覆盖 registry 全部工具",
+      _ACE_ALL_TOOLS.issubset(set(TOOL_EMOJI)),
+      sorted(_ACE_ALL_TOOLS - set(TOOL_EMOJI)))
+
+# —— status_mark：四种状态 → (标记, 颜色名) ——
+check("status_mark SUCCESS → ✓/green",
+      status_mark("SUCCESS") == ("✓", "green"), status_mark("SUCCESS"))
+check("status_mark 403 → ✗/red",
+      status_mark("403") == ("✗", "red"), status_mark("403"))
+check("status_mark 500 → ⚠/yellow",
+      status_mark("500") == ("⚠", "yellow"), status_mark("500"))
+check("status_mark pending → ◌/blue",
+      status_mark("pending") == ("◌", "blue"), status_mark("pending"))
+check("status_mark 硬错误码全为 ✗/red",
+      all(status_mark(c) == ("✗", "red")
+          for c in ("FORMAT_ERROR", "TOOL_BANNED", "GUARD_VIOLATION",
+                    "BAIT_TRIGGERED", "AST_FAILED")), "")
+
+# —— collapse_lines：纯函数折叠 / 不超限原样 / 空输入 ——
+_cl10 = collapse_lines([f"行{i}" for i in range(10)], 4)
+check("collapse_lines 10 行 + max=4 → 4 行 + 折叠提示（含'已折叠 6 行'）",
+      len(_cl10) == 5 and _cl10[:4] == ["行0", "行1", "行2", "行3"]
+      and "已折叠 6 行" in _cl10[-1], _cl10)
+check("collapse_lines 不超限原样返回",
+      collapse_lines(["a", "b"], 4) == ["a", "b"],
+      collapse_lines(["a", "b"], 4))
+check("collapse_lines 空输入 → 空列表", collapse_lines([], 4) == [], "")
+
+# —— tool_card：成功卡（标题含耗时；参数渲染 $ 命令；输出折叠） ——
+_card_ok = tool_card("terminal_exec", "SUCCESS",
+                     params={"command": "ls -la"},
+                     output="drwxr-xr-x 文件1\n-rw-r--r-- 文件2\n"
+                            + "\n".join(f"输出行{i}" for i in range(20)),
+                     elapsed=0.32)
+check("成功卡标题：符号+工具名+✓+[SUCCESS]+耗时",
+      any("  > terminal_exec ✓ [SUCCESS] · 0.32s" == ln for ln in _card_ok),
+      _card_ok)
+check("成功卡参数摘要渲染为 $ 命令",
+      any(ln.strip() == "$ ls -la" for ln in _card_ok), _card_ok)
+check("成功卡输出折叠：12 行 + 折叠提示（22 行 → 已折叠 10 行）",
+      len(_card_ok) == 1 + 1 + 12 + 1
+      and any("已折叠 10 行" in ln for ln in _card_ok), len(_card_ok))
+
+# —— tool_card：params 截断到 80 字符 ——
+_card_p = tool_card("file_write", "SUCCESS",
+                    params={"path": "a.txt", "content": "x" * 300},
+                    output="ok")
+_p_line = [ln for ln in _card_p if "content=" in ln]
+check("params 摘要截断：单行 ≤ 80 且尾部 …",
+      len(_p_line) == 1 and len(_p_line[0].strip()) <= 80
+      and _p_line[0].strip().endswith("…")
+      and "x" * 100 not in _p_line[0], _p_line[0] if _p_line else "")
+
+# —— tool_card：失败卡（✗ 标题 + message，message 截断 60） ——
+_card_err = tool_card("file_read", "403", params={"path": "secret.txt"},
+                      message="权限不足：文件被策略层拦截", output="")
+check("失败卡标题含 ✗ 与 [403]",
+      any("  r file_read ✗ [403]" == ln for ln in _card_err), _card_err)
+check("失败卡带 message 行",
+      any("权限不足：文件被策略层拦截" in ln for ln in _card_err), _card_err)
+_msg_long = tool_card("api_get", "500", message="原因 " + "e" * 120)
+check("失败卡 message 截断 60 字符",
+      any("原因 " in ln and ln.strip().endswith("…")
+          and len(ln.strip()) <= 62 for ln in _msg_long), _msg_long)
+
+# —— pending 卡 / 未知工具回退 / 不折叠 / 纯文本 ——
+check("pending 卡：◌ 且无耗时",
+      tool_card("subagent", "pending", params={"prompt": "x"})[0]
+      == "  * subagent ◌ [pending]", tool_card("subagent", "pending")[0])
+check("未知工具回退 GLYPH_FALLBACK",
+      tool_card("unknown_tool", "SUCCESS")[0].startswith(
+          f"  {GLYPH_FALLBACK} unknown_tool"),
+      tool_card("unknown_tool", "SUCCESS")[0])
+check("collapsed=False 输出全量不折叠",
+      len(tool_card("file_read", "SUCCESS",
+                    output="\n".join(f"l{i}" for i in range(20)),
+                    collapsed=False)) == 1 + 20, "")
+check("卡片为纯文本（无 ANSI 色码，颜色由调用方上）",
+      all("\033" not in ln
+          for ln in tool_card("terminal_exec", "403", message="m", output="o")), "")
+check("colorize 按 ANSI 名包色码",
+      colorize("x", "green") == "\033[32mx\033[0m",
+      repr(colorize("x", "green")))
+
+# —— 端到端：mktemp 造真实文件 → 读回渲染卡片 ——
+_tdir34 = mktemp()
+_tf34 = _tdir34 / "out.txt"
+_tf34.write_text("\n".join(f"真实输出 {i}" for i in range(30)), encoding="utf-8")
+_card_real = tool_card("file_read", "SUCCESS", params={"path": str(_tf34)},
+                       output=_tf34.read_text(encoding="utf-8"), elapsed=1.25)
+check("mktemp 真实文件 → 卡片：标题含耗时、输出折叠到 12 行",
+      any("  r file_read ✓ [SUCCESS] · 1.25s" == ln for ln in _card_real)
+      and any("已折叠 18 行" in ln for ln in _card_real), _card_real)
+
+# ============================================================
+print("[32] 搜索式选择器 —— ace_selector.run_selector（非 TTY 降级 + 纯逻辑）")
+# ============================================================
+import ace_selector  # noqa: E402
+
+# —— 非 TTY 降级：patch isatty → False，不阻塞直接返回首个匹配 ——
+_sel_items = ["deepseek-v4-flash  DeepSeek 官方",
+              "deepseek-v3  DeepSeek 官方",
+              "glm-4.6  Zhipu 智谱"]
+with _mocksr.patch.object(sys.stdin, "isatty", return_value=False), \
+     _mocksr.patch.object(sys.stdout, "isatty", return_value=False):
+    _sel_r = ace_selector.run_selector("选择模型", _sel_items)
+    # mktemp：选项列表来自临时文件（模拟配置读取），验证同样不阻塞
+    _sel_f = mktemp() / "models.txt"
+    _sel_f.write_text("\n".join(_sel_items), encoding="utf-8")
+    _sel_r_file = ace_selector.run_selector(
+        "选择模型", _sel_f.read_text(encoding="utf-8").splitlines())
+check("run_selector 非 TTY 不阻塞且返回首个匹配（下标 0）", _sel_r == 0, _sel_r)
+check("run_selector 非 TTY 项来自 mktemp 临时文件仍返回 0",
+      _sel_r_file == 0, _sel_r_file)
+check("run_selector 空选项 → None",
+      ace_selector.run_selector("x", []) is None, "")
+
+# —— 纯逻辑：match_score ——
+check("match_score 子串命中 > 0",
+      ace_selector.match_score(_sel_items[0], "deepseek") > 0, "")
+check("match_score 不命中 = 0",
+      ace_selector.match_score(_sel_items[2], "deepseek") == 0, "")
+check("match_score 前缀命中 > 中间命中",
+      ace_selector.match_score("deepseek-v4", "deep")
+      > ace_selector.match_score("xdeepseek", "deep"), "")
+check("match_score 空查询全部等权",
+      ace_selector.match_score("任意", "") == 1, "")
+
+# —— 纯逻辑：filter_items（子串过滤 + 多词 AND + 排序） ——
+_fs = ace_selector.filter_items(_sel_items, "deepseek")
+check("filter_items 子串过滤返回原下标", [i for i, _ in _fs] == [0, 1], _fs)
+_fs2 = ace_selector.filter_items(_sel_items, "官方 deepseek")
+check("filter_items 多词 AND（每词都要命中）",
+      sorted(i for i, _ in _fs2) == [0, 1], _fs2)
+check("filter_items 无命中 → 空列表",
+      ace_selector.filter_items(_sel_items, "zzz") == [], "")
+_fs3 = ace_selector.filter_items(["xdeepseek", "deepseek"], "deep")
+check("filter_items 前缀命中排前", [i for i, _ in _fs3] == [1, 0], _fs3)
+
+# —— 纯逻辑：highlight_match（命中高亮标记） ——
+_hs = ace_selector.highlight_match("deepseek-v4-flash", "deep")
+check("highlight_match 命中段标记 sel.hl",
+      any(t == "sel.hl" and s == "deep" for t, s in _hs), _hs)
+check("highlight_match 分段拼接还原原文",
+      "".join(s for _, s in _hs) == "deepseek-v4-flash", _hs)
+check("highlight_match 空查询无高亮单段",
+      ace_selector.highlight_match("deepseek-v4-flash", "")
+      == [("sel.row", "deepseek-v4-flash")], "")
+check("highlight_match 大小写不敏感命中",
+      any(t == "sel.hl" and s.lower() == "deep"
+          for t, s in ace_selector.highlight_match("xxDeepxx", "deep")), "")
+check("highlight_match 多词各命中一次",
+      sum(1 for t, _ in ace_selector.highlight_match("deepseek 官方版", "deep 官方")
+          if t == "sel.hl") == 2, "")
+check("highlight_match 重叠区间合并",
+      ace_selector.highlight_match("abcabc", "abc abc")
+      == [("sel.hl", "abcabc")], "")
 
 
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")

@@ -56,6 +56,11 @@ sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
 from ace_sessionlog import SessionLog  # noqa: E402
+from ace_cards import status_mark, tool_card  # noqa: E402
+try:
+    from ace_selector import run_selector  # noqa: E402
+except ImportError:
+    run_selector = None
 from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E402
                           PROMPT_EXEC_EXCEPTION, PROMPT_ERROR_RETRY,
                           PROMPT_PLAN_APPROVED, PROMPT_TOOL_RESULT,
@@ -1563,6 +1568,20 @@ class _SlashCommands:
             prov = _find_provider(self.cfg)
             if prov:
                 print(c("dim", f"  该提供商可选模型: {' / '.join(prov['models'][:8])}（/model <名> 切换）"))
+            # OpenClaw 式选择器：stdin/stdout 都是 TTY 时弹搜索式选择器选模型
+            # （测试环境 stdout 被重定向 → 不弹选择器，直接打印提示）
+            if run_selector is not None and prov and sys.stdin.isatty() and sys.stdout.isatty():
+                _models = prov.get("models") or []
+                if _models:
+                    _items = [f"{m}  ({t('model_opt')})" if False else m
+                              for m in _models]
+                    idx = run_selector("选择模型（输入过滤，Enter 确认，Esc 取消）", _models)
+                    if idx is not None and 0 <= idx < len(_models):
+                        self.cfg["model"] = _models[idx]
+                        save_cli_config(self.cfg)
+                        self._reload_client()
+                        print(c("green", f"模型已切换: {_models[idx]}，已保存"))
+                        return
             print(c("dim", "  切换: /model <模型名> | 换提供商: /provider | 设密钥: /model api-key <key>"))
             return
         if parts[1] == "base-url" and len(parts) >= 3:
@@ -1585,6 +1604,15 @@ class _SlashCommands:
     def _handle_provider(self, parts: List[str]) -> None:
         """查看/切换 AI 提供商：/provider 列清单，/provider <编号|id> [api-key] 一键切换"""
         if len(parts) == 1:
+            # OpenClaw 式选择器：stdin/stdout 都是 TTY 时弹搜索式选择器选提供商
+            # （测试环境 stdout 被重定向 → 不弹选择器，直接打印清单）
+            if run_selector is not None and sys.stdin.isatty() and sys.stdout.isatty():
+                _items = [f"{p['name']}  {p['base_url']}" for p in PROVIDERS]
+                idx = run_selector("选择提供商（输入过滤，Enter 确认，Esc 取消）", _items)
+                if idx is not None and 0 <= idx < len(PROVIDERS):
+                    parts = ["/provider", str(idx + 1)]
+                    self._handle_provider(parts)
+                    return
             print(c("bold", "\nAI 提供商（/provider <编号或id> [api-key] 一键切换）:"))
             for i, p in enumerate(PROVIDERS, 1):
                 cur = self.cfg.get("base_url", "").rstrip("/") == p["base_url"].rstrip("/")
@@ -2330,29 +2358,28 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 next_user = PROMPT_ERROR_RETRY.format(rendered=render_tool_result(result))
             else:
                 self.session["tools"] += 1
-                # OpenClaw 式工具三态：成功绿 ✓ / 失败红 ✗（附原因）/ 其他黄 ⚠
+                # OpenClaw 式工具卡片：三态标记 + 参数摘要 + 输出折叠
                 _st = result["status"]
+                _elapsed = result.get("elapsed")
+                _elapsed_f = float(_elapsed) if isinstance(_elapsed, (int, float)) else 0.0
+                _out = ""
                 if _st == "SUCCESS":
-                    status_mark = c("green", "✓")
-                elif _st in ("403", "FORMAT_ERROR", "TOOL_BANNED", "GUARD_VIOLATION",
-                             "BAIT_TRIGGERED", "AST_FAILED"):
-                    status_mark = c("red", "✗")
-                else:
-                    status_mark = c("yellow", "⚠")
-                line = t("tool_line", tool=result.get("tool"),
-                         mark=status_mark, status=_st)
-                if _st == "SUCCESS":
-                    elapsed = result.get("elapsed")
-                    if isinstance(elapsed, (int, float)):
-                        line += c("dim", t("elapsed", sec=elapsed))
-                    if result.get("snapshot_id"):
-                        line += c("dim", t("snapshotted"))
-                else:
-                    # 失败：附带原因摘要（截断），一眼看到为什么失败
-                    _why = str(result.get("message") or "")[:60]
-                    if _why:
-                        line += c("red", f"  {_why}")
-                print(line)
+                    _d = result.get("data") or {}
+                    if isinstance(_d, dict):
+                        _out = str(_d.get("stdout") or _d.get("content") or "")[:4000]
+                _mark, _color = status_mark(_st)
+                _card = tool_card(
+                    result.get("tool", ""), _st,
+                    message=result.get("message", ""),
+                    output=_out, elapsed=_elapsed_f,
+                    collapsed=True, max_lines=8)
+                # 上色：标题行按状态色，其余 dim
+                for _i, _ln in enumerate(_card):
+                    if _i == 0:
+                        _ln = _ln.replace(f" {_mark} ", f" {c(_color, _mark)} ", 1)
+                        print(c(_color, _ln))
+                    else:
+                        print(c("dim", _ln))
                 if result["status"] == "SUCCESS":
                     self._print_clickables(result)
                 if result.get("memory_injected"):
