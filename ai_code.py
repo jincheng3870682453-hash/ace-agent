@@ -41,7 +41,7 @@ import threading
 import time
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 # Windows GBK 控制台兼容：强制 UTF-8 输出（否则 emoji 会 UnicodeEncodeError）
 for _stream in (sys.stdout, sys.stderr):
@@ -1409,6 +1409,42 @@ class _SlashCommands:
         print(c("green" if enabled else "yellow",
                 t("net_status", state=t("net_on") if enabled else t("net_off"))))
 
+    # ---------- OpenClaw 式底部状态栏（Footer 聚合，状态带动作提示） ----------
+
+    def _footer(self) -> List[Tuple[str, str]]:
+        """模型 | 权限(着色) | 沙箱 | 联网 | 目标(带动作提示) | 统计。
+        状态永远附带下一步动作（如 目标:paused(/goal resume)）。"""
+        parts: List[Tuple[str, str]] = []
+        model = self.client.model.split("/")[-1] if self.client.model else "?"
+        parts.append(("class:footer", f" {model} "))
+        perm = str(self.cfg.get("permission", "readonly"))
+        perm_cls = {"readonly": "class:footer-ro",
+                    "write": "class:footer-w",
+                    "full": "class:footer-f"}.get(perm, "class:footer")
+        parts.append((perm_cls, f" 权限:{perm} "))
+        sb = str(self.cfg.get("sandbox", "off") or "off")
+        parts.append(("class:footer", f" 沙箱:{sb} "))
+        net = "开" if getattr(self.el.executor, "network_enabled", True) else "关"
+        parts.append(("class:footer-dim", f" 联网:{net} "))
+        try:
+            g = self.el.goal_store.snapshot()
+        except Exception:
+            g = None
+        if g:
+            phase = g["phase"]
+            if phase == "active":
+                parts.append(("class:footer-goal",
+                              f" 目标:R{g['rounds_started']}/{g['max_rounds']} "))
+            elif phase == "paused":
+                parts.append(("class:footer-goal", " 目标:paused(/goal resume) "))
+            elif phase == "blocked":
+                parts.append(("class:footer-goal", " 目标:blocked(/goal resume) "))
+            else:
+                parts.append(("class:footer-dim", " 目标:done "))
+        parts.append(("class:footer-dim",
+                      f" 轮{self.session['rounds']} 工具{self.session['tools']} "))
+        return parts
+
     # ---------- 会话审计（/audit：从事件日志展示全链路） ----------
 
     def _show_audit(self, parts: List[str]) -> None:
@@ -2294,10 +2330,18 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 next_user = PROMPT_ERROR_RETRY.format(rendered=render_tool_result(result))
             else:
                 self.session["tools"] += 1
-                status_mark = c("green", "✓") if result["status"] == "SUCCESS" else c("yellow", "⚠")
+                # OpenClaw 式工具三态：成功绿 ✓ / 失败红 ✗（附原因）/ 其他黄 ⚠
+                _st = result["status"]
+                if _st == "SUCCESS":
+                    status_mark = c("green", "✓")
+                elif _st in ("403", "FORMAT_ERROR", "TOOL_BANNED", "GUARD_VIOLATION",
+                             "BAIT_TRIGGERED", "AST_FAILED"):
+                    status_mark = c("red", "✗")
+                else:
+                    status_mark = c("yellow", "⚠")
                 line = t("tool_line", tool=result.get("tool"),
-                         mark=status_mark, status=result["status"])
-                if result["status"] == "SUCCESS":
+                         mark=status_mark, status=_st)
+                if _st == "SUCCESS":
                     elapsed = result.get("elapsed")
                     if isinstance(elapsed, (int, float)):
                         line += c("dim", t("elapsed", sec=elapsed))
@@ -2307,7 +2351,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     # 失败：附带原因摘要（截断），一眼看到为什么失败
                     _why = str(result.get("message") or "")[:60]
                     if _why:
-                        line += c("dim", f"  {_why}")
+                        line += c("red", f"  {_why}")
                 print(line)
                 if result["status"] == "SUCCESS":
                     self._print_clickables(result)
@@ -2431,6 +2475,22 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     if buf.complete_state is not None:
                         buf.cancel_completion()
 
+                # OpenClaw 式 Ctrl+C 分层：有输入 → 清空输入（防误退）；无输入 → 提示再按一次退出。
+                @kb.add("c-c")
+                def _ctrl_c_layer(event):
+                    buf = event.current_buffer
+                    if buf.text:
+                        buf.reset()   # 清空输入，不退出
+                        return
+                    # 无输入：1 秒内第二击退出
+                    now = time.monotonic()
+                    if (getattr(_ctrl_c_layer, "_last", 0)
+                            and now - _ctrl_c_layer._last < 1.0):
+                        raise EOFError
+                    _ctrl_c_layer._last = now
+                    event.app.invalidate()
+                    print(c("dim", "  再按一次 Ctrl+C 退出（Esc 也退出）"), end="", flush=True)
+
                 @kb.add("enter")
                 def _two_step_enter(event):
                     """两段回车：斜杠命令第一次回车只弹出命令列表（预览，不发送），
@@ -2453,9 +2513,16 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     completer=_build_slash_completer(self.COMMANDS),
                     complete_while_typing=True,
                     key_bindings=kb,
+                    bottom_toolbar=self._footer,
                     style=Style.from_dict({
                         "prompt": "ansimagenta bold",
                         "perm": "ansicyan bold",
+                        "footer": "bg:#2b2b3c #aaaaaa",
+                        "footer-dim": "bg:#2b2b3c #666666",
+                        "footer-ro": "bg:#2b2b3c #5fa8ff",
+                        "footer-w": "bg:#2b2b3c #f6c453",
+                        "footer-f": "bg:#2b2b3c #ff6b6b",
+                        "footer-goal": "bg:#2b2b3c #7ecb8f",
                         "completion-menu.completion": "bg:#2b2b3c #ffffff",
                         "completion-menu.completion.current": "bg:#5f3dc4 #ffffff",
                         "completion-menu.completion.meta": "bg:#1e1e2e #aaaaaa",
