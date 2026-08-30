@@ -488,8 +488,9 @@ def _build_slash_completer(commands: Dict[str, str]):
 
 def _handle_enter_key(buf) -> None:
     """REPL 回车键统一决策（独立成函数便于测试）：
-    - 补全菜单开着且已选定（↑↓ 移动过）→ 应用选中项并发送（Claude Code 式）
-      （修复：此前回车会把选中项丢掉——菜单关了但命令没进去）
+    - 补全菜单开着且已选定（↑↓ 移动过）→ 把选中项填入输入行并关闭菜单，
+      不发送（再按一次回车才发送）
+      （修复：此前回车会把选中项丢掉——菜单关了但命令也没进去）
     - 斜杠命令第一次回车只弹出命令列表（预览，不发送）
     - 第二次回车才真正发送
     """
@@ -497,10 +498,9 @@ def _handle_enter_key(buf) -> None:
     if cs is not None:
         cur = cs.current_completion
         if cur is not None:
-            # 有选中补全：插入输入行并立即提交
+            # 有选中补全：插入输入行并关闭菜单，等待下一次回车发送
             buf.apply_completion(cur)
-            buf._ace_preview_shown = False
-            buf.validate_and_handle()
+            buf._ace_preview_shown = True
             return
         # 菜单开着但没选定：维持两段回车语义
         if getattr(buf, "_ace_preview_shown", False):

@@ -1898,13 +1898,19 @@ if _PT_AVAILABLE:
                                   [_PTCompletion("/provider", start_position=-1)],
                                   0 if selected else None)
 
-    # 1) 选定后回车 → 应用选中命令并提交（核心修复）
+    # 1) 选定后回车 → 把选中命令填入输入行并关菜单，不发送（再回车才发送）
     _b = _enter_buf("/", _cs(True))
-    check("选定补全后回车：提交的是选中命令（不再丢选中项）",
+    check("选定补全后回车：命令留在输入行（不丢失）",
+          _b.text == "/provider", repr(_b.text))
+    check("选定补全后回车：菜单已关闭", _b.complete_state is None)
+    check("选定补全后回车：不立即发送", not hasattr(_b, "_submitted"))
+    check("选定补全后回车：标记为已预览（下次回车即发送）",
+          _b._ace_preview_shown is True)
+    # 再按一次回车 → 发送
+    ai_code._handle_enter_key(_b)
+    check("选定补全后再回车：发送命令",
           getattr(_b, "_submitted", None) == "/provider",
           getattr(_b, "_submitted", None))
-    check("选定补全后回车：菜单状态已关闭", _b.complete_state is None)
-    check("选定补全后回车：预览标记复位", _b._ace_preview_shown is False)
 
     # 2) 菜单开着但未选定（打字自动弹出）→ 这次回车算第一次（预览），不提交
     _b = _enter_buf("/", _cs(False), preview=False)
