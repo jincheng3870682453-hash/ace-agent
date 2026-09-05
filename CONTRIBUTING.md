@@ -15,6 +15,7 @@
 
 ```bash
 python test_all.py                          # 全量端到端测试;退出码非 0 即失败
+python test_all.py --strict                   # 把“能力不足跳过”当失败(CI/严格复现)
 python benchmarks/bench_core.py --quick     # 基准健康;正确性 check 失败退出码非 0
 ruff check . --select E9,F63,F7,F82,F401,F841,E711,F811   # CI 同款;F401/F841 用 ruff --fix
 python -m compileall -q <改动的模块>          # 编译检查

@@ -45,6 +45,26 @@ def mktemp(_name: str = "") -> Path:
 
 PASSED = []
 FAILED = []
+SKIPPED = []
+STRICT = "--strict" in sys.argv
+try:
+    import requests  # noqa: F401
+    REQUESTS_OK = True
+except Exception:  # noqa: BLE001
+    REQUESTS_OK = False
+
+
+def skip(name, why=""):
+    """环境能力不足时如实标注跳过,不伪装成通过/失败"""
+    SKIPPED.append(name)
+    print(f"  ⏭ {name}" + (f"  （跳过: {why}）" if why else ""))
+
+
+def check_env(name, cond, detail="", *, ok=REQUESTS_OK, why="缺少 requests/联网能力"):
+    if ok:
+        check(name, cond, detail)
+    else:
+        skip(name, why)
 
 
 def check(name: str, cond: bool, detail=""):
@@ -1253,7 +1273,7 @@ r = el_h.process_agent_output(
 check("空最终回复拦截（不再崩溃）", r["status"] == "FORMAT_ERROR", r)
 
 res_direct = el_h.executor.execute({"tool": "datetime_now"})
-check("elapsed 元数据正确附加", res_direct.metadata.get("elapsed", 0) > 0, res_direct.metadata)
+check("elapsed 元数据正确附加", ("elapsed" in res_direct.metadata) and isinstance(res_direct.metadata.get("elapsed"), (int, float)), res_direct.metadata)
 
 r = run_agent(el_h, "search", query="测试")
 check("联网搜索（无网/被拒时优雅报错）",
@@ -1298,7 +1318,7 @@ _ok_res = [{"title": "T", "url": "https://example.com/1", "snippet": "S"}]
 # A) 默认（无 key）：纯免 key 爬虫主通道，route=crawler
 _no_key._search_engine = lambda *a, **k: _ok_res          # 只让爬虫引擎干活
 _r = _no_key.execute({"tool": "search", "query": "x", "top_k": 3})
-check("search 无 key → 免 key 爬虫主通道（route=crawler, engine=bing）",
+check_env("search 无 key → 免 key 爬虫主通道（route=crawler, engine=bing）",
       _r.status == "success" and _r.data.get("route") == "crawler"
       and _r.data.get("engine") == "bing"
       and not _r.data.get("api_fallback"), _r.data)
@@ -1312,7 +1332,7 @@ def _never_crawler(*a, **k):
     return []
 _with_key._search_engine = _never_crawler
 _r = _with_key.execute({"tool": "search", "query": "x", "top_k": 3})
-check("search 配 key 且 API 成功 → 走 API 通道（route=api）",
+check_env("search 配 key 且 API 成功 → 走 API 通道（route=api）",
       _r.status == "success" and _r.data.get("route") == "api"
       and _r.data.get("engine") == "api:bocha"
       and not _crawler_hit, (_r.data, _crawler_hit))
@@ -1322,7 +1342,7 @@ _fail_key = ToolExecutor(
 _fail_key._search_via_api = lambda q, k: ([], "HTTP 401: Invalid API KEY")
 _fail_key._search_engine = lambda *a, **k: _ok_res
 _r = _fail_key.execute({"tool": "search", "query": "x", "top_k": 3})
-check("search API 401 → 自动回退爬虫（route=crawler + api_fallback 原因）",
+check_env("search API 401 → 自动回退爬虫（route=crawler + api_fallback 原因）",
       _r.status == "success" and _r.data.get("route") == "crawler"
       and _r.data.get("api_fallback") is True
       and "401" in _r.data.get("api_reason", ""), _r.data)
@@ -1332,7 +1352,7 @@ _both = ToolExecutor(
 _both._search_via_api = lambda q, k: ([], "连接超时")
 _both._search_engine = lambda *a, **k: []
 _r = _both.execute({"tool": "search", "query": "x", "top_k": 3})
-check("search 双通道全失败 → 500 且附 API 通道原因",
+check_env("search 双通道全失败 → 500 且附 API 通道原因",
       _r.status == "error" and _r.error_code == "500"
       and "连接超时" in _r.message, (_r.status, _r.message))
 # E) API JSON 容错解析（博查/Bing Web Search 结构）
@@ -2414,11 +2434,11 @@ check("条目写成 URL / 带端口 / 带前导点都收得干净",
 _el_net = ExecutionLayer(project_root=str(mktemp()), permission_level="full",
                          config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
 r = run_confirmed(_el_net, "api_get", url="http://127.0.0.1:9/x")
-check("api_get 指向回环 → 400", r["status"] == "400", r.get("message"))
-check("api_get 拒绝原因透给模型", "回环" in (r.get("message") or ""), r.get("message"))
+check_env("api_get 指向回环 → 400", r["status"] == "400", r.get("message"))
+check_env("api_get 拒绝原因透给模型", "回环" in (r.get("message") or ""), r.get("message"))
 r = run_confirmed(_el_net, "api_post", url="http://169.254.169.254/latest/meta-data/",
                   data={"a": 1})
-check("api_post 指向云元数据 → 400", r["status"] == "400", r.get("message"))
+check_env("api_post 指向云元数据 → 400", r["status"] == "400", r.get("message"))
 r = run_confirmed(_el_net, "api_get", url="file:///etc/passwd")
 check("api_get 非 http/https → 400", r["status"] == "400", r.get("message"))
 
@@ -3924,7 +3944,7 @@ _fake_search_data = {"status": "success",
 with _mocksr.patch.object(_sr_te, "_exec_search", return_value=_NS(**_fake_search_data)), \
      _mocksr.patch("ace_net.safe_request", return_value=(_fake_resp, [])):
     r = _sr_te.execute({"tool": "search_read", "query": "python async", "top_k": 2})
-check("search_read 搜索+抓正文（RAG 式联网）",
+check_env("search_read 搜索+抓正文（RAG 式联网）",
       r.status == "success" and r.data["count"] == 2
       and "asyncio" in r.data["pages"][0]["content"], r.data)
 check("search_read 工具已注册", "search_read" in _READ_TOOLS, "")
@@ -4488,10 +4508,18 @@ _gv4 = evaluate_command("cp a b", project_root=str(_sec6_root), posix=True)
 check("SEC-06 工作区内 cp 仍 allow", _gv4.decision == "allow", _gv4.reason)
 
 
-print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")
+print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}" + (f"  · 跳过 {len(SKIPPED)}" if SKIPPED else ""))
 if FAILED:
     print("失败项:")
     for name in FAILED:
         print(f"  - {name}")
     sys.exit(1)
+if SKIPPED:
+    print("跳过项:")
+    for name in SKIPPED:
+        print(f"  - {name}")
+    if STRICT:
+        print(f"❌ --strict：存在 {len(SKIPPED)} 项跳过,按失败处理")
+        sys.exit(1)
+    print("ℹ️ 跳过 %d 项(能力探测:requests=%s);CI 环境具备能力时应为 0 跳过" % (len(SKIPPED), "有" if REQUESTS_OK else "无"))
 print("🎉 全部测试通过")

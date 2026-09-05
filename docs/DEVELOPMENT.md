@@ -69,7 +69,8 @@
 ## 5. 验证命令速查
 
 ```bash
-python test_all.py                          # 全量测试(≤2 分钟)
+python test_all.py                          # 全量测试
+python test_all.py --strict                   # 把“能力不足跳过”当失败(严格复现)(≤2 分钟)
 python benchmarks/bench_core.py --quick     # 基准健康
 ruff check . --select E9,F63,F7,F82         # 硬错误(计划扩 F401/F841)
 python -m compileall -q <改动的文件>         # 编译检查

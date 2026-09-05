@@ -21,7 +21,7 @@
 |---|---|---|---|
 | ✅ Q-01 | ruff 扩选 F401/F841/E711/F811 | 实测 F401=42 死导入全可 autofix(execution_layer.py:27-31 os/ast/html) | S |
 | ✅ Q-02 | bench 功能 check 失败应 exit≠0;`benchmarks/results/` 入 .gitignore | 现在退出码恒 0、结果入库致本机跑即脏树 | S |
-| ◐ Q-03 | test_all 环境敏感自识别(SKIPPED 通道 + `--strict`) | Go Job Object 附加失败/缺 requests/禁联网/系统 temp 只读应跳过并如实标注,不许假绿/整脚本 traceback;9 处裸 mkdtemp 统一走 `.test_tmp` | M |
+| ✅ Q-03 | test_all 环境敏感自识别(SKIPPED 通道 + `--strict`) | Go Job Object 附加失败/缺 requests/禁联网/系统 temp 只读应跳过并如实标注,不许假绿/整脚本 traceback;9 处裸 mkdtemp 统一走 `.test_tmp` | M |
 | Q-04 | README/CI 手抄数字单一来源 | “40 工具”实为 41 声明/39 暴露;“readonly 16”实为 25;agent_runner 注释“24”;“10 家提供商”实为 9 家 10 端点;断言数“238/950/955”互斥 → 一律以源码/测试输出为准或 CI 生成 | S |
 | ✅ Q-05 | `ace.cmd` 硬编码 `C:\aider_env\...` | 第 10 行,换机器必炸;改 PATH 探测 python/py | S |
 | Q-06 | CI 结构一致性校验 | README 结构树漏 ace_cards/ace_selector/ace_theme/skill_tools/result;ci.yml compileall 漏 ace_http 等 7 根模块;补“树↔文件存在性”job | S |
