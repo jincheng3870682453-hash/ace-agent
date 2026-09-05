@@ -44,7 +44,7 @@
 | R-03 | 双前端对话引擎合并 | ai_code.ModelClient ↔ agent_runner.ModelProvider 统一 | M |
 | R-04 | ai_code.py 2871 行:slash 表驱动 + 会话状态对象 | run_command 111 行 if/elif | M |
 | R-05 | test_all.py 4400 行拆 [N] 文件 + runner(--only/--skip) | 现无法单段跑 | M |
-| R-06 | 全仓命名风格收敛策略 | 新模块统一 ace_ 前缀;旧模块补导流 docstring | S |
+| ✅ R-06 | 命名/检索索引(INTERFACES §11)+ 新模块 ace_ 前缀约定;深层改名不强制 | | 新模块统一 ace_ 前缀;旧模块补导流 docstring | S |
 
 ## REL — 对外发布前
 

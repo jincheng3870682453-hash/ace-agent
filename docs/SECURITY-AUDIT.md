@@ -1,6 +1,6 @@
 # ACE Agent 安全审计报告
 
-- 审计对象：`C:\Users\69215\Desktop\AI_Project\ai angent`（自研 Python AI Agent，代号 ACE）
+- 审计对象：`C:\Users\<用户名>\Desktop\AI_Project\ai angent`（自研 Python AI Agent，代号 ACE）
 - 审计日期：2026-08-22
 - 审计方法：OWASP Top 10 逐项对照 + STRIDE 威胁建模 + 代码级取证 + 局部动态验证
 - 威胁模型：**模型输出即不可信输入**。假设攻击者能通过被读取的文件内容、网页 / 搜索结果、API 响应等间接通道向 LLM 注入指令，从而操纵 Agent 发出任意工具调用 JSON。审计的核心问题不是"模型会不会被骗"，而是"模型被骗之后，执行层能拦住多少"。

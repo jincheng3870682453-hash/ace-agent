@@ -1,6 +1,6 @@
 # Codex CLI 源码调研：ACE 可借鉴设计清单（草稿，待补全）
 
-> 调研对象：C:\Users\69215\Desktop\AI_Project\_reference\codex（OpenAI Codex CLI，bazel monorepo）
+> 调研对象：C:\Users\<用户名>\Desktop\AI_Project\_reference\codex（OpenAI Codex CLI，bazel monorepo）
 > 说明：本仓库中 codex-cli/ 仅是 npm 启动器（spawn 预编译 Rust 二进制），真正的交互 CLI 全部在 codex-rs/tui（Rust）。
 
 ## 一、Sandbox 隔离（Windows 强隔离）【已定稿】

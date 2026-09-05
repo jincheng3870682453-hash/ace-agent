@@ -1,6 +1,6 @@
 # DSH（DeepSeek Harness）源码调研：ACE 可借鉴设计清单
 
-- 调研对象：`C:\Users\69215\Desktop\deepseek-harness`（TypeScript monorepo，docs/subsystems/* 设计文档 + 关键包源码）
+- 调研对象：`C:\Users\<用户名>\Desktop\deepseek-harness`（TypeScript monorepo，docs/subsystems/* 设计文档 + 关键包源码）
 - 调研方式：直读 docs 与源码（行号经 read/grep 核实）+ 4 个并行子代理分域深挖（沙箱/审批、会话/压缩、skill/subagent/workflow/goal、循环/错误/流式/UI）
 - ACE 现状（用于排除"已有"）：Python 实现；五层网关、Guardian 快照回滚、SimHash 记忆、Go 执行器（Job Object+受限令牌）、docker 沙箱、NDJSON IPC、工具按权限裁剪、提示注入隔离（ACE_EXTERNAL_DATA）、上下文压缩、i18n 三语
 - 行号基准：仓库相对路径（相对 `deepseek-harness/`），均已核实

@@ -142,3 +142,18 @@ class ToolSpec:
 - `parse_document` 未走文件路径闸门(只读越界)→ BACKLOG SEC-02
 - `code_execute` AST 精确名拦截可被别名/lambda 绕过 → BACKLOG SEC-01
 - 模块命名风格(旧 `Archive/Nuwa/work/guardian` vs 新 `ace_*`)→ BACKLOG R-06
+
+## 11. 命名与检索索引(R-06)
+
+历史命名无信息量,不强行改名(避免破坏引用),检索时用下列关键词:
+
+| 模块 | 真实职责 | 检索词 |
+|---|---|---|
+| `Archive.py` | SimHash 记忆引擎 | memory / simhash / 记忆 / 主题切换 |
+| `Nuwa.py` | POC 报告(HTML+JSON) | report / POC / 通过率 |
+| `work.py` | 诱饵工厂 + AST 行为检测 | bait / ast / 诱饵 / 检测 |
+| `guardian.py` | 物理快照回滚 | snapshot / rollback / undo / 快照 |
+| `ace_*` | 执行层支撑(策略/网络/上下文/HTTP/日志/主题/选择器/卡片/隔离) | 直接以 ace_ 前缀检索 |
+
+约定(见 `docs/DEVELOPMENT.md` §3):**新模块一律 `ace_` 前缀、小写下划线**;
+新增导出/类请补 docstring 首行职责(检索词友好)。
