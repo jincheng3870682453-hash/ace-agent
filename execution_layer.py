@@ -416,6 +416,7 @@ class ExecutionLayer:
             kb_root=(config or {}).get("kb_root"),
             skills_dir=(config or {}).get("skills_dir"),
             network_enabled=bool((config or {}).get("network_enabled", True)),
+            search_api=(config or {}).get("search_api"),
         )
         # 逐次确认闸门是否已就本轮调用放行；供 _exec_approval_hook 读取。
         self._round_confirmed = False

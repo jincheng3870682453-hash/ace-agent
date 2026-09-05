@@ -41,7 +41,7 @@ import threading
 import time
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Windows GBK 控制台兼容：强制 UTF-8 输出（否则 emoji 会 UnicodeEncodeError）
 for _stream in (sys.stdout, sys.stderr):
@@ -587,6 +587,11 @@ def merge_config(args) -> Dict:
     cfg.setdefault("compact", not bool(getattr(args, "no_compact", False)))
     cfg.setdefault("sandbox", getattr(args, "sandbox", None) or "off")
     cfg.setdefault("sandbox_image", getattr(args, "sandbox_image", None) or "")
+    # 第三方搜索 API（可选）：配置了 key 时 search 优先走它，失败自动回退免 key 爬虫。
+    # 支持 provider=bocha（默认端点写死）或 provider=custom（用 search_api_url 指定端点）。
+    cfg.setdefault("search_api_provider", os.environ.get("ACE_SEARCH_API_PROVIDER", ""))
+    cfg.setdefault("search_api_key", os.environ.get("ACE_SEARCH_API_KEY", ""))
+    cfg.setdefault("search_api_url", os.environ.get("ACE_SEARCH_API_URL", ""))
     # 配置校验与归一化（纯 stdlib dataclass）
     try:
         cli_cfg = CLIConfig.from_dict(cfg)
@@ -1160,6 +1165,7 @@ class _SlashCommands:
         "/goal": "cmd_goal",
         "/audit": "cmd_audit",
         "/net": "cmd_net",
+        "/sandbox": "cmd_sandbox",
         "/open": "cmd_open",
         "/edit": "cmd_edit",
         "/search": "cmd_search",
@@ -1249,12 +1255,9 @@ class _SlashCommands:
             path = self.el.generate_poc_report("Agent CLI 会话报告")
             print(c("green", f"报告已生成: {path}") if path else c("red", "Nuwa 未启用"))
         elif name == "/permission":
-            if len(parts) >= 2 and parts[1] in ("readonly", "write", "full"):
-                self.el.permission.upgrade(parts[1])
-                self.cfg["permission"] = parts[1]
-                print(c("green", f"权限已切换为 {parts[1]}"))
-            else:
-                print(json.dumps(self.el.permission.get_status(), ensure_ascii=False, indent=2))
+            self._handle_permission(parts)
+        elif name == "/sandbox":
+            self._handle_sandbox(parts)
         elif name == "/model":
             self._handle_model(parts)
         elif name == "/mock":
@@ -1394,6 +1397,12 @@ class _SlashCommands:
                 project_root=root,
                 permission_level=str(self.cfg.get("permission", "readonly")),
                 config={"bait": {"enabled": False},
+                        # 子代理跟随主会话的执行沙箱档位：主会话开着 job/docker 边界时，
+                        # 子代理的 code_execute/terminal_exec 不能在宿主上静默跑——
+                        # 那等于主会话切了沙箱、子代理又给开个后门。
+                        "sandbox_base": str(Path(root).resolve() / ".sandbox_tmp"),
+                        "sandbox": {"mode": self.cfg.get("sandbox", "off"),
+                                    "image": self.cfg.get("sandbox_image")},
                         "session_log": sub_slog})
             sub_el.executor.subagent_hook = None   # 子代理不允许再开子代理（防无限递归）
             sub_sys = self._build_subagent_system()
@@ -1430,10 +1439,36 @@ class _SlashCommands:
         except Exception as e:
             return False, f"子代理执行失败: {type(e).__name__}: {e}"
 
-    # ---------- 联网开关（/net：回车切换开/关） ----------
+    # ---------- 切换类命令统一交互（/net /permission /sandbox） ----------
+    #
+    # 三个命令同一套交互契约：
+    #   - 带参快路径：/net on、/permission write、/sandbox job 直接生效；
+    #   - 交互 TTY 下裸命令（回车）不立即生效，而是弹出「二次选择框」：
+    #     选项 = 该主类型的分类型（当前值置顶并标注），输入过滤/↑↓/Enter 选择；
+    #   - 非 TTY（脚本/管道/测试）保持旧的直接行为（/net 开关翻转、
+    #     /permission 打印 JSON、/sandbox 打印用法）——没人可问时不弹框不阻塞。
+
+    def _interactive_tty(self) -> bool:
+        """是否处于可以弹选择框的交互会话（真 TTY 且 prompt_toolkit 可用）"""
+        if run_selector is None:
+            return False
+        try:
+            return bool(sys.stdin.isatty() and sys.stdout.isatty())
+        except Exception:
+            return False
+
+    def _pick_option(self, title: str, options: List[Tuple[str, Any]]) -> Optional[Any]:
+        """弹搜索式二次选择框，返回选中值；用户取消（Esc/Ctrl+C）返回 None。
+        仅在 _interactive_tty() 为 True 时调用（内部不再重复判 TTY）。
+        options = [(显示文本, 取值), ...]，显示文本可带"（当前）"标注。"""
+        labels = [o[0] for o in options]
+        idx = run_selector(title, labels)
+        if idx is None or not (0 <= idx < len(options)):
+            return None
+        return options[idx][1]
 
     def _toggle_net(self, parts: List[str]) -> None:
-        """/net 或 /net on|off：切换联网功能（search/api_get/browser 等联网工具）"""
+        """/net 或 /net on|off：联网开/关。交互 TTY 下裸命令弹 on/off 选择框。"""
         cur = self.el.executor.network_enabled
         if len(parts) > 1:
             arg = parts[1].lower()
@@ -1445,6 +1480,15 @@ class _SlashCommands:
                 return
             print(c("yellow", t("net_usage")))
             return
+        if self._interactive_tty():
+            net_labels = {True: t("net_on"), False: t("net_off")}
+            opts = [(net_labels[v] + ("（当前）" if v == cur else ""), v)
+                    for v in (cur, not cur)]
+            pick = self._pick_option("联网: 选择要切到的状态", opts)
+            if pick is not None:
+                self._set_net(pick)
+            return
+        # 非交互（脚本/管道/测试）：保持原"回车翻转"语义
         self._set_net(not cur)
 
     def _set_net(self, enabled: bool) -> None:
@@ -1452,6 +1496,92 @@ class _SlashCommands:
         self.cfg["network_enabled"] = enabled
         print(c("green" if enabled else "yellow",
                 t("net_status", state=t("net_on") if enabled else t("net_off"))))
+
+    def _handle_permission(self, parts: List[str]) -> None:
+        """/permission 或 /permission [readonly|write|full]：切换权限等级。
+        交互 TTY 下裸命令弹出三档选择框（当前档置顶）。"""
+        if len(parts) >= 2 and parts[1] in ("readonly", "write", "full"):
+            self._set_permission(parts[1])
+            return
+        if self._interactive_tty():
+            cur = str(self.cfg.get("permission", "readonly"))
+            levels = ("readonly", "write", "full")
+            ordered = [cur] + [lv for lv in levels if lv != cur]
+            opts = [(lv + ("（当前）" if lv == cur else ""), lv) for lv in ordered]
+            pick = self._pick_option("权限: 选择等级", opts)
+            if pick is not None:
+                self._set_permission(pick)
+            return
+        # 非交互（脚本/管道/测试）：保持原"打印 JSON 状态"语义
+        print(json.dumps(self.el.permission.get_status(), ensure_ascii=False, indent=2))
+
+    def _set_permission(self, level: str) -> None:
+        if level not in ("readonly", "write", "full"):
+            return
+        self.el.permission.upgrade(level)
+        self.cfg["permission"] = level
+        print(c("green", f"权限已切换为 {level}"))
+
+    def _handle_sandbox(self, parts: List[str]) -> None:
+        """/sandbox 或 /sandbox [off|job|docker]：切换命令执行沙箱档位。
+        交互 TTY 下裸命令弹出三档选择框（当前档置顶）。热切换：会话/历史/工具状态
+        全部保留，只重建执行边界；job/docker 起不来会诚实 503，绝不静默回落宿主。"""
+        if len(parts) >= 2:
+            arg = parts[1].lower()
+            if arg in ("off", "job", "docker"):
+                self._set_sandbox(arg)
+                return
+            print(c("yellow", t("sandbox_usage")))
+            return
+        if self._interactive_tty():
+            cur = str(self.cfg.get("sandbox", "off") or "off")
+            modes = ("off", "job", "docker")
+            ordered = [cur] + [m for m in modes if m != cur]
+            opts = [(m + ("（当前）" if m == cur else ""), m) for m in ordered]
+            pick = self._pick_option("沙箱: 选择执行位置", opts)
+            if pick is not None:
+                self._set_sandbox(pick)
+            return
+        # 非交互（脚本/管道/测试）：只报当前档与用法，不擅动
+        cur = str(self.cfg.get("sandbox", "off") or "off")
+        print(c("yellow", t("sandbox_usage") + f"  当前: {cur}"))
+
+    def _set_sandbox(self, mode: str) -> None:
+        """热切换执行沙箱档位（off/job/docker）。
+
+        ToolExecutor 每次执行时实时读 self.docker_sandbox / self.sandbox_mode /
+        self.use_go_executor，所以只改这三个字段就能无缝换挡：会话历史、权限、
+        快照、审批闸门、联网开关全部原样保留，不需要重启 /clear。
+
+        失败语义与 --sandbox 启动参数完全一致：job/docker 是硬边界，起不来时
+        调用方会收到 503（含 go build / docker build 提示），绝不静默回落宿主；
+        off 档是宿主直跑（可选的 Go 执行器增强起不来才允许静默降级）。
+        """
+        if mode not in ("off", "job", "docker"):
+            print(c("yellow", t("sandbox_usage")))
+            return
+        ex = self.el.executor
+        if mode == "docker":
+            from tools.docker_sandbox import build_sandbox  # noqa: E402
+            ex.docker_sandbox = build_sandbox(
+                {"mode": "docker", "image": self.cfg.get("sandbox_image")},
+                str(ex.project_root))
+        else:
+            ex.docker_sandbox = None
+        ex.sandbox_mode = mode
+        # job 档必须走 Go 执行器（起不来报 503）；off 档顺带用（可静默回退宿主）；
+        # docker 档由 docker_sandbox 接管，不走 Go 执行器。
+        ex.use_go_executor = (
+            mode == "job"
+            or (mode == "off"
+                and os.environ.get("ACE_USE_GO_EXECUTOR", "1").lower()
+                not in ("0", "false", "no", "off")))
+        # job 档每次切换都强制重新探测执行器（之前失败被缓存成 use_go_executor=False，
+        # 换挡后用户可能已 go build，给一次重试机会）。
+        if mode == "job":
+            ex._go_client = None
+        self.cfg["sandbox"] = mode
+        print(c("green", t("sandbox_set", mode=mode)))
 
     # ---------- OpenClaw 式底部状态栏（Footer 聚合，状态带动作提示） ----------
 
@@ -1466,10 +1596,13 @@ class _SlashCommands:
                     "write": "class:footer-w",
                     "full": "class:footer-f"}.get(perm, "class:footer")
         parts.append((perm_cls, f" 权限:{perm} "))
+        parts.append(("class:footer-dim", " F1 "))
         sb = str(self.cfg.get("sandbox", "off") or "off")
         parts.append(("class:footer", f" 沙箱:{sb} "))
+        parts.append(("class:footer-dim", " F2 "))
         net = "开" if getattr(self.el.executor, "network_enabled", True) else "关"
         parts.append(("class:footer-dim", f" 联网:{net} "))
+        parts.append(("class:footer-dim", " F3 "))
         try:
             g = self.el.goal_store.snapshot()
         except Exception:
@@ -2013,6 +2146,12 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 "skills_dir": self.cfg.get("skills_dir"),
                 # 联网开关（/net 切换；默认开）
                 "network_enabled": bool(self.cfg.get("network_enabled", True)),
+                # 第三方搜索 API（可选；search 先试 API，失败自动回退免 key 爬虫）
+                "search_api": {
+                    "key": self.cfg.get("search_api_key", ""),
+                    "provider": self.cfg.get("search_api_provider", ""),
+                    "url": self.cfg.get("search_api_url", ""),
+                },
             },
         )
 
@@ -2561,6 +2700,22 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 def _two_step_enter(event):
                     _handle_enter_key(event.current_buffer)
 
+                # 状态栏三项的直接切换键：F1=权限 F2=沙箱 F3=联网。
+                # 在输入框内任意时刻按下都会立即退出本行输入、弹出对应二次选择框
+                # （未提交的半截输入不保留）。实现：给 prompt() 一个魔数返回值，
+                # 循环外统一转成斜杠命令走 run_command —— 选择框逻辑只有一份。
+                for _hotkey, _hot_cmd in (("f1", "/permission"),
+                                          ("f2", "/sandbox"),
+                                          ("f3", "/net")):
+                    def _hotkey_handler(event, _cmd=_hot_cmd):
+                        try:
+                            # 先清掉当前输入行：热键打断后不留半截文字到下一轮
+                            event.current_buffer.reset()
+                            event.app.exit(result="\x00MENU:" + _cmd)
+                        except Exception:
+                            pass
+                    kb.add(_hotkey)(_hotkey_handler)
+
                 session = PromptSession(
                     completer=_build_slash_completer(self.COMMANDS),
                     complete_while_typing=True,
@@ -2581,6 +2736,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     }),
                 )
                 print(c("dim", "  ✓ 实时补全已启用（输入 / 或 @ 弹出菜单）"))
+                print(c("dim", "  状态栏快捷切换: F1=权限  F2=沙箱  F3=联网（直接弹框选档，"
+                               "也可打 /permission /sandbox /net 回车弹框）"))
             except ImportError:
                 print(c("dim", "  提示: 运行 ace --install-ui 一键安装实时补全依赖（Claude Code 同款 / 弹窗菜单）"))
             except Exception as e:
@@ -2604,6 +2761,10 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 else:
                     line = input(c(_perm_color, f"[{_perm}] ") + c("magenta", "❯ ")).strip()
                 line = line.lstrip("\ufeff")  # 兼容带 UTF-8 BOM 的管道/重定向输入
+                # F1/F2/F3 热键退出输入框时带回魔数标记 → 还原成斜杠命令
+                # （魔数值本身以 / 开头，如 \x00MENU:/permission，只需剥掉前缀）
+                if line.startswith("\x00MENU:"):
+                    line = line[len("\x00MENU:"):]
             except (EOFError, KeyboardInterrupt):
                 print()
                 break

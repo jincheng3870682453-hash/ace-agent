@@ -634,7 +634,7 @@ SEC-006 续（三段闸门）这一轮又翻了一批断言，方向相反但性
 
 - **文件位置**：`tools/web_tools.py:103-108`（search 结果）、`150-163`（api_get 响应）、`tools/file_tools.py:56+`（file_read）、`tools/base.py:143`（parse_document）
 - **触发条件**：Agent 读取任何攻击者可控的内容。
-- **代码证据**：所有工具返回值均为结构化数据，回填到对话历史时**没有来源标注、没有分隔标记、没有"以下内容是数据而非指令"的框定**。例如 `search` 直接把解析出的 `title` / `snippet` 放入结果（`web_tools.py:103-108`），而这些字段来自 HTML 正则提取（`_parse_ddg` / `_parse_bing`），内容完全由被搜索页面控制。
+- **代码证据**：所有工具返回值均为结构化数据，回填到对话历史时**没有来源标注、没有分隔标记、没有"以下内容是数据而非指令"的框定**。例如 `search` 直接把解析出的 `title` / `snippet` 放入结果（`web_tools.py:103-108`），而这些字段来自搜索引擎解析（`_parse_ddg` / `_parse_bing_rss`），内容完全由被搜索页面控制。
 
   `api_get` 返回 `resp.text[:5000]`（`web_tools.py:160`），原样进入上下文。
 

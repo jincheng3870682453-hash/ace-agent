@@ -280,6 +280,19 @@ flowchart TB
 - 守门分层：block 级拦截并回滚本轮快照，warn 级不阻断；只回滚本轮，不动无关修改
 - `api_get`/`api_post` 仅 http/https，且 **DNS 解析后**拦截内网 / 回环 / 链路本地地址（防 SSRF）；未实现的工具返回 501 而非假成功
 
+**联网搜索双通道（免 key 爬虫主通道 + 可选第三方搜索 API）**
+
+- 默认**不需要任何 key**：`search` / `search_read` 走免 key 爬虫——Bing RSS → DuckDuckGo 兜底，结果页正文用 `_page_text` 去噪抽取，不依赖模型 API key，也不依赖任何第三方服务 key
+- 可选 **API-key 通道**（结果更准、带官方摘要）：一旦配置就自动成为首选，失败自动回退上面的爬虫：
+
+  ```bash
+  set ACE_SEARCH_API_KEY=你的key        # 或写进 ~/.ai_code.json 的 search_api_key
+  set ACE_SEARCH_API_PROVIDER=bocha     # 参考实现: 博查 Web Search（api.bocha.cn，有免费额度）
+  # provider=custom 时另配端点: set ACE_SEARCH_API_URL=https://你的端点
+  ```
+
+- API 通道任何失败（key 没配 / 无效 / 超时 / 连不上 / 返回 0 条）都会**自动回退免 key 爬虫**，结果里带 `route` / `api_fallback` / `api_reason` 如实标注给模型和人看，绝不报错糊弄或假装 API 成功
+
 **容器隔离（`--sandbox docker`）**
 
 上面所有校验都是进程内的 Python 逻辑。`terminal_exec` 是 `shell=True`，cwd 固定在项目根挡不住 `cd /`；`code_execute` 的 AST 黑名单也不可能枚举完。真正的边界要靠内核：

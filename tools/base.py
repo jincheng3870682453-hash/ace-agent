@@ -119,7 +119,8 @@ class ToolExecutorBase:
                  approval_hook=None,
                  kb_root: Optional[str] = None,
                  skills_dir: Optional[str] = None,
-                 network_enabled: bool = True):
+                 network_enabled: bool = True,
+                 search_api: Optional[Dict] = None):
         self.project_root = Path(project_root).resolve()
         self.sandbox_base = sandbox_base  # code_execute 沙箱临时目录基路径（None = 系统临时目录）
         self.confine_files = confine_files  # 文件工具是否强制限制在项目目录内
@@ -130,6 +131,12 @@ class ToolExecutorBase:
         self.skills_dir = skills_dir
         # 联网开关（/net 切换）：关闭时 search/api_get/browser 等联网工具一律拒绝
         self.network_enabled = bool(network_enabled)
+        # 第三方搜索 API（可选，默认空 = 全程用免 key 爬虫搜索）。
+        # 配置了 key/provider 时 search 会先试 API，失败自动回退免 key 爬虫。
+        _search_cfg = search_api or {}
+        self.search_api_key = str(_search_cfg.get("key") or "").strip()
+        self.search_api_provider = str(_search_cfg.get("provider") or "").strip().lower()
+        self.search_api_url = str(_search_cfg.get("url") or "").strip()
         # docker 一次性容器执行层（None = 未启用，命令仍在宿主跑）。
         # 只有 terminal_exec / code_execute 走它——那两个才是真正需要内核边界的地方。
         self.docker_sandbox = build_sandbox(sandbox, str(self.project_root))

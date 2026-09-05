@@ -1280,14 +1280,84 @@ check("DDG 解析器: 链接解码 + 标题",
 check("DDG 解析器: 摘要提取",
       "snippet" in ddg_results[0] and "snippet" in ddg_results[0]["snippet"], ddg_results)
 
-sample_bing = ('<li class="b_algo"><h2><a href="https://bing.example.com">'
-               'Bing <b>Result</b></a></h2><p>Bing snippet here</p></li>')
-bing_results = ToolExecutor._parse_bing(sample_bing, 5)
-check("Bing 解析器: 标题/链接/摘要",
+sample_bing_rss = (
+    '<rss><channel><item><title>Bing RSS Result</title>'
+    '<link>https://bing.example.com</link>'
+    '<description><![CDATA[Bing snippet <b>here</b>]]></description>'
+    '</item></channel></rss>')
+bing_results = ToolExecutor._parse_bing_rss(sample_bing_rss, 5)
+check("Bing RSS 解析器: 标题/链接/摘要（CDATA 剥离 + 真实链接）",
       len(bing_results) == 1
       and bing_results[0]["url"] == "https://bing.example.com"
-      and "Bing Result" in bing_results[0]["title"]
+      and "Bing RSS Result" in bing_results[0]["title"]
       and "snippet" in bing_results[0]["snippet"], bing_results)
+
+# —— search 双通道自动切换：免 key 爬虫为主通道；配了第三方搜索 API key 时
+#    API 优先、连不上/0 条/被拒自动回退爬虫（不报错糊弄） ——
+_scr_root = str(tempfile.mkdtemp(prefix="ace_scr_"))
+_no_key = ToolExecutor(project_root=_scr_root, search_api={})
+_ok_res = [{"title": "T", "url": "https://example.com/1", "snippet": "S"}]
+# A) 默认（无 key）：纯免 key 爬虫主通道，route=crawler
+_no_key._search_engine = lambda *a, **k: _ok_res          # 只让爬虫引擎干活
+_r = _no_key.execute({"tool": "search", "query": "x", "top_k": 3})
+check("search 无 key → 免 key 爬虫主通道（route=crawler, engine=bing）",
+      _r.status == "success" and _r.data.get("route") == "crawler"
+      and _r.data.get("engine") == "bing"
+      and not _r.data.get("api_fallback"), _r.data)
+# B) 配了 key 且 API 成功 → route=api、engine=api:bocha、爬虫不再被调
+_with_key = ToolExecutor(
+    project_root=_scr_root, search_api={"key": "k-test", "provider": "bocha"})
+_with_key._search_via_api = lambda q, k: (_ok_res, "")     # API 通道成功
+_crawler_hit = []
+def _never_crawler(*a, **k):
+    _crawler_hit.append(1)
+    return []
+_with_key._search_engine = _never_crawler
+_r = _with_key.execute({"tool": "search", "query": "x", "top_k": 3})
+check("search 配 key 且 API 成功 → 走 API 通道（route=api）",
+      _r.status == "success" and _r.data.get("route") == "api"
+      and _r.data.get("engine") == "api:bocha"
+      and not _crawler_hit, (_r.data, _crawler_hit))
+# C) 配了 key 但 API 失败（401）→ 自动回退免 key 爬虫并如实标注原因
+_fail_key = ToolExecutor(
+    project_root=_scr_root, search_api={"key": "bad", "provider": "bocha"})
+_fail_key._search_via_api = lambda q, k: ([], "HTTP 401: Invalid API KEY")
+_fail_key._search_engine = lambda *a, **k: _ok_res
+_r = _fail_key.execute({"tool": "search", "query": "x", "top_k": 3})
+check("search API 401 → 自动回退爬虫（route=crawler + api_fallback 原因）",
+      _r.status == "success" and _r.data.get("route") == "crawler"
+      and _r.data.get("api_fallback") is True
+      and "401" in _r.data.get("api_reason", ""), _r.data)
+# D) API 与爬虫都失败 → 500 且把 API 失败原因带上
+_both = ToolExecutor(
+    project_root=_scr_root, search_api={"key": "bad", "provider": "bocha"})
+_both._search_via_api = lambda q, k: ([], "连接超时")
+_both._search_engine = lambda *a, **k: []
+_r = _both.execute({"tool": "search", "query": "x", "top_k": 3})
+check("search 双通道全失败 → 500 且附 API 通道原因",
+      _r.status == "error" and _r.error_code == "500"
+      and "连接超时" in _r.message, (_r.status, _r.message))
+# E) API JSON 容错解析（博查/Bing Web Search 结构）
+_bocha_payload = {"code": 200, "data": {"webPages": {"value": [
+    {"name": "例子", "url": "https://a.cn/1", "snippet": "短述",
+     "summary": "长摘要 &amp; 正文"}]}}}
+_parsed = ToolExecutor._parse_search_api_json(_bocha_payload, 5)
+check("搜索 API 解析: 标题/真实URL/长摘要优先",
+      len(_parsed) == 1 and _parsed[0]["url"] == "https://a.cn/1"
+      and "例子" in _parsed[0]["title"]
+      and "长摘要 & 正文" in _parsed[0]["snippet"], _parsed)
+check("搜索 API 解析: 非字典/空结果 → []（触发回退不抛错）",
+      ToolExecutor._parse_search_api_json("oops", 5) == []
+      and ToolExecutor._parse_search_api_json({"data": None}, 5) == [], "")
+# F) 免 key 爬虫正文抽取：去 script/nav/注释、还原实体
+_sample_html = ('<html><head><title>t</title>'
+                '<script>var x=1</script><style>a{}</style></head>'
+                '<body><!-- comment --><nav>菜单</nav>'
+                '<h1>标题</h1><p>正文 &amp; 更多 <b>重点</b></p></body></html>')
+_page_txt = ToolExecutor._page_text(_sample_html)
+check("爬虫正文抽取: 无 script/nav/注释，实体还原",
+      "菜单" not in _page_txt and "comment" not in _page_txt
+      and "标题" in _page_txt and "正文 & 更多 重点" in _page_txt, _page_txt)
 
 # —— 新落地的真实工具（SQLite / 浏览器 / 通知 / 图像） ——
 r = run_agent(el_h, "db_write", query="CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
@@ -3945,6 +4015,107 @@ with contextlib.redirect_stdout(_bufn):
 check("/net on 显式开启", _cli_net.el.executor.network_enabled is True,
       _bufn.getvalue()[:100])
 check("/net 已注册命令", "/net" in ai_code.AgentCLI.COMMANDS, "")
+
+# —— 切换类命令：/sandbox 档位热切换 + /permission 显式切换（会话状态无损） ——
+_sbx_cli = ai_code.AgentCLI({"project_root": str(mktemp()), "permission": "write",
+                             "bait": False, "base_url": "", "api_key": "",
+                             "model": "m1", "tools": False}, mock=True)
+_sbx_ex = _sbx_cli.el.executor
+with contextlib.redirect_stdout(io.StringIO()):
+    _sbx_cli.run_command("/sandbox job")
+check("sandbox → job：cfg 与执行器同步（无 docker 容器、走 Go 执行器）",
+      _sbx_cli.cfg.get("sandbox") == "job"
+      and _sbx_ex.sandbox_mode == "job"
+      and _sbx_ex.docker_sandbox is None
+      and _sbx_ex.use_go_executor is True, "")
+with contextlib.redirect_stdout(io.StringIO()):
+    _sbx_cli.run_command("/sandbox docker")
+check("sandbox → docker：构造一次性容器、不再走 Go 执行器",
+      _sbx_cli.cfg.get("sandbox") == "docker"
+      and _sbx_ex.sandbox_mode == "docker"
+      and _sbx_ex.docker_sandbox is not None
+      and _sbx_ex.use_go_executor is False, "")
+with contextlib.redirect_stdout(io.StringIO()):
+    _sbx_cli.run_command("/sandbox off")
+check("sandbox → off：回宿主执行、容器对象释放",
+      _sbx_cli.cfg.get("sandbox") == "off"
+      and _sbx_ex.sandbox_mode == "off"
+      and _sbx_ex.docker_sandbox is None, "")
+_sbx_before = (len(_sbx_cli.messages), _sbx_cli.session["rounds"],
+               _sbx_cli.session["tools"])
+with contextlib.redirect_stdout(io.StringIO()):
+    _sbx_cli.run_command("/sandbox job")
+check("沙箱热切换无损会话（历史/轮次/工具计数不重置）",
+      (len(_sbx_cli.messages), _sbx_cli.session["rounds"],
+       _sbx_cli.session["tools"]) == _sbx_before, "")
+with contextlib.redirect_stdout(io.StringIO()):
+    _sbx_cli.run_command("/sandbox bogus")
+check("/sandbox 非法档位不生效（保持原档并给用法）",
+      _sbx_cli.cfg.get("sandbox") == "job"
+      and _sbx_ex.sandbox_mode == "job", "")
+with contextlib.redirect_stdout(io.StringIO()):
+    _sbx_cli.run_command("/permission readonly")
+check("/permission 显式切换（cfg + PermissionManager 同步）",
+      _sbx_cli.cfg.get("permission") == "readonly"
+      and _sbx_cli.el.permission.get_status()["current_level"] == "readonly", "")
+check("/sandbox 已注册命令", "/sandbox" in ai_code.AgentCLI.COMMANDS, "")
+
+# —— 交互 TTY 分支：裸命令回车不直接生效，先弹「二次选择框」（选项=主类型分类型）——
+_sel_cli = ai_code.AgentCLI({"project_root": str(mktemp()), "permission": "write",
+                             "bait": False, "base_url": "", "api_key": "",
+                             "model": "m1", "tools": False,
+                             "network_enabled": True}, mock=True)
+
+def _mk_sel_fake(calls, pick):
+    def _f(title, items):
+        calls.append((title, list(items)))
+        return pick
+    return _f
+
+# Esc 取消（selector 返回 None）→ 什么都不动（不再是回车就翻转）
+_calls = []
+with _mocksr.patch.object(ai_code.AgentCLI, "_interactive_tty", return_value=True), \
+     _mocksr.patch.object(ai_code, "run_selector", _mk_sel_fake(_calls, None)), \
+     contextlib.redirect_stdout(io.StringIO()):
+    _sel_cli.run_command("/net")
+check("交互 /net 回车 → 弹开/关选择框（取消则不翻转）",
+      len(_calls) == 1 and _sel_cli.el.executor.network_enabled is True
+      and len(_calls[0][1]) == 2 and "联网" in _calls[0][0], _calls)
+check("交互 /net 选择框当前值置顶（当前=开 排第一）",
+      len(_calls) == 1 and "开" in _calls[0][1][0], _calls)
+# 在二次框里选中「关」（第二项）→ 才生效
+_calls = []
+with _mocksr.patch.object(ai_code.AgentCLI, "_interactive_tty", return_value=True), \
+     _mocksr.patch.object(ai_code, "run_selector", _mk_sel_fake(_calls, 1)), \
+     contextlib.redirect_stdout(io.StringIO()):
+    _sel_cli.run_command("/net")
+check("交互 /net 框内选中「关」→ 生效（而非回车即翻转）",
+      len(_calls) == 1 and _sel_cli.el.executor.network_enabled is False, _calls)
+# /sandbox：当前 off → 弹 off/job/docker，选中第二项 job 生效
+_calls = []
+with _mocksr.patch.object(ai_code.AgentCLI, "_interactive_tty", return_value=True), \
+     _mocksr.patch.object(ai_code, "run_selector", _mk_sel_fake(_calls, 1)), \
+     contextlib.redirect_stdout(io.StringIO()):
+    _sel_cli.run_command("/sandbox")
+check("交互 /sandbox 回车 → 弹 off/job/docker 选择框并选中生效",
+      len(_calls) == 1 and len(_calls[0][1]) == 3
+      and _sel_cli.cfg.get("sandbox") == "job"
+      and _sel_cli.el.executor.sandbox_mode == "job", (_calls, _sel_cli.cfg.get("sandbox")))
+# /permission：当前 write → 弹 readonly/write/full，选中 readonly（第二项）生效
+_calls = []
+with _mocksr.patch.object(ai_code.AgentCLI, "_interactive_tty", return_value=True), \
+     _mocksr.patch.object(ai_code, "run_selector", _mk_sel_fake(_calls, 1)), \
+     contextlib.redirect_stdout(io.StringIO()):
+    _sel_cli.run_command("/permission")
+check("交互 /permission 框内选中 readonly → 生效",
+      len(_calls) == 1 and len(_calls[0][1]) == 3
+      and _sel_cli.cfg.get("permission") == "readonly"
+      and _sel_cli.el.permission.get_status()["current_level"] == "readonly", _calls)
+# F1/F2/F3 热键魔数在 REPL 归一化为斜杠命令（与 repl 内代码同一算法：
+# 魔数本身以 / 开头，剥掉 \x00MENU: 前缀即为完整命令）
+_fk_line = "\x00MENU:/permission"
+_fk_norm = _fk_line[len("\x00MENU:"):]
+check("F 键魔数可归一化为斜杠命令", _fk_norm == "/permission", _fk_norm)
 
 # —— 会话恢复：重启后从上次会话日志重建消息历史（DSH「历史 = 日志派生」落地） ——
 _res_root = Path(tempfile.mkdtemp(prefix="ace_resume_"))

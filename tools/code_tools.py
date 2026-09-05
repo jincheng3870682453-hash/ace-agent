@@ -237,7 +237,7 @@ class CodeTools:
             except Exception:
                 pass
 
-    # ---------- 真实联网搜索（DuckDuckGo → Bing 兜底，无需 API Key） ----------
+    # ---------- 数学计算与时间工具（联网搜索在 web_tools.py） ----------
 
     def _exec_math_calc(self, params: Dict) -> ExecutionResult:
         expression = str(params.get("expression", ""))

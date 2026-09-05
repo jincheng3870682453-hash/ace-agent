@@ -109,7 +109,7 @@ TOOL_SPECS: List[ToolSpec] = [
     ),
     ToolSpec(
         name="search", permission=PERM_READ, handler="_exec_search",
-        description="联网搜索（DuckDuckGo/Bing，无需 API Key）。搜代码请用 grep，不要用这个",
+        description="联网搜索（免 API Key 爬虫主通道：Bing→DuckDuckGo；若配置了第三方搜索 API key 会自动优先并在失败时回退爬虫）。搜代码请用 grep，不要用这个",
         parameters=_obj({"query": {"type": "string"}, "top_k": {"type": "integer"}}, ["query"]),
         example='{"tool":"search","query":"Python 教程","top_k":5}',
     ),

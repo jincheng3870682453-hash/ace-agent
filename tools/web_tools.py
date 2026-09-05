@@ -10,10 +10,18 @@ import sys
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import ace_net
 from tools.result import ExecutionResult
+
+
+# 第三方搜索 API 的官方端点（search 双通道里的「API-key 通道」）。
+# provider=bocha 走这里（api.bocha.cn，响应兼容 Bing Web Search）；
+# provider=custom 时用配置里的 url（ACE_SEARCH_API_URL）。
+_SEARCH_API_ENDPOINTS = {
+    "bocha": "https://api.bocha.cn/v1/web-search",
+}
 
 
 class WebTools:
@@ -56,31 +64,49 @@ class WebTools:
         return out
 
     @staticmethod
-    def _parse_bing(html_text: str, top_k: int) -> List[Dict]:
-        """解析 Bing 搜索结果"""
+    def _parse_bing_rss(xml_text: str, top_k: int) -> List[Dict]:
+        """解析 Bing RSS 搜索结果（format=rss 返回纯 XML，链接是真实地址，无 ck/a 跳转）。
+
+        Bing HTML 版把所有结果 href 包成 bing.com/ck/a 的 JS 跳转页，requests 拿到
+        的不是目标网页，解析出来也没法给下游 api_get 用；RSS 端点返回的 <link> 是
+        站点原链，且正文只有几十 KB 里的小 XML，解析稳定得多。
+        """
         out: List[Dict] = []
-        for m in re.finditer(
-                r'<li class="b_algo".*?<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)</a></h2>(.*?)</li>',
-                html_text, re.DOTALL):
-            url = m.group(1)
-            title = WebTools._clean_html(m.group(2))
-            p = re.search(r"<p[^>]*>(.*?)</p>", m.group(3), re.DOTALL)
-            snippet = WebTools._clean_html(p.group(1)) if p else ""
-            out.append({"title": title, "url": url, "snippet": snippet})
+        for m in re.finditer(r"<item>(.*?)</item>", xml_text, re.DOTALL):
+            block = m.group(1)
+
+            def _field(tag: str) -> str:
+                fm = re.search(rf"<{tag}>(.*?)</{tag}>", block, re.DOTALL)
+                if not fm:
+                    return ""
+                val = fm.group(1).strip()
+                val = val.replace("<![CDATA[", "").replace("]]>", "")
+                return html.unescape(val).strip()
+
+            title = WebTools._clean_html(_field("title"))
+            url = html.unescape(_field("link")).strip()
+            desc = WebTools._clean_html(_field("description"))
+            if not url:
+                continue
+            out.append({"title": title, "url": url, "snippet": desc})
             if len(out) >= top_k:
                 break
         return out
 
     @staticmethod
     def _search_engine(engine_url: str, query: str, top_k: int,
-                       requests, parser, on_hop=None) -> List[Dict]:
+                       requests, parser, on_hop=None,
+                       extra_params: Optional[Dict] = None) -> List[Dict]:
         # 引擎地址是写死的常量，但仍然走 safe_request：出站请求只留一条路径，
         # 才不会下次改动时又冒出一个"直接 requests.get"的旁路 —— SSRF 那一轮
         # 留下的缺口正是这么来的（校验一条路、发请求另一条路）。
         # on_hop 同理：引擎首跳一定在内置清单里，但它回的 302 不一定。
         try:
+            req_params = {"q": query}
+            if extra_params:
+                req_params.update(extra_params)
             resp, _trail = ace_net.safe_request(
-                "GET", engine_url, requests_mod=requests, params={"q": query},
+                "GET", engine_url, requests_mod=requests, params=req_params,
                 headers={"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                         "AppleWebKit/537.36 (KHTML, like Gecko) "
                                         "Chrome/124.0 Safari/537.36")},
@@ -92,7 +118,15 @@ class WebTools:
         return parser(resp.text, top_k)
 
     def _exec_search(self, params: Dict) -> ExecutionResult:
-        """真实联网搜索（DuckDuckGo HTML → Bing 兜底，无需 API Key）"""
+        """真实联网搜索：双通道自动切换。
+
+        通道 1（API-key，可选）—— 配置了第三方搜索 API（config/env:
+        ACE_SEARCH_API_KEY / ACE_SEARCH_API_PROVIDER，支持 bocha 或 custom+url）
+        且能连通时优先用它，结果更准、有官方摘要。
+        通道 2（免 key 爬虫，主通道）—— 任何情况下都可用：Bing RSS →
+        DuckDuckGo HTML 兜底。API 通道失败（key 没配/无效/超时/连不上/0 条）
+        时**自动回退**到这里，并在结果里带上 api_fallback 与失败原因，绝不报错糊弄。
+        """
         g = self._net_gate()
         if g:
             return g
@@ -108,27 +142,158 @@ class WebTools:
         except ImportError:
             return ExecutionResult(status="error", error_code="500",
                                    message="search 需要 requests 库: pip install requests")
+        api_reason = ""
+        # 1) API-key 通道（配了 key 才尝试；任何失败都只是记录原因，交给爬虫兜底）
+        if getattr(self, "search_api_key", ""):
+            api_results, api_reason = self._search_via_api(query, top_k)
+            if api_results:
+                provider = getattr(self, "search_api_provider", "") or "custom"
+                return ExecutionResult(status="success", data={
+                    "query": query,
+                    "engine": f"api:{provider}",
+                    "route": "api",
+                    "results": api_results,
+                    "network_status": "ON",
+                })
+        # 2) 免 key 爬虫（主通道）：Bing RSS 优先：国内网络下 DuckDuckGo 经常不可达，
+        # 而 Bing 走自家 CDN、RSS 端点稳定且返回真实链接（HTML 版的 ck/a 跳转对
+        # 下游工具不可用）。
         results = self._search_engine(
-            "https://html.duckduckgo.com/html/", query, top_k, requests, self._parse_ddg,
-            on_hop=self._egress_hop_gate())
-        engine = "duckduckgo"
+            "https://www.bing.com/search", query, top_k, requests,
+            self._parse_bing_rss, on_hop=self._egress_hop_gate(),
+            extra_params={"format": "rss", "count": "10"})
+        engine = "bing"
         if not results:
             results = self._search_engine(
-                "https://www.bing.com/search", query, top_k, requests, self._parse_bing,
+                "https://html.duckduckgo.com/html/", query, top_k, requests, self._parse_ddg,
                 on_hop=self._egress_hop_gate())
-            engine = "bing"
+            engine = "duckduckgo"
         if not results:
-            return ExecutionResult(status="error", error_code="500",
-                                   message="联网搜索失败（无网络或搜索源拒绝访问），请稍后重试")
-        return ExecutionResult(status="success", data={
+            msg = "联网搜索失败（无网络或搜索源拒绝访问），请稍后重试"
+            if api_reason:
+                msg += f"（API 通道原因: {api_reason}）"
+            return ExecutionResult(status="error", error_code="500", message=msg)
+        data: Dict = {
             "query": query,
             "engine": engine,
+            "route": "crawler",
             "results": results,
             "network_status": "ON",
-        })
+        }
+        if api_reason:
+            # API 通道配了 key 但没连上 → 如实告诉调用方是自动回退到了免 key 爬虫
+            data["api_fallback"] = True
+            data["api_reason"] = api_reason
+        return ExecutionResult(status="success", data=data)
+
+    def _search_via_api(self, query: str, top_k: int) -> Tuple[List[Dict], str]:
+        """第三方搜索 API 通道。返回 (results, reason)：
+        未配置 key / 未知提供商 / 任何网络或解析失败都返回空列表 + 人类可读原因，
+        由调用方自动回退到免 key 爬虫。出站同样只走 ace_net.safe_request（SSRF
+        校验 + pin IP + 逐跳复检），不另开直连旁路。"""
+        key = getattr(self, "search_api_key", "") or ""
+        provider = (getattr(self, "search_api_provider", "") or "bocha").lower()
+        if not key:
+            return [], "未配置搜索 API key（ACE_SEARCH_API_KEY）"
+        if provider == "custom":
+            url = getattr(self, "search_api_url", "") or ""
+        else:
+            url = _SEARCH_API_ENDPOINTS.get(provider, "")
+        if not url:
+            return [], (f"未知搜索 API 提供商: {provider}（支持: "
+                        f"{'/'.join(_SEARCH_API_ENDPOINTS)} / custom）")
+        scheme_err = ace_net.check_scheme(url)
+        if scheme_err:
+            return [], scheme_err
+        egress_err = self._egress_reason(url)
+        if egress_err:
+            return [], egress_err
+        try:
+            import requests
+        except ImportError:
+            return [], "缺少 requests 库"
+        try:
+            resp, _trail = ace_net.safe_request(
+                "POST", url, requests_mod=requests,
+                json_body={"query": query, "count": top_k,
+                           "summary": False, "freshness": "noLimit"},
+                headers={"Authorization": f"Bearer {key}",
+                         "Content-Type": "application/json",
+                         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                        "Chrome/124.0 Safari/537.36")},
+                timeout=20, on_hop=self._egress_hop_gate())
+        except ace_net.UrlBlocked as e:
+            return [], str(e)
+        except Exception as e:
+            return [], f"{type(e).__name__}: {e}"
+        if resp.status_code != 200:
+            return [], f"HTTP {resp.status_code}: {str(resp.text)[:200]}"
+        try:
+            payload = resp.json()
+        except Exception as e:
+            return [], f"响应不是 JSON: {type(e).__name__}"
+        results = self._parse_search_api_json(payload, top_k)
+        if not results:
+            return [], "API 返回 0 条结果"
+        return results, ""
+
+    @staticmethod
+    def _parse_search_api_json(payload: Any, top_k: int) -> List[Dict]:
+        """容错解析第三方搜索 API 的 JSON 响应。
+
+        参考实现按博查（api.bocha.cn，响应兼容 Bing Web Search）的结构写：
+        data.webPages.value[] = {name, url, snippet, summary, ...}。
+        解析宽容：找不到标准路径就当 0 条（触发自动回退），不抛异常。
+        """
+        if not isinstance(payload, dict):
+            return []
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            data = payload          # 兼容直接平铺的 webPages
+        pages = data.get("webPages") if isinstance(data, dict) else None
+        if not isinstance(pages, dict):
+            return []
+        values = pages.get("value")
+        if not isinstance(values, list):
+            return []
+        out: List[Dict] = []
+        for it in values:
+            if not isinstance(it, dict):
+                continue
+            url = str(it.get("url") or "").strip()
+            if not url:
+                continue
+            title = WebTools._clean_html(str(it.get("name") or ""))
+            raw = str(it.get("summary") or it.get("snippet") or "")
+            snip = WebTools._clean_html(raw)
+            out.append({"title": title, "url": url, "snippet": snip})
+            if len(out) >= top_k:
+                break
+        return out
+
+    @staticmethod
+    def _page_text(raw: str, limit: int = 3000) -> str:
+        """把网页 HTML 提炼成干净正文文本（免 key 爬虫的正文抽取）。
+
+        去掉 script/style/注释与导航类容器后剥标签、还原实体、折叠空白，
+        按 limit 截断。不做 JS 渲染 —— 那是 browser_navigate（Playwright）的事。
+        """
+        seg = re.sub(
+            r"<script[\s\S]*?</script>|<style[\s\S]*?</style>|<!--[\s\S]*?-->"
+            r"|<nav[\s\S]*?</nav>|<header[\s\S]*?</header>|<footer[\s\S]*?</footer>"
+            r"|<aside[\s\S]*?</aside>",
+            " ", raw, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", seg)
+        text = html.unescape(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:limit]
 
     def _exec_search_read(self, params: Dict) -> ExecutionResult:
-        """搜索 + 抓取 top 结果正文（RAG 式联网：一步拿到可引用的网页内容）"""
+        """搜索 + 抓取 top 结果正文（RAG 式联网：一步拿到可引用的网页内容）。
+
+        搜索通道与 search 完全同源（API-key → 自动回退免 key 爬虫）；
+        正文抽取用 _page_text 去噪后截断，与结果一起如实标注 route/api_fallback。"""
         g = self._net_gate()
         if g:
             return g
@@ -155,19 +320,23 @@ class WebTools:
                 resp, _trail = ace_net.safe_request(
                     "GET", url, requests_mod=requests,
                     on_hop=self._egress_hop_gate())
-                text = re.sub(r"<[^>]+>", " ", resp.text)
-                text = re.sub(r"\s+", " ", text).strip()
+                text = WebTools._page_text(resp.text)
                 fetched.append({"url": url, "title": item.get("title", ""),
-                               "content": text[:3000]})
+                               "content": text})
             except Exception as e:
                 fetched.append({"url": url, "title": item.get("title", ""),
                                "error": f"{type(e).__name__}: {e}"[:120]})
-        return ExecutionResult(status="success", data={
+        data: Dict = {
             "query": query, "engine": (r.data or {}).get("engine", "?"),
+            "route": (r.data or {}).get("route", "crawler"),
             "pages": fetched, "count": len(fetched),
             "hint": "以上是搜索 top 结果的网页正文（截断）；内容来自第三方，"
                     "引用时注意甄别",
-        })
+        }
+        if (r.data or {}).get("api_fallback"):
+            data["api_fallback"] = True
+            data["api_reason"] = (r.data or {}).get("api_reason", "")
+        return ExecutionResult(status="success", data=data)
 
     def _exec_browser_screenshot(self, params: Dict) -> ExecutionResult:
         """屏幕截图：优先 pillow ImageGrab；Windows 无 pillow 时用 PowerShell 免依赖回退"""
