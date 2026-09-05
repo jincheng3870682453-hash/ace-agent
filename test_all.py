@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-test_all.py —— ai angent 全模块端到端测试（纯 stdlib，无需 pytest）
+test_all.py —— ACE 全模块端到端测试（纯 stdlib，无需 pytest）
 
 覆盖：
   1. gateway_v2  网关（L1 意图 / L2 技能 / L4 守门 8 规则 / L5 飞轮）

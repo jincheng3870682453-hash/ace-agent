@@ -7,6 +7,7 @@
 
 **版本目录**
 
+- [v3.1 · 2026-09-05 · 仓库统一 + 实测基准 + 真实模型 e2e](#v31-2026-09-05)
 - [v3.0 · 2026-09-05 · 联网双通道 + CLI 状态热切换](#v30-2026-09-05)
 - [v2.2 · 2026-08-30 · CLI 视觉重设计（OpenClaw 风格）](#v22-2026-08-30)
 - [v2.1 · 2026-08-29 · Agent 能力爆发](#v21-2026-08-29)
@@ -14,6 +15,16 @@
 - [v1.2 · 2026-08-21 ~ 08-24 · CLI 体验与工具体系](#v12-2026-08-21-08-24)
 - [v1.1 · 2026-08-20 · 真实工具落地](#v11-2026-08-20)
 - [v1.0 · 2026-08-19 · 初版](#v10-2026-08-19)
+
+## [v3.1] · 2026-09-05
+
+**仓库结构统一 + 实测基准 + 真实模型 E2E**
+
+- ⚙️ 改进：仓库结构统一——ACE 成为单一 git 仓库（目录 `ai angent` → `ace`）；提示词工程迭代文档归档进 `docs/prompt-engineering/`（含版本演进表与上下文包）；第三方参考源码（`_reference` 的 cline/codex clone）移出版本控制仅留本地；清理 `.guardian` / `.test_tmp` / `__pycache__` 等快照与缓存（均已 gitignore）
+- ✨ 新增：`benchmarks/bench_core.py` 实测基准（纯 stdlib、不联网、一键复现 `python benchmarks/bench_core.py`）——正确性检查 **24/24**，输出 `benchmarks/results/bench_report.{md,json}`；文档中不可复现的预估百分比（如 +200%）已由实测数字替换
+- ✨ 新增：`e2e/real_model_smoke.py` 真实模型端到端冒烟（OpenAI 兼容端点，env：`ACE_E2E_BASE_URL/API_KEY/MODEL`）
+- ⚙️ 改进：CI 新增两个 job——`bench`（基准健康检查，`--quick`）与 `e2e-real-model`（配齐 `ACE_E2E_*` secrets 才执行，未配则整任务跳过、不红）
+- 🐛 修复：`tools/skill_tools.py` docstring 无效转义 `\A`（Python 3.12 SyntaxWarning）
 
 ## [v3.0] · 2026-09-05
 

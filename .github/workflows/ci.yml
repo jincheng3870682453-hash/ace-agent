@@ -87,3 +87,36 @@ jobs:
       # 只查语法错误/未定义名/被破坏的表达式等硬错误（E9/F63/F7/F82），
       # 不做风格强制，避免因换行宽度等导致 CI 红；ruff 尊重 .gitignore 自动跳过 .test_tmp
       - run: ruff check . --select E9,F63,F7,F82
+
+  bench:
+    name: Benchmark health (--quick)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run bench (样本减半)
+        run: |
+          python benchmarks/bench_core.py --quick
+          echo "--- bench_report.md 摘要 ---"
+          cat benchmarks/results/bench_report.md
+
+  e2e-real-model:
+    # 真实模型端到端冒烟：只有仓库配了 ACE_E2E_* secrets 才跑，否则整任务跳过（不红）
+    name: E2E real model (OpenAI 兼容)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ secrets.ACE_E2E_API_KEY != '' && secrets.ACE_E2E_BASE_URL != '' && secrets.ACE_E2E_MODEL != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Real-model E2E (提问 → 执行层裁决 → 工具 → 作答)
+        env:
+          ACE_E2E_BASE_URL: ${{ secrets.ACE_E2E_BASE_URL }}
+          ACE_E2E_API_KEY: ${{ secrets.ACE_E2E_API_KEY }}
+          ACE_E2E_MODEL: ${{ secrets.ACE_E2E_MODEL }}
+        run: python e2e/real_model_smoke.py

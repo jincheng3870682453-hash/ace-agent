@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """tools.skill_tools —— 文件式技能库（借鉴 DSH skill 体系 C1/C2 的务实版）
 
-G:\AI_skils 这类技能集合：每个技能一个目录，内含 SKILL.md（frontmatter:
+G:\\AI_skils 这类技能集合：每个技能一个目录，内含 SKILL.md（frontmatter:
 name/description + 正文 instructions）。ACE 把它们变成：
 - skill_list：列出可用技能（目录注入——模型知道有哪些，不塞正文）
 - skill_load：按需加载某个技能的完整正文（模型/用户需要时才注入，不占常驻预算）

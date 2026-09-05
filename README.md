@@ -425,6 +425,7 @@ ace-agent/
 ├── i18n.py + locales/          # 轻量国际化（zh / en / ja JSON 字典）
 ├── prompts/                    # 系统提示词：v7 完整版 · v8 精简版 · tools 原生调用版
 ├── test_all.py                 # 全模块端到端测试（纯 stdlib，950+ 断言，Windows 实测 955，随平台浮动）
+├── benchmarks/                 # 实测基准：bench_core.py 一键复现，results/ 存报告（正确率/延迟/吞吐）
 ├── demo/                       # README 演示动画 + 录制脚本（跑真实 --mock 会话）
 ├── assets/logo.svg             # 标识（原创几何构图，无第三方素材）
 
@@ -446,6 +447,7 @@ ace-agent/
 
 ```bash
 python test_all.py                          # 全量测试，退出码非 0 即失败
+python benchmarks/bench_core.py             # 实测基准 → benchmarks/results/bench_report.md
 ruff check . --select E9,F63,F7,F82         # CI 用的同一套硬错误检查
 python demo/record_demo.py                  # 重录 README 顶部的演示动画
 python demo/record_demo.py --check          # 只校验动画是否还和当前输出一致
