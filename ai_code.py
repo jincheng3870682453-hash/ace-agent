@@ -52,6 +52,9 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 FOLDER = Path(__file__).resolve().parent
+
+# 思考过程可视化开关(/thinking 或 F4 切换;模块级,回调与命令共享)
+_ACE_SHOW_THINKING = False
 sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
@@ -1165,6 +1168,7 @@ class _SlashCommands:
         "/audit": "cmd_audit",
         "/net": "cmd_net",
         "/sandbox": "cmd_sandbox",
+        "/thinking": "cmd_thinking",
         "/open": "cmd_open",
         "/edit": "cmd_edit",
         "/search": "cmd_search",
@@ -1217,6 +1221,17 @@ class _SlashCommands:
             print(c("green", t("clear_done")))
         elif name == "/status":
             self._show_status()
+        elif name == "/thinking":
+            global _ACE_SHOW_THINKING
+            _arg = (parts[1] if len(parts) > 1 else "").lower()
+            if _arg in ("on", "1", "true", "yes", "开"):
+                _ACE_SHOW_THINKING = True
+            elif _arg in ("off", "0", "false", "no", "关"):
+                _ACE_SHOW_THINKING = False
+            else:
+                _ACE_SHOW_THINKING = not _ACE_SHOW_THINKING
+            print(c("cyan", "  思考过程: " + ("开 ✓（F4 或 /thinking 关闭；思考将以灰色区分）"
+                  if _ACE_SHOW_THINKING else "关 ✓（F4 或 /thinking 开启）")))
         elif name == "/stats":
             print(json.dumps(self.el.get_stats(), ensure_ascii=False, indent=2))
         elif name == "/memory":
@@ -2295,6 +2310,15 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
 
         def on_delta(full: str) -> None:
             state = "thinking"
+            if _ACE_SHOW_THINKING and not st.get("think_shown") and "</INTERNAL>" in full:
+                st["think_shown"] = True
+                try:
+                    _inner = full.split("<INTERNAL>", 1)[1].split("</INTERNAL>", 1)[0]
+                except IndexError:
+                    _inner = ""
+                for _ln in _inner.splitlines():
+                    if _ln.strip():
+                        print(c("dim", "· " + _ln.strip()[:240]))
             has_protocol = "<INTERNAL>" in full or "<EXTERNAL>" in full
             if has_protocol:
                 # 模型按协议输出：隐藏 INTERNAL 思考，只展示 EXTERNAL 内容
@@ -2727,7 +2751,8 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 # 循环外统一转成斜杠命令走 run_command —— 选择框逻辑只有一份。
                 for _hotkey, _hot_cmd in (("f1", "/permission"),
                                           ("f2", "/sandbox"),
-                                          ("f3", "/net")):
+                                          ("f3", "/net"),
+                                          ("f4", "/thinking")):
                     def _hotkey_handler(event, _cmd=_hot_cmd):
                         try:
                             # 先清掉当前输入行：热键打断后不留半截文字到下一轮
@@ -2743,7 +2768,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     key_bindings=kb,
                     bottom_toolbar=self._footer,
                     style=Style.from_dict({
-                        "prompt": "ansimagenta bold",
+                        "prompt": "ansimagenta bold blink",
                         "perm": "ansicyan bold",
                         "footer": "bg:#2b2b3c #aaaaaa",
                         "footer-dim": "bg:#2b2b3c #666666",
@@ -2759,6 +2784,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                 print(c("dim", "  ✓ 实时补全已启用（输入 / 或 @ 弹出菜单）"))
                 print(c("dim", "  状态栏快捷切换: F1=权限  F2=沙箱  F3=联网（直接弹框选档，"
                                "也可打 /permission /sandbox /net 回车弹框）"))
+                print(c("dim", "  二级提示: /thinking 或 F4 开/关思考过程 · 开启后思考以灰色区分"))
             except ImportError:
                 print(c("dim", "  提示: 运行 ace --install-ui 一键安装实时补全依赖（Claude Code 同款 / 弹窗菜单）"))
             except Exception as e:
@@ -2776,11 +2802,10 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                                "full": "ansired"}.get(_perm, "ansicyan")
                 if session is not None:
                     line = session.prompt([
-                        ("class:perm", f"[{_perm}] "),
-                        ("class:prompt", "❯ "),
+                        ("class:prompt", "▊ "),
                     ]).strip()
                 else:
-                    line = input(c(_perm_color, f"[{_perm}] ") + c("magenta", "❯ ")).strip()
+                    line = input(c("magenta", "▊ ")).strip()
                 line = line.lstrip("\ufeff")  # 兼容带 UTF-8 BOM 的管道/重定向输入
                 # F1/F2/F3 热键退出输入框时带回魔数标记 → 还原成斜杠命令
                 # （魔数值本身以 / 开头，如 \x00MENU:/permission，只需剥掉前缀）
@@ -2889,4 +2914,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if sys.stdin.isatty() and "--input" not in sys.argv \
+            and os.environ.get("ACE_NO_ALTSCREEN") != "1":
+        AgentCLI._enable_windows_vt()
+        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        sys.stdout.flush()
+        import atexit
+        atexit.register(lambda: sys.stdout.write("\x1b[?25h\x1b[?1049l"))
+
     main()

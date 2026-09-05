@@ -180,5 +180,6 @@
   "net_usage": "Usage: /net pick on/off, or /net on|off",
   "sandbox_set": "Sandbox tier switched to: {mode} (session/history/permissions kept; only future terminal_exec / code_execute are affected)",
   "sandbox_usage": "Usage: /sandbox pick via Enter, or /sandbox off|job|docker (off=host, job=Job Object boundary, docker=one-shot container)",
-  "banner_net": "Network: {state} (/net toggles)"
+  "banner_net": "Network: {state} (/net toggles)",
+  "cmd_thinking": "Toggle thinking view (F4 or /thinking)"
 }

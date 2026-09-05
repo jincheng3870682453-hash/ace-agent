@@ -180,5 +180,6 @@
   "net_usage": "用法: /net 回车选开/关，或 /net on|off",
   "sandbox_set": "沙箱执行档位已切换: {mode}（会话/历史/权限不变，仅影响后续 terminal_exec / code_execute）",
   "sandbox_usage": "用法: /sandbox 回车弹框选档，或 /sandbox off|job|docker（off=宿主执行，job=Job Object 边界，docker=一次性容器）",
-  "banner_net": "联网: {state}（/net 切换）"
+  "banner_net": "联网: {state}（/net 切换）",
+  "cmd_thinking": "开/关 思考过程可视化（F4 或 /thinking）"
 }
