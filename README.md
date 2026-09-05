@@ -15,7 +15,7 @@
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue">
   <img alt="Dependencies" src="https://img.shields.io/badge/core%20deps-zero-orange">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <a href="CHANGELOG.md"><img alt="Latest" src="https://img.shields.io/badge/latest-v3.1%20(2026--09--05)-brightgreen"></a>
+  <a href="CHANGELOG.md"><img alt="Latest" src="https://img.shields.io/badge/latest-v3.3%20(2026--09--05)-brightgreen"></a>
   <a href="CHANGELOG.md"><img alt="Changelog" src="https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-CHANGELOG-blue"></a>
 </p>
 
@@ -424,7 +424,7 @@ ace-agent/
 │   ├── kb_tools.py             #   自定义知识库（kb_search/kb_add/kb_list）
 │   └── docker_sandbox.py       #   容器执行层（--sandbox docker）
 ├── gateway_v2/                 # 网关包：intent(L1/L2) · guard(L4) · flywheel(L5)
-├── work.py                     # 诱饵工厂 + ASTDetector + BehaviorConstraint
+├── work.py                     # 诱饵工厂 + AST 行为检测（ASTDetector）
 ├── guardian.py                 # 物理快照回滚：快照 / 完整性预检 / HMAC / 自动清理
 ├── Archive.py                  # SimHash 记忆引擎
 ├── Nuwa.py                     # POC 报告（HTML + JSON）
@@ -481,6 +481,8 @@ ACE 从 2026-08 至今的迭代脉络（版本号为开发阶段代称，未打 
 
 | 版本 | 时间 | 主题 |
 |---|---|---|
+| [v3.3](CHANGELOG.md#v33-2026-09-05) | 2026-09-05 | P1 质量收尾：ruff 扩选+清死导入、bench 健康门、临时目录健壮性、ace.cmd 探测、文档数字去硬编码、e2e 重试、version.py/SECURITY/PR 模板 |
+| [v3.2](CHANGELOG.md#v32-2026-09-05) | 2026-09-05 | P0 安全批：沙箱引用级拦截 / parse_document 越界 / 快照签名默认开 / screenshot 降权 / execpolicy 收口 |
 | [v3.1](CHANGELOG.md#v31-2026-09-05) | 2026-09-05 | 仓库结构统一（ai angent→ace、提示词工程文档并入 docs/）+ 实测基准 benchmarks + 真实模型 e2e/CI（secrets 门控） |
 | [v3.0](CHANGELOG.md#v30-2026-09-05) | 2026-09-05 | 联网搜索双通道（API key 自动回退免 key 爬虫）+ CLI 状态热切换（F1/F2/F3、回车弹选择框） |
 | [v2.2](CHANGELOG.md#v22-2026-08-30) | 2026-08-30 | CLI 视觉重设计：语义主题 / 结果卡片 / 搜索式选择器 |

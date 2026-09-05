@@ -52,11 +52,10 @@ except ImportError:
 
 # V1 行为约束
 try:
-    from work import BehaviorConstraint, BaitFactory, ASTDetector
+    from work import BaitFactory, ASTDetector
     V1_WORK_AVAILABLE = True
 except ImportError:
     V1_WORK_AVAILABLE = False
-    BehaviorConstraint = None
 
 # V1 快照回滚
 try:

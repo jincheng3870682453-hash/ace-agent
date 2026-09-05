@@ -4,7 +4,7 @@
 work.py —— V1 行为约束：诱饵工厂（BaitFactory）+ AST 行为检测（ASTDetector）
 
 契约（execution_layer.py）：
-    from work import BehaviorConstraint, BaitFactory, ASTDetector
+    from work import BaitFactory, ASTDetector
 
     bait_factory = BaitFactory()
     baited_code, bait_meta = bait_factory.inject_bait(code)   # 注入语义诱饵
@@ -19,7 +19,7 @@ import random
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 # ============================================================
@@ -320,35 +320,6 @@ class ASTDetector:
 
 
 # ============================================================
-# V1 行为约束桥接
-# ============================================================
-
-class BehaviorConstraint:
-    """V1 行为约束桥接：一键校验全部规则，返回违规清单"""
-
-    RULE_DESCRIPTIONS = {
-        "unused_import": "未使用导入",
-        "type_hints": "函数缺少类型注解",
-        "infinite_recursion": "无限递归",
-        "circular_ref": "循环引用",
-        "hardcoded_secrets": "硬编码密钥",
-        "sql_injection": "SQL 注入风险",
-    }
-
-    def __init__(self) -> None:
-        self.detector = ASTDetector()
-
-    def validate(self, code: str) -> Dict[str, Any]:
-        report = self.detector.check_all(code)
-        failed = [r for r, ok in report.items() if not ok]
-        return {
-            "passed": not failed,
-            "failed": failed,
-            "report": report,
-            "descriptions": {r: self.RULE_DESCRIPTIONS[r] for r in failed},
-        }
-
-
 if __name__ == "__main__":
     ad = ASTDetector()
     bad_code = "import unused_xyz\n\ndef f(x):\n    return x + 1\n"

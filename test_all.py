@@ -126,7 +126,7 @@ check("L5 SFT 样本导出", len(gw2.flywheel.export_for_sft()) == 1)
 # ============================================================
 print("[2] work —— 诱饵工厂 + AST 行为检测")
 # ============================================================
-from work import BaitFactory, ASTDetector, BehaviorConstraint  # noqa: E402
+from work import BaitFactory, ASTDetector  # noqa: E402
 
 bf = BaitFactory(seed=42)
 for t in ("unused_import", "type_mismatch", "circular_ref", "infinite_recursion", "missing_return"):
@@ -158,8 +158,6 @@ check("AST 硬编码密钥检测", rep5["hardcoded_secrets"] is False, rep5)
 rep6 = ad.check_all('import sqlite3\nq = "SELECT * FROM t WHERE id=" + uid\n')
 check("AST SQL 注入检测", rep6["sql_injection"] is False, rep6)
 
-bc = BehaviorConstraint()
-check("BehaviorConstraint 桥接校验", bc.validate("import x_never_used\n")["passed"] is False)
 
 # ============================================================
 print("[3] guardian —— 物理快照回滚")
