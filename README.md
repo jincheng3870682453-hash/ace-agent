@@ -15,6 +15,8 @@
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue">
   <img alt="Dependencies" src="https://img.shields.io/badge/core%20deps-zero-orange">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="CHANGELOG.md"><img alt="Latest" src="https://img.shields.io/badge/latest-v3.0%20(2026--09--05)-brightgreen"></a>
+  <a href="CHANGELOG.md"><img alt="Changelog" src="https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-CHANGELOG-blue"></a>
 </p>
 
 <p align="center">
@@ -41,6 +43,7 @@
 - [配置](#配置)
 - [项目结构](#项目结构)
 - [开发与测试](#开发与测试)
+- [版本历史](#版本历史)
 - [许可](#许可)
 - [设计参考](#设计参考)
 
@@ -421,7 +424,7 @@ ace-agent/
 ├── universal_document_parser.py# N 合一文档解析 + 懒加载 + 50MB 防线
 ├── i18n.py + locales/          # 轻量国际化（zh / en / ja JSON 字典）
 ├── prompts/                    # 系统提示词：v7 完整版 · v8 精简版 · tools 原生调用版
-├── test_all.py                 # 全模块端到端测试（纯 stdlib，836 项断言）
+├── test_all.py                 # 全模块端到端测试（纯 stdlib，950+ 断言，Windows 实测 955，随平台浮动）
 ├── demo/                       # README 演示动画 + 录制脚本（跑真实 --mock 会话）
 ├── assets/logo.svg             # 标识（原创几何构图，无第三方素材）
 
@@ -433,6 +436,7 @@ ace-agent/
 │   └── dsh_research.md         #   DeepSeek Harness 源码调研（62 项可借鉴设计）
 
 ├── LICENSE                     # MIT
+├── CHANGELOG.md                # 逐版本更新日志（Keep a Changelog 风格）
 ├── docker/                     # lite / standard / full 三档整体镜像 + sandbox 执行镜像 + 模型下载脚本
 
 └── .github/workflows/ci.yml    # CI：Python 3.10/3.11/3.12 全量测试 + ruff + Go 执行器 vet/build/test/race
@@ -454,6 +458,22 @@ python demo/record_demo.py --check          # 只校验动画是否还和当前�
 改动前请读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（环境 / 测试 / 风格 / 提交流程）。改了行为的话，把断言旧行为的用例一起改掉——不要只加新用例。
 
 Windows 提示：控制台 GBK 已做 UTF-8 兜底，但建议全局设 `PYTHONUTF8=1`。文档解析的增强依赖（python-docx / openpyxl / pdfplumber / pymupdf / pytesseract）按需装，见 `requirements.txt`；旧版 Office 格式（.doc/.xls/.ppt/.wps/.et）回退依赖系统级 LibreOffice 或 antiword。
+
+## 版本历史
+
+ACE 从 2026-08 至今的迭代脉络（版本号为开发阶段代称，未打 git tag；逐次提交见 `git log`）：
+
+| 版本 | 时间 | 主题 |
+|---|---|---|
+| [v3.0](CHANGELOG.md#v30-2026-09-05) | 2026-09-05 | 联网搜索双通道（API key 自动回退免 key 爬虫）+ CLI 状态热切换（F1/F2/F3、回车弹选择框） |
+| [v2.2](CHANGELOG.md#v22-2026-08-30) | 2026-08-30 | CLI 视觉重设计：语义主题 / 结果卡片 / 搜索式选择器 |
+| [v2.1](CHANGELOG.md#v21-2026-08-29) | 2026-08-29 | Agent 能力爆发：持久目标 / 子代理 / 会话日志与恢复 / 知识库 / 浏览器自动化 |
+| [v2.0](CHANGELOG.md#v20-2026-08-25) | 2026-08-25 | 安全与执行边界：三值闸门 / SSRF 绑定 / docker + Job Object 沙箱 / 出站白名单 |
+| [v1.2](CHANGELOG.md#v12-2026-08-21-08-24) | 2026-08-21 ~ 08-24 | CLI 体验与工具体系：i18n / 注册表单点声明 / 默认 readonly / 品牌与动画 |
+| [v1.1](CHANGELOG.md#v11-2026-08-20) | 2026-08-20 | 真实工具落地：联网搜索 / SQLite / 浏览器 / 图像生成 / open·edit |
+| [v1.0](CHANGELOG.md#v10-2026-08-19) | 2026-08-19 | 初版：执行层 + Claude Code 风格终端 + 登录页 |
+
+每个版本做了什么（新增 / 改进 / 修复 / 安全，含当时的断言规模）见 **[`CHANGELOG.md`](CHANGELOG.md)**。
 
 ## 许可
 
