@@ -15,7 +15,7 @@
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue">
   <img alt="Dependencies" src="https://img.shields.io/badge/core%20deps-zero-orange">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <a href="CHANGELOG.md"><img alt="Latest" src="https://img.shields.io/badge/latest-v3.5%20(2026--09--05)-brightgreen"></a>
+  <a href="CHANGELOG.md"><img alt="Latest" src="https://img.shields.io/badge/latest-v3.6%20(2026--09--05)-brightgreen"></a>
   <a href="CHANGELOG.md"><img alt="Changelog" src="https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-CHANGELOG-blue"></a>
 </p>
 
@@ -488,6 +488,7 @@ ACE 从 2026-08 至今的迭代脉络（版本号为开发阶段代称，未打 
 
 | 版本 | 时间 | 主题 |
 |---|---|---|
+| [v3.6](CHANGELOG.md#v36-2026-09-05) | 2026-09-05 | UI 交互(/thinking+F4·方块提示符·内置滚动引擎)、ace_doctor、issue 模板、启动器/VT 修复 |
 | [v3.5](CHANGELOG.md#v35-2026-09-05) | 2026-09-05 | Q-10 错误码唯一目录 + 403 语义集中判定（开发中） |
 | [v3.4](CHANGELOG.md#v34-2026-09-05) | 2026-09-05 | test_all SKIPPED 通道(--strict)+ requests 能力探测;受限环境全绿(942/942·跳过8) |
 | [v3.3](CHANGELOG.md#v33-2026-09-05) | 2026-09-05 | P1 质量收尾：ruff 扩选+清死导入、bench 健康门、临时目录健壮性、ace.cmd 探测、文档数字去硬编码、e2e 重试、version.py/SECURITY/PR 模板 |
