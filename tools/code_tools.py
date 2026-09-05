@@ -4,14 +4,13 @@
 
 import ast
 import os
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 from tools.base import MAX_CODE_LENGTH
 from tools.docker_sandbox import DockerUnavailable

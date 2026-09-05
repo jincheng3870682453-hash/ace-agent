@@ -18,8 +18,8 @@ bench_core.py —— ACE 核心能力实测基准（纯标准库，不联网，�
     guardian   快照-回滚：字节一致性与耗时
     memory     SimHash 记忆：吞吐与基础语义
 
-退出码恒为 0（基准如实报告，不因机器慢而红 CI）；
-checks 段的 pass/fail 反映功能正确性。
+退出码：**正确性 check 失败 → 1**（CI 的 bench 健康门由此生效）；
+性能指标只如实记录、不设阈值（不因机器慢而红 CI）。
 """
 
 import json
@@ -362,3 +362,7 @@ md += ["", "_本报告由 benchmarks/bench_core.py 在本机实测生成，指�
 print(f"\n✅ 正确性: {passed}/{total} 通过")
 print(f"📄 报告: {OUT_DIR / 'bench_report.md'}")
 print(f"📦 JSON: {OUT_DIR / 'bench_report.json'}")
+# 正确性失败即红（CI bench 健康门）；性能指标不参与判定
+if passed < total:
+    print(f"❌ 基准正确性检查失败 {total - passed} 项，详见报告")
+    sys.exit(1)

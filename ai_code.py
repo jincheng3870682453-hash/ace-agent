@@ -55,7 +55,6 @@ FOLDER = Path(__file__).resolve().parent
 sys.path.insert(0, str(FOLDER))
 
 from execution_layer import ExecutionLayer  # noqa: E402
-from ace_sessionlog import SessionLog  # noqa: E402
 from ace_cards import status_mark, tool_card  # noqa: E402
 try:
     from ace_selector import run_selector  # noqa: E402
@@ -65,7 +64,7 @@ from agent_runner import (ERROR_STATUSES, GRANT_DENY, GRANT_SESSION,  # noqa: E4
                           PROMPT_EXEC_EXCEPTION, PROMPT_ERROR_RETRY,
                           PROMPT_PLAN_APPROVED, PROMPT_TOOL_RESULT,
                           PROMPT_UNVERIFIED_CLAIM,
-                          ModelProvider, TOOLS, ask_grant, ask_yes_no,
+                          ModelProvider, ask_grant, ask_yes_no,
                           claims_completed_action,
                           content_to_tool_protocol, final_reply_protocol,
                           load_system_prompt, render_result, render_tool_result,

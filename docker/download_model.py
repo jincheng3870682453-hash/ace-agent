@@ -5,7 +5,6 @@ download_model.py —— 下载 Qwen2.5-VL-3B GGUF 模型
   python download_model.py          # 下载到 ./models/
   python download_model.py /path    # 下载到指定目录
 """
-import os
 import sys
 import urllib.request
 from pathlib import Path

@@ -10,7 +10,6 @@ Universal Document Parser v2.0 (N合一文档解析器)
 """
 
 import os
-import re
 import sys
 import json
 import shutil
@@ -64,7 +63,7 @@ def _lazy_import(name: str):
             elif name == "pandas":
                 import pandas as _mod
                 _LAZY_MODULES[name] = _mod
-        except ImportError as e:
+        except ImportError:
             _LAZY_MODULES[name] = None
     return _LAZY_MODULES[name]
 

@@ -24,25 +24,17 @@ execution_layer.py —— Agent 执行层（完整版）
     result = el.process_agent_output(agent_output_text, user_input="帮我写代码")
 """
 
-import os
 import re
-import ast
 import sys
-import html
 import json
-import shutil
 import time
-import tempfile
-import ipaddress
-import urllib.parse
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
 
-from tools import ExecutionResult, ToolExecutor, repair_backslash_json
+from tools import ToolExecutor, repair_backslash_json
 from ace_isolation import wrap_untrusted
-from ace_sessionlog import (K_PERMISSION, K_SNAPSHOT_CREATE, K_SNAPSHOT_ROLLBACK,
-                            K_TOOL_CALL, K_TOOL_RESULT, SessionLog)
+from ace_sessionlog import (K_SNAPSHOT_CREATE, K_SNAPSHOT_ROLLBACK,
+                            SessionLog)
 import ace_execpolicy as execpolicy  # noqa: E402
 
 # ============================================================

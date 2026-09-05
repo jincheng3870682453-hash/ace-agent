@@ -3,7 +3,7 @@
 """tools.notify_tools —— 通知工具（notify_send：console/file/toast/email）"""
 
 import time
-from typing import Any, Dict
+from typing import Dict
 
 from tools.result import ExecutionResult
 

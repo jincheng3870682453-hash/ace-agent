@@ -84,9 +84,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff
-      # 只查语法错误/未定义名/被破坏的表达式等硬错误（E9/F63/F7/F82），
-      # 不做风格强制，避免因换行宽度等导致 CI 红；ruff 尊重 .gitignore 自动跳过 .test_tmp
-      - run: ruff check . --select E9,F63,F7,F82
+      # 硬错误集 + 死导入/未用变量/无比较比较。F401/F841 用 ruff --fix 自动清理，
+      # 提交前本地保持零命中；ruff 尊重 .gitignore 自动跳过 .test_tmp
+      - run: ruff check . --select E9,F63,F7,F82,F401,F841,E711,F811
 
   bench:
     name: Benchmark health (--quick)

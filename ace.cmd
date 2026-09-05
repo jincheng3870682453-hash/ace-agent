@@ -7,4 +7,14 @@ chcp 65001 >nul
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 cd /d "%~dp0"
-"C:\aider_env\Scripts\python.exe" ai_code.py --tools --max-history 12 %*
+
+rem 解释器探测（不再硬编码某台机器的路径；优先 python，其次 py -3 启动器）
+set "_ACE_PY="
+where python >nul 2>nul && set "_ACE_PY=python"
+if not defined _ACE_PY (where py >nul 2>nul && set "_ACE_PY=py -3")
+if not defined _ACE_PY (
+    echo [ACE] 未找到 Python。请安装 Python 3.10+ 并勾选 "Add python.exe to PATH"，或把 ace.cmd 第 8 行改成你的解释器路径。
+    pause
+    exit /b 1
+)
+%_ACE_PY% ai_code.py --tools --max-history 12 %*

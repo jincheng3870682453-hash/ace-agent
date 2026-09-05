@@ -47,7 +47,7 @@ v7.0 主要改进：
 
 ## 实测基准（取代早期「性能对比」）
 
-> 早期版本对比表（如「代码理解深度 +200%」「测试覆盖率 +80%」）属于**不可复现的预估数字**，已移除。代码的真实能力请以实测为准——执行层的正确率与耗时由 [`benchmarks/bench_core.py`](../../benchmarks/bench_core.py) 一键复现（纯标准库、不联网），报告存于 [`benchmarks/results/bench_report.md`](../../benchmarks/results/bench_report.md)。
+> 早期版本对比表（如「代码理解深度 +200%」「测试覆盖率 +80%」）属于**不可复现的预估数字**，已移除。代码的真实能力请以实测为准——执行层的正确率与耗时由 [`benchmarks/bench_core.py`](../../benchmarks/bench_core.py) 一键复现（纯标准库、不联网；本机运行后生成 `benchmarks/results/bench_report.md`，该目录不入库）。
 
 本机实测摘要（2026-09-05 · Windows 11 x64 · Python 3.12.14，样本与完整说明见报告）：
 

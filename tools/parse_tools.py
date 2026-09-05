@@ -4,7 +4,7 @@
 
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 from tools.base import sensitive_target
 from tools.result import ExecutionResult

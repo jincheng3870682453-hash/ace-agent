@@ -22,7 +22,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List
 
 # 事件种类（与 DSH SessionEventMap 对齐的 ACE 子集）
 K_USER_MESSAGE = "user/message"          # 到达模型的用户输入（含注入的记忆/目标续跑）

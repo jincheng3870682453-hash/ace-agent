@@ -78,7 +78,7 @@ def run_confirmed(el, tool: str, user: str = "测试输入", **params):
 # ============================================================
 print("[1] gateway_v2 —— L1/L2/L4/L5 四层网关")
 # ============================================================
-from gateway_v2 import WordGateway, GuardViolation, Intent  # noqa: E402
+from gateway_v2 import WordGateway, Intent  # noqa: E402
 
 import gateway_v2.flywheel  # noqa: E402
 import gateway_v2.guard  # noqa: E402
@@ -3516,9 +3516,8 @@ except OSError:
 # ============================================================
 print("[25] goal 状态机 —— 持久化目标（revision CAS / blocked 白名单 / 轮次驱动）")
 # ============================================================
-from tools.goal_tools import GoalStore, GoalError  # noqa: E402
-from tools.goal_tools import (BLOCKED_CODES, NOT_BLOCKED_CODES,
-                              PHASE_ACTIVE, PHASE_BLOCKED,
+from tools.goal_tools import GoalStore  # noqa: E402
+from tools.goal_tools import (PHASE_ACTIVE, PHASE_BLOCKED,
                               PHASE_COMPLETE, PHASE_PAUSED)  # noqa: E402
 
 _groot = Path(tempfile.mkdtemp(prefix="ace_goal_"))
@@ -3765,7 +3764,6 @@ check("/audit 类型过滤", "tool/call" in _bufa3.getvalue()
 # ============================================================
 print("[27] 子代理 —— spawn/fork 独立上下文（阶段 1：纯生成，不调工具）")
 # ============================================================
-from tools.subagent_tools import SubagentTools  # noqa: E402
 
 # 无 hook：501（脱离 CLI 环境）
 _el_sa = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
@@ -3829,7 +3827,6 @@ if _sub_files:
 print("[28] 浏览器自动化 —— Playwright 受控页面（navigate / click / type）")
 # ============================================================
 from types import SimpleNamespace as _NS  # noqa: E402
-from tools import ToolExecutor as _TE_BR  # noqa: E402
 
 _el_br = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
                         config={"bait": {"enabled": False}})

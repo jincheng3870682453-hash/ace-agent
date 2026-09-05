@@ -32,3 +32,6 @@ executor/executor.exe
 # 日志与临时文件
 *.log
 *.tmp
+
+# 基准报告本机生成、不入库（CI bench 任务在工作区自产自销）
+benchmarks/results/
