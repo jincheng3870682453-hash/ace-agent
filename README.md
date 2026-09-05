@@ -436,7 +436,10 @@ ace-agent/
 │   ├── ADR.md                  #   架构决策记录（内联序列 001-006）
 │   ├── ADR-002-executor-boundary.md  #   执行器进程边界 / NDJSON 协议 / Windows 沙箱选型
 │   ├── prompt-engineering/     #   提示词工程规范文档 v1→v7 + 上下文包（历史归档，独立版 v7 与 prompts/ 运行时版并存）
-│   ├── SECURITY-AUDIT.md       #   安全审计（OWASP + STRIDE，P0 全修复记录）
+│   ├── SECURITY-AUDIT.md       #   安全审计（OWASP + STRIDE；部分条目与现码漂移，以代码为准，见 BACKLOG SEC-*）
+│   ├── DEVELOPMENT.md          #   开发者标准化流程（改代码到推送的八步 + 新增工具八步清单）
+│   ├── INTERFACES.md           #   接口与类型契约（文本协议/状态码/注册表/权限模型/网络）
+│   ├── BACKLOG.md              #   待办事项（P0 安全 / P1 快速项 / P2 结构 / REL）
 │   ├── codex_research.md       #   Codex 源码调研（45+ 可借鉴设计）
 │   └── dsh_research.md         #   DeepSeek Harness 源码调研（62 项可借鉴设计）
 
@@ -463,6 +466,7 @@ python demo/record_demo.py --check          # 只校验动画是否还和当前�
 
 
 改动前请读 [`CONTRIBUTING.md`](CONTRIBUTING.md)（环境 / 测试 / 风格 / 提交流程）。改了行为的话，把断言旧行为的用例一起改掉——不要只加新用例。
+**开发者标准化流程 / 接口类型契约 / 待办清单**分别见 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)、[`docs/INTERFACES.md`](docs/INTERFACES.md)、[`docs/BACKLOG.md`](docs/BACKLOG.md)。
 
 Windows 提示：控制台 GBK 已做 UTF-8 兜底，但建议全局设 `PYTHONUTF8=1`。文档解析的增强依赖（python-docx / openpyxl / pdfplumber / pymupdf / pytesseract）按需装，见 `requirements.txt`；旧版 Office 格式（.doc/.xls/.ppt/.wps/.et）回退依赖系统级 LibreOffice 或 antiword。
 
