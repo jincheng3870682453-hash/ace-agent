@@ -29,7 +29,7 @@ import sys
 import json
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 from tools import ToolExecutor, repair_backslash_json
 from ace_isolation import wrap_untrusted
@@ -550,13 +550,62 @@ class ExecutionLayer:
 
     def process_agent_output(self, agent_output: str, user_input: str) -> Dict[str, Any]:
         """
-        处理 Agent 的一轮输出
+        处理 Agent 的一轮输出（阶段编排，不写业务逻辑）
+
+        每个阶段是一个 _stage_* 私有方法：只读写明确的入参/返回值，可脱离整轮
+        单独单测；阶段返回 dict 表示“本轮到此结束、直接返回该结果”，返回 None
+        表示继续下一阶段。
 
         返回标准化结果，Agent 收到后继续下一轮
         """
-        injected_memory: List[Dict] = []
+        # ① 新任务重置：用户输入变化时清空跨任务诱饵/计划/权限残留
+        self._stage_new_task(user_input)
+        # ② L1 意图识别 + L2 技能推荐（五层网关，仅新输入时计算一次）
+        route_meta = self._stage_route(user_input)
+        # ③ 解析 Agent 输出（含 Windows 路径反斜杠修复）；格式错误立即返回
+        parsed, early = self._stage_parse(agent_output)
+        if early is not None:
+            return early
+        # ④ 记录到 Archive（SimHash 记忆；prepare_context 预注入则复用缓存）
+        injected_memory = self._stage_memory(user_input)
+        # ⑤ 模式 B 最终回复：过 L4 文本守门（不套用代码风格规则）
+        early = self._stage_final_reply(parsed, user_input, injected_memory)
+        if early is not None:
+            return early
+        # ⑥ 模式 A 工具调用预检：控制工具直通 / 熔断 / Plan Mode 门禁
+        tool_call, tool_name, early = self._stage_tool_precheck(
+            parsed, user_input, route_meta)
+        if early is not None:
+            return early
+        # ⑦ 权限裁决：5.0 逐次确认闸门 → 等级判定（执行层说了算，不让 AI 预判）
+        early = self._stage_permission(tool_call, tool_name, route_meta)
+        if early is not None:
+            return early
+        # ⑧ code_execute 专属安全闸门：诱饵验证 + AST 行为检测（work.py）
+        gate_warnings, early = self._stage_code_gate(tool_call, tool_name)
+        if early is not None:
+            return early
+        # ⑨ 写入操作前创建快照（guardian.py）；本轮快照用完即清
+        round_snapshot_id = self._stage_snapshot(tool_name)
+        # ⑩ 执行工具（全链路日志：调用原始参数 + 结果）
+        result = self._stage_execute(tool_call, tool_name)
+        # ⑪ L4 输出守门：成功结果过文本/代码规则；违规回滚本轮快照
+        early = self._stage_output_guard(tool_name, result, user_input,
+                                         round_snapshot_id)
+        if early is not None:
+            return early
+        # ⑫ 诱饵重新武装 + POC 指标（成功执行后按频率再验证）
+        self._stage_bait_rearm(tool_name, result)
+        self._stage_poc_metrics(tool_name, result)
+        # ⑬ 构建返回：成功清该工具熔断计数；失败按错误码回喂示例/守门提示
+        return self._stage_result(tool_name, result, parsed, injected_memory,
+                                  round_snapshot_id, gate_warnings, route_meta)
 
-        # 0. 新任务（用户输入变化）时重置诱饵/重试状态，防止跨任务泄漏
+    # ---------- 单轮阶段（_stage_*）：每个阶段只读写明确入参/返回值 ----------
+    # 约定：返回 dict = 本轮直接返回该结果并结束；返回 None = 继续下一阶段。
+
+    def _stage_new_task(self, user_input: str) -> None:
+        """① 新任务重置：用户输入变化时清空跨任务诱饵/计划/权限残留，防止跨任务泄漏。"""
         if user_input != self.last_user_input:
             self.pending_bait = None
             self.bait_fail_count = 0
@@ -566,7 +615,9 @@ class ExecutionLayer:
             self.pending_plan = None
             self.plan_approved = False
             self.pending_permission = None
-        # 0.5 L1 意图识别 + L2 技能推荐（五层网关，仅新输入时计算一次）
+
+    def _stage_route(self, user_input: str) -> Dict[str, Any]:
+        """② L1 意图识别 + L2 技能推荐（五层网关，仅新输入时计算一次并缓存）。"""
         if self.gateway and user_input != self.last_route_input:
             try:
                 self.last_route = self.gateway.route(user_input)
@@ -579,100 +630,119 @@ class ExecutionLayer:
                 "intent": (self.last_route.get("intent") or {}).get("intent"),
                 "skills": self.last_route.get("skills") or [],
             }
+        return route_meta
 
-        # 1. 解析 Agent 输出
+    def _stage_parse(self, agent_output: str
+                     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """③ 解析 Agent 输出。返回 (parsed, early)：early 非 None = 格式错误、本轮结束。"""
         parsed = self.parser.parse(agent_output)
-        if not parsed["valid"]:
-            return {
-                "status": "FORMAT_ERROR",
-                "message": f"格式错误: {parsed['error']}",
-                "instruction": "请严格按照 <INTERNAL>...</INTERNAL><EXTERNAL>answer...</EXTERNAL> 格式输出"
-            }
+        if parsed["valid"]:
+            return parsed, None
+        return None, {
+            "status": "FORMAT_ERROR",
+            "message": f"格式错误: {parsed['error']}",
+            "instruction": "请严格按照 <INTERNAL>...</INTERNAL><EXTERNAL>answer...</EXTERNAL> 格式输出"
+        }
 
-        # 2. 记录到 Archive（SimHash 记忆；若已由 prepare_context 预注入，则复用缓存避免重复写入）
-        if self.archive:
-            if user_input != self._last_memory_input:
-                # 直接库调用/测试未走 prepare_context：此处补齐记录，记忆功能依然可用
-                self.archive.add(user_input)
-                shift = self.archive.detect_topic_shift(user_input)
-                injected_memory = (
-                    self.archive.get_memory(top_k=3, exclude_last=True)
-                    if shift == "shifted" else []
-                )
-            else:
-                injected_memory = self._last_memory_list
+    def _stage_memory(self, user_input: str) -> List[Dict]:
+        """④ 记录到 Archive（SimHash 记忆）；返回本轮注入的记忆列表（可空）。
 
-        # 3. 模式 B：最终回复（过 L4 守门，文本规则；回复为叙述性内容，不套用代码风格规则）
-        if parsed["final_reply"]:
-            guard_result = self._guard_output(parsed["final_reply"], user_input,
-                                              code_rules=False)
-            if guard_result is not None:
-                return guard_result
-            return {
-                "status": "FINAL_REPLY",
-                "message": parsed["final_reply"],
-                "internal": parsed["internal"],
-                "memory_injected": injected_memory or None
-            }
+        与 prepare_context 共用 _last_memory_* 缓存：已预注入的输入不重复写入。
+        """
+        injected_memory: List[Dict] = []
+        if not self.archive:
+            return injected_memory
+        if user_input != self._last_memory_input:
+            # 直接库调用/测试未走 prepare_context：此处补齐记录，记忆功能依然可用
+            self.archive.add(user_input)
+            shift = self.archive.detect_topic_shift(user_input)
+            injected_memory = (
+                self.archive.get_memory(top_k=3, exclude_last=True)
+                if shift == "shifted" else []
+            )
+        else:
+            injected_memory = self._last_memory_list
+        return injected_memory
 
-        # 4. 模式 A：工具调用
+    def _stage_final_reply(self, parsed: Dict[str, Any], user_input: str,
+                           injected_memory: List[Dict]) -> Optional[Dict[str, Any]]:
+        """⑤ 模式 B 最终回复：过 L4 守门（仅文本规则，不套用代码风格规则）。非模式 B 返回 None。"""
+        if not parsed["final_reply"]:
+            return None
+        guard_result = self._guard_output(parsed["final_reply"], user_input,
+                                          code_rules=False)
+        if guard_result is not None:
+            return guard_result
+        return {
+            "status": "FINAL_REPLY",
+            "message": parsed["final_reply"],
+            "internal": parsed["internal"],
+            "memory_injected": injected_memory or None
+        }
+
+    def _stage_tool_precheck(
+            self, parsed: Dict[str, Any], user_input: str,
+            route_meta: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], str, Optional[Dict[str, Any]]]:
+        """⑥ 模式 A 工具调用预检。返回 (tool_call, tool_name, early)：
+        early 非 None（格式错/控制工具直通/熔断/Plan Mode 门禁命中）时本轮结束。"""
         tool_call = parsed["tool_call"]
         if not isinstance(tool_call, dict):
-            return {
+            return None, "", {
                 "status": "FORMAT_ERROR",
                 "message": "工具调用缺失或格式错误",
                 "instruction": "模式 A 必须以 {\"tool\": \"...\"} JSON 对象输出工具调用"
             }
         tool_name = tool_call.get("tool", "")
-
         # 4.4 控制类工具熔断：plan_propose / request_permission 连续失败同样禁止
         if tool_name in ("plan_propose", "request_permission") and tool_name in self.banned_tools:
-            return {
+            return None, tool_name, {
                 "status": "TOOL_BANNED",
                 "message": f"工具 '{tool_name}' 已因连续失败被熔断，本次对话禁止再调用",
                 "instruction": "请直接执行任务或回复用户，不要再调用被熔断的工具",
                 **route_meta,
             }
-
         # 4.5 控制类工具：计划提议 / 权限申请（先于权限裁决，任何权限等级都可用）
         if tool_name == "plan_propose":
-            return self._handle_plan_propose(tool_call, user_input, parsed, route_meta)
+            return None, tool_name, self._handle_plan_propose(
+                tool_call, user_input, parsed, route_meta)
         if tool_name == "request_permission":
-            return self._handle_permission_request(tool_call, parsed, route_meta)
-
+            return None, tool_name, self._handle_permission_request(
+                tool_call, parsed, route_meta)
         # 4.6 计划未批准前禁止执行其他工具（Plan Mode 门禁）
         if self.pending_plan and not self.plan_approved:
-            return {
+            return None, tool_name, {
                 "status": "PLAN_PENDING",
                 "message": "当前有未批准的计划，请等待用户批准后再执行工具",
                 "plan": self._render_plan(),
                 "instruction": "请先等待 PLAN_PROPOSED 的批准结果",
                 **route_meta,
             }
-
         # 4.7 重复失败熔断闸门：连续失败的工具直接拒绝，防死循环
         if tool_name in self.banned_tools:
-            return {
+            return None, tool_name, {
                 "status": "TOOL_BANNED",
                 "message": f"工具 '{tool_name}' 已因连续失败被熔断，本次对话禁止再调用",
                 "instruction": "请改用其他工具完成目标，或直接向用户说明无法完成的原因，"
                                "不要再次调用被熔断的工具",
                 **route_meta,
             }
+        return tool_call, tool_name, None
 
-        # 5. 权限裁决（执行层说了算）
-        # 5.0 逐次确认闸门：CONFIRM_TOOLS 里的工具即使权限等级放行，也必须每次由人点头。
-        #     terminal_exec 属于这一类——它的危险命令黑名单可被引号 / 长选项 /
-        #     $HOME 展开 / PowerShell 别名 / python -c 绕过，策略层拦不住，最终防线是人。
-        #     临时授权用后即焚，所以"已在 temp_grants 里"= 用户刚刚已确认过本次调用，
-        #     不再重复问；等级本身不够时留给下面的 403 走常规 request_permission 流程。
-        #
-        #     这个标记必须在 can_execute() 之前取：它会消费掉 temp_grants，之后再读
-        #     永远是 False。ace_execpolicy 的 prompt 档就靠它判断"人已经点过头"。
+    def _stage_permission(self, tool_call: Dict[str, Any], tool_name: str,
+                          route_meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """⑦ 权限裁决（执行层说了算，不让 AI 预判）。
+
+        5.0 逐次确认闸门：CONFIRM_TOOLS 里的工具即使权限等级放行，也必须每次由人点头。
+        terminal_exec 属于这一类——危险命令黑名单可被引号 / 长选项 / $HOME 展开 /
+        PowerShell 别名 / python -c 绕过，策略层拦不住，最终防线是人。临时授权用后即焚，
+        所以“已在 temp_grants 里”= 用户刚刚已确认过本次调用，不再重复问。
+        这个标记必须在 can_execute() 之前取：它会消费掉 temp_grants，之后再读永远是
+        False；ace_execpolicy 的 prompt 档就靠它判断“人已经点过头”。
+        """
         self._round_confirmed = (tool_name in self.permission.temp_grants
                                  or tool_name in self.permission.session_grants)
         if (tool_name in CONFIRM_TOOLS
-
                 and tool_name not in self.permission.temp_grants
                 and tool_name in self.permission.allowed_tools(self.permission.level)):
             # on_failure 审批档 + 真实沙箱边界（docker/job）→ 先试后问：跳过逐次确认，
@@ -682,7 +752,6 @@ class ExecutionLayer:
                         and (self.executor.docker_sandbox is not None
                              or self.executor.sandbox_mode == "job"))
             # 同前缀免确认：用户之前确认过同前缀命令（且不是 BANNED 危险包装）→ 跳过确认闸门。
-            # 确认逻辑与 _exec_approval_hook 共用同一套前缀判定，避免两处口径漂移。
             _cmd = str(tool_call.get("command") or tool_call.get("code") or "")
             if not _of_fail and not self._prefix_auto_approved(_cmd):
                 preview = _cmd
@@ -723,16 +792,21 @@ class ExecutionLayer:
         if self.session_log:
             self.session_log.record_permission(
                 tool_name, "allowed", self.permission.level)
+        return None
 
-        # 6. code_execute 专属安全闸门：诱饵验证 + AST 检测（work.py）
-        gate_warnings: Optional[Dict] = None
-        if tool_name == "code_execute":
-            gate = self._gate_code_execute(tool_call)
-            if not gate["ok"]:
-                return gate["result"]
-            gate_warnings = gate.get("warnings")
+    def _stage_code_gate(self, tool_call: Dict[str, Any], tool_name: str
+                         ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """⑧ code_execute 专属安全闸门：诱饵验证 + AST 检测（work.py）。
+        返回 (gate_warnings, early)：early 非 None = 本轮被闸门终止。"""
+        if tool_name != "code_execute":
+            return None, None
+        gate = self._gate_code_execute(tool_call)
+        if not gate["ok"]:
+            return None, gate["result"]
+        return gate.get("warnings"), None
 
-        # 7. 写入操作前创建快照（guardian.py）；本轮快照用完即清，防止回滚到过期快照
+    def _stage_snapshot(self, tool_name: str) -> Optional[str]:
+        """⑨ 写入操作前创建快照（guardian.py）；本轮快照用完即清，防止回滚到过期快照。"""
         round_snapshot_id: Optional[str] = None
         if tool_name in WRITE_TOOLS and self.guardian:
             try:
@@ -744,8 +818,10 @@ class ExecutionLayer:
             except Exception:
                 round_snapshot_id = None
         self.current_snapshot_id = round_snapshot_id
+        return round_snapshot_id
 
-        # 8. 执行工具（全链路日志：调用原始参数 + 结果）
+    def _stage_execute(self, tool_call: Dict[str, Any], tool_name: str) -> Any:
+        """⑩ 执行工具（全链路日志：调用原始参数 + 结果）。"""
         if self.session_log:
             self.session_log.record_tool_call(
                 tool_name, {k: v for k, v in tool_call.items() if k != "tool"})
@@ -753,39 +829,54 @@ class ExecutionLayer:
         if self.session_log:
             self.session_log.record_tool_result(
                 tool_name, result.status, result.message)
+        return result
 
-        # 9. L4 守门检测（gateway_v2 InstinctGuard，喂原始值避免 JSON 转义漏检；
-        #    代码风格规则仅作用于生成/写入类工具，读文件等输出只过文本规则）
-        if result.status == "success":
-            if isinstance(result.data, dict):
-                output_text = "\n".join(str(v) for v in result.data.values())
-            else:
-                output_text = str(result.data)
-            code_rules = tool_name in ("code_execute", "file_write", "terminal_exec",
-                                       "terminal_view", "api_post", "db_write",
-                                       "image_generate")
-            guard_result = self._guard_output(output_text, user_input, code_rules=code_rules)
-            if guard_result is not None:
-                self._rollback_current_snapshot(round_snapshot_id)
-                self.current_snapshot_id = None
-                return guard_result
+    def _stage_output_guard(self, tool_name: str, result: Any, user_input: str,
+                            round_snapshot_id: Optional[str]
+                            ) -> Optional[Dict[str, Any]]:
+        """⑪ L4 守门检测（gateway_v2 InstinctGuard）：成功结果按工具性质过文本/代码规则。
 
-        # 10. 诱饵重新武装（每 bait_frequency 次成功执行后再次验证）
+        代码风格规则仅作用于生成/写入类工具，读文件等输出只过文本规则；违规回滚本轮快照。
+        """
+        if result.status != "success":
+            return None
+        if isinstance(result.data, dict):
+            output_text = "\n".join(str(v) for v in result.data.values())
+        else:
+            output_text = str(result.data)
+        code_rules = tool_name in ("code_execute", "file_write", "terminal_exec",
+                                   "terminal_view", "api_post", "db_write",
+                                   "image_generate")
+        guard_result = self._guard_output(output_text, user_input, code_rules=code_rules)
+        if guard_result is None:
+            return None
+        self._rollback_current_snapshot(round_snapshot_id)
+        self.current_snapshot_id = None
+        return guard_result
+
+    def _stage_bait_rearm(self, tool_name: str, result: Any) -> None:
+        """⑫ 诱饵重新武装（每 bait_frequency 次成功执行后再次验证）。"""
         if result.status == "success" and tool_name == "code_execute" and self.bait_enabled:
             self.bait_exec_count += 1
             if self.bait_frequency > 0 and self.bait_exec_count % self.bait_frequency == 0:
                 self.bait_armed = True
 
-        # 11. 生成 POC 指标（Nuwa.py）
-        if self.nuwa:
-            status = "pass" if result.status == "success" else "fail"
-            self.nuwa.add_metric("工具执行", tool_name, status)
-            self.nuwa.add_metric("响应时间", tool_name,
-                                 f"{result.metadata.get('elapsed', 0):.2f}s", "info")
-            if result.status != "success":
-                self.nuwa.add_metric("工具失败", tool_name, result.message, "warn")
+    def _stage_poc_metrics(self, tool_name: str, result: Any) -> None:
+        """⑬ 生成 POC 指标（Nuwa.py）。"""
+        if not self.nuwa:
+            return
+        status = "pass" if result.status == "success" else "fail"
+        self.nuwa.add_metric("工具执行", tool_name, status)
+        self.nuwa.add_metric("响应时间", tool_name,
+                             f"{result.metadata.get('elapsed', 0):.2f}s", "info")
+        if result.status != "success":
+            self.nuwa.add_metric("工具失败", tool_name, result.message, "warn")
 
-        # 12. 构建返回（本轮快照引用用完后立即清空，防止后续轮次误回滚）
+    def _stage_result(self, tool_name: str, result: Any, parsed: Dict[str, Any],
+                      injected_memory: List[Dict], round_snapshot_id: Optional[str],
+                      gate_warnings: Optional[Dict], route_meta: Dict[str, Any]
+                      ) -> Dict[str, Any]:
+        """⑭ 构建返回（本轮快照引用用完即清，防止后续轮次误回滚）。"""
         self.current_snapshot_id = None
         if result.status == "success":
             # 成功推进：只清空该工具的失败计数，保留其他工具的计数。
@@ -803,39 +894,37 @@ class ExecutionLayer:
                 "ast_warnings": gate_warnings,
                 **route_meta,
             }
-        else:
-            extra_instruction = None
-            if result.error_code == "403":
-                # Q-10: 语义由 base.execute 集中标记(security_denied);此处保留文案兜底兼容直连调用
-                if result.metadata.get("security_denied") or any(
-                        m in (result.message or "") for m in ("越界", "白名单", "拦截", "仅允许", "沙盒")):
-                    extra_instruction = (
-                        "这是执行层安全限制（路径越界/白名单/沙盒拦截），不是权限问题。"
-                        "请改用项目目录内的合法路径或换用其他工具，不要调用 request_permission。")
-            elif result.error_code == "409":
-                # str_replace 多匹配：这是"定位不唯一"，不是参数格式错，也不是权限问题。
-                # 明确告诉模型重试路径，否则它会去调 request_permission 或改用整文件覆盖。
+        extra_instruction = None
+        if result.error_code == "403":
+            # Q-10: 语义由 base.execute 集中标记(security_denied);此处保留文案兜底兼容直连调用
+            if result.metadata.get("security_denied") or any(
+                    m in (result.message or "") for m in ("越界", "白名单", "拦截", "仅允许", "沙盒")):
                 extra_instruction = (
-                    "old_string 命中多处，执行层已放弃写入（文件未被修改）。"
-                    "请补足唯一上下文后重试同一工具，或确认要全量替换时传 replace_all=true；"
-                    "不要退化成 file_write 整文件覆盖，也不要调用 request_permission。")
-            elif result.error_code == "400" and tool_name in TOOL_EXAMPLES:
-
-                # 参数缺失/格式错误：直接给模型一个可抄的示例
-                extra_instruction = f"参数格式示例: {TOOL_EXAMPLES[tool_name]}"
-            # 重复失败熔断：同工具同错误连续失败达阈值 → 禁止再调用
-            fail_hint = self._note_tool_failure(tool_name, result.error_code)
-            if fail_hint:
-                extra_instruction = (extra_instruction or "") + fail_hint
-            return {
-                "status": result.error_code or "ERROR",
-                "message": result.message,
-                "tool": tool_name,
-                "internal": parsed["internal"],
-                "memory_injected": injected_memory or None,
-                "instruction": extra_instruction,
-                **route_meta,
-            }
+                    "这是执行层安全限制（路径越界/白名单/沙盒拦截），不是权限问题。"
+                    "请改用项目目录内的合法路径或换用其他工具，不要调用 request_permission。")
+        elif result.error_code == "409":
+            # str_replace 多匹配：这是"定位不唯一"，不是参数格式错，也不是权限问题。
+            # 明确告诉模型重试路径，否则它会去调 request_permission 或改用整文件覆盖。
+            extra_instruction = (
+                "old_string 命中多处，执行层已放弃写入（文件未被修改）。"
+                "请补足唯一上下文后重试同一工具，或确认要全量替换时传 replace_all=true；"
+                "不要退化成 file_write 整文件覆盖，也不要调用 request_permission。")
+        elif result.error_code == "400" and tool_name in TOOL_EXAMPLES:
+            # 参数缺失/格式错误：直接给模型一个可抄的示例
+            extra_instruction = f"参数格式示例: {TOOL_EXAMPLES[tool_name]}"
+        # 重复失败熔断：同工具同错误连续失败达阈值 → 禁止再调用
+        fail_hint = self._note_tool_failure(tool_name, result.error_code)
+        if fail_hint:
+            extra_instruction = (extra_instruction or "") + fail_hint
+        return {
+            "status": result.error_code or "ERROR",
+            "message": result.message,
+            "tool": tool_name,
+            "internal": parsed["internal"],
+            "memory_injected": injected_memory or None,
+            "instruction": extra_instruction,
+            **route_meta,
+        }
 
     def _note_tool_failure(self, tool_name: str, error_code: str) -> Optional[str]:
         """记录工具连续失败，返回附加 instruction；达阈值后熔断该工具。
