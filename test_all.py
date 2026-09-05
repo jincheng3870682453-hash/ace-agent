@@ -4508,6 +4508,37 @@ _gv4 = evaluate_command("cp a b", project_root=str(_sec6_root), posix=True)
 check("SEC-06 工作区内 cp 仍 allow", _gv4.decision == "allow", _gv4.reason)
 
 
+
+# ============================================================
+print("[36] Q-10 守卫 —— error_code 唯一目录 & 403 语义集中判定")
+# ============================================================
+import ast as _ast
+from tools.status import ERROR_CODES as _EC
+_EC_FILES = sorted({str(p) for p in FOLDER.glob("*.py")}
+                   | {str(p) for p in (FOLDER / "tools").glob("*.py")}
+                   | {str(p) for p in (FOLDER / "gateway_v2").glob("*.py")})
+_viol = []
+for _f in _EC_FILES:
+    try:
+        _tree = _ast.parse(Path(_f).read_text(encoding="utf-8", errors="replace"))
+    except SyntaxError:
+        continue
+    for _n in _ast.walk(_tree):
+        if isinstance(_n, _ast.Call) and isinstance(_n.func, _ast.Name) and _n.func.id == "ExecutionResult":
+            for _kw in _n.keywords:
+                if (_kw.arg == "error_code" and isinstance(_kw.value, _ast.Constant)
+                        and isinstance(_kw.value.value, str)
+                        and _kw.value.value not in _EC):
+                    _viol.append(f"{Path(_f).name}: {_kw.value.value}")
+check("Q-10 无未登记 error_code 字面量", not _viol, "; ".join(sorted(set(_viol))[:3]))
+check("Q-10 ERROR_CODES == 8 个规范码",
+      _EC == {"400", "403", "404", "409", "500", "501", "503", "504"}, str(sorted(_EC)))
+_b64 = (FOLDER / "execution_layer.py").read_text(encoding="utf-8")
+check("Q-10 执行层 403 判定引用集中标记(security_denied)",
+      'result.metadata.get("security_denied")' in _b64
+      and "_403_SECURITY_MARKERS" in (FOLDER / "tools" / "base.py").read_text(encoding="utf-8"))
+
+
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}" + (f"  · 跳过 {len(SKIPPED)}" if SKIPPED else ""))
 if FAILED:
     print("失败项:")

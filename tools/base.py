@@ -63,6 +63,10 @@ _STARTUP_FRAGMENTS = ("start menu/programs/startup", "currentversion/run")
 # 失败，熔断回滚静默变成空操作——安全网被它要防的东西拆了。
 _AGENT_STATE_DIRNAMES = {".guardian"}
 
+# Q-10: 403 的“安全限制(路径越界/白名单/沙盒/敏感目标)”语义标记。
+# handler 可直接置 metadata["security_denied"]=True;execute 收口处会按文案兜底标记。
+_403_SECURITY_MARKERS = ("越界", "白名单", "拦截", "仅允许", "沙盒")
+
 
 
 def sensitive_target(path: "Path | str") -> Optional[str]:
@@ -362,5 +366,9 @@ class ToolExecutorBase:
             })
             if isinstance(result, ExecutionResult):
                 result.metadata.setdefault("elapsed", elapsed)
+                # Q-10: 403 的“安全限制”语义只在此判定一次,调用方不再靠中文 message 子串猜测。
+                if result.error_code == "403" and not result.metadata.get("security_denied"):
+                    if any(m in (result.message or "") for m in _403_SECURITY_MARKERS):
+                        result.metadata["security_denied"] = True
         return result
 

@@ -28,7 +28,7 @@
 | ◐ Q-07 | prompts 工具清单 ↔ registry 差集 | tools 版提示词手写 26 漏 12(kb_/skill_/goal_/subagent 等);双份 v7(14KB/21KB)漂移 | 由 TOOL_SPECS 生成 + CI diff;docs 版标 archive 或同步 | S-M |
 | Q-08 | e2e smoke 抗抖动 | 240s 单次硬超时 → 2-3 次浅提问重试 | S |
 | ✅ Q-09 | 死代码清理（BehaviorConstraint 已移除） | `work.py:326 BehaviorConstraint` 仅测试引用、AST 规则无人用;执行层死 import | S |
-| ◐ Q-10 | 错误语义与文案解耦 | 靠 message 中文子串判 403;`error_code` 自由字符串散落 ~30 处;状态码无集中常量 | error_code/status 枚举化,文案走 i18n | M |
+| ✅ Q-10 | 错误语义与文案解耦 | 靠 message 中文子串判 403;`error_code` 自由字符串散落 ~30 处;状态码无集中常量 | error_code/status 枚举化,文案走 i18n | M |
 | Q-11 | CONTRIBUTING 更新 + demo --check 入 CI + Docker run 示例补 `--project-root` | CONTRIBUTING:16“238 项”等全过期;章节号混乱 | S |
 | Q-12 | 版本单源 `__version__` + v3.1 git tag/Release | 徽章/CHANGELOG/版本表手动三份 | S-M |
 | ◐ Q-13 | `pyproject.toml`(console_scripts ace=…)或明示“源码运行” | 根目录无打包 | M |

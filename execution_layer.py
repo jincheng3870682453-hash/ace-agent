@@ -806,9 +806,9 @@ class ExecutionLayer:
         else:
             extra_instruction = None
             if result.error_code == "403":
-                if ("越界" in result.message or "白名单" in result.message
-                        or "拦截" in result.message or "仅允许" in result.message
-                        or "沙盒" in result.message):
+                # Q-10: 语义由 base.execute 集中标记(security_denied);此处保留文案兜底兼容直连调用
+                if result.metadata.get("security_denied") or any(
+                        m in (result.message or "") for m in ("越界", "白名单", "拦截", "仅允许", "沙盒")):
                     extra_instruction = (
                         "这是执行层安全限制（路径越界/白名单/沙盒拦截），不是权限问题。"
                         "请改用项目目录内的合法路径或换用其他工具，不要调用 request_permission。")
