@@ -27,6 +27,7 @@
 - ✨ 新增 `tools/status.py`：错误码唯一目录（400/403/404/409/500/501/503/504，8 个规范码）
 - ⚙️ 403“安全限制”语义在 `tools/base.execute` **集中判定一次**并写入 `metadata.security_denied`，执行层不再用中文 message 子串各自猜测
 - 🛡️ 新增 test_all [36] AST 守卫：代码库中散落的 `error_code` 字面量必须已登记，否则测试红
+- 📦 Q-13 打包结论:维持源码运行;扁平模块+__file__ 相对资源(带无 wheel 意义),待 P2 布局重构(ace/ 包 + importlib.resources)后给 console 入口;详见 docs/PACKAGING.md
 - 回归：本机 945/945 · 跳过 8（受限环境 0 失败）
 
 ## [v3.4] · 2026-09-05

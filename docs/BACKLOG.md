@@ -31,7 +31,7 @@
 | ✅ Q-10 | 错误语义与文案解耦 | 靠 message 中文子串判 403;`error_code` 自由字符串散落 ~30 处;状态码无集中常量 | error_code/status 枚举化,文案走 i18n | M |
 | Q-11 | CONTRIBUTING 更新 + demo --check 入 CI + Docker run 示例补 `--project-root` | CONTRIBUTING:16“238 项”等全过期;章节号混乱 | S |
 | Q-12 | 版本单源 `__version__` + v3.1 git tag/Release | 徽章/CHANGELOG/版本表手动三份 | S-M |
-| ◐ Q-13 | `pyproject.toml`(console_scripts ace=…)或明示“源码运行” | 根目录无打包 | M |
+| ✅ Q-13 | 打包结论（源运行;wheel 待 P2 布局重构,见 docs/PACKAGING.md） | `pyproject.toml`(console_scripts ace=…)或明示“源码运行” | 根目录无打包 | M |
 | ✅ Q-14 | locales 补齐（ja 2 键已补全） + 研究文档卫生 | ja.json 缺 2 键;codex/dsh/security 调研文档补上游 URL/许可证、脱敏本机路径 | S |
 | Q-15 | 模块 docstring 检索词/命名说明 | Archive(记忆)/Nuwa(报告)/work(诱饵+AST)名称无信息量;不强行改名,补 docstring | S |
 
