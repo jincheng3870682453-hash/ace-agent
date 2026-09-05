@@ -432,3 +432,7 @@ ACE 已有上下文压缩，缺的是：以持久化事件形式存在的锁（�
 - 信息来源：docs/subsystems/* 设计文档（英文版）+ 关键包源码直读（行号经 read/grep 核实）；4 个并行子代理分域深挖后并入本清单
 - 未覆盖：apps/web 前端 React 细节、native/ Rust 源码、vendor/ Cordis 框架内部（事件模式语义仅在文档层面引用）、lsp/mcp/terminal 等与 ACE 相关性低的子系统
 - 成本评估为相对 ACE 现有架构（Python + NDJSON IPC + Go 执行器）的粗略量级
+
+---
+> **来源与许可**：调研对象为 DeepSeek Harness（本地克隆 `deepseek-harness/`，仅作只读参考）；
+> 公开设计解析入口见仓库根 README「设计参考」。本文件是 ACE 内部设计笔记，不含上游代码。

@@ -99,3 +99,8 @@ ACE 差距总结：docker 容器用户覆盖了"身份/令牌环"大半；缺的
 - SandboxPolicy：DangerFullAccess / ReadOnly / ExternalSandbox / WorkspaceWrite（protocol.rs L1010-1057）。
 - SandboxType：LinuxSeccomp(bwrap)/MacosSeatbelt/WindowsRestrictedToken；violation 分类回馈模型（sandboxing/src/violation.rs）。
 - codex-cli/bin/codex.js = npm 启动器，平台包 @openai/codex-*-{x64,arm64}，spawn 预编译二进制。
+
+---
+> **来源与许可**：调研对象为 OpenAI Codex CLI 上游仓库 <https://github.com/openai/codex>
+> （本地克隆仅作只读参考，不随 ace 分发）。本文件是 ACE 内部设计笔记，不含上游代码；
+> 上游许可证与版权以其仓库 LICENSE 为准。

@@ -406,6 +406,7 @@ ace-agent/
 ├── ace_theme.py                # 语义调色板（dark/light 自动检测）
 ├── ace_selector.py             # 搜索式选择器（/model /provider 输入即过滤）
 ├── ace_cards.py                # 工具结果卡片（状态+参数+折叠输出）
+├── ace_doctor.py               # 环境自检（python ace_doctor.py）
 ├── executor/                   # Go 执行器：Job Object 沙箱（唯一需要 go build 的部分）
 
 ├── tools/                      # 工具执行器包（清单与权限以 tools/registry.py 为准）
@@ -463,6 +464,7 @@ ace-agent/
 python test_all.py                          # 全量测试，退出码非 0 即失败
 python benchmarks/bench_core.py             # 实测基准 → benchmarks/results/bench_report.md
 python e2e/real_model_smoke.py              # 真实模型端到端（需 ACE_E2E_* 环境变量，缺省自动跳过）
+python ace_doctor.py                          # 环境自检（Python/依赖/Go 执行器/Docker/配置）
 # 云端真实模型 e2e 进 CI:GitHub → Settings → Secrets → Actions 配 ACE_E2E_BASE_URL/ACE_E2E_API_KEY/ACE_E2E_MODEL 即自动启用
 ruff check . --select E9,F63,F7,F82         # CI 用的同一套硬错误检查
 python demo/record_demo.py                  # 重录 README 顶部的演示动画
