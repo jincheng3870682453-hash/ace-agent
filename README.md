@@ -445,6 +445,7 @@ ace-agent/
 │   ├── DEVELOPMENT.md          #   开发者标准化流程（改代码到推送的八步 + 新增工具八步清单）
 │   ├── INTERFACES.md           #   接口与类型契约（文本协议/状态码/注册表/权限模型/网络）
 │   ├── BACKLOG.md              #   待办事项（P0 安全 / P1 快速项 / P2 结构 / REL）
+│   ├── BACKLOG-P2.md            #   P2 重构立项卡(R-01~R-05 范围/验收/顺序,供新会话照做)
 │   ├── PACKAGING.md            #   打包与分发评估（Q-13 结论:源运行,布局重构后再 wheel）
 │   ├── codex_research.md       #   Codex 源码调研（45+ 可借鉴设计）
 │   └── dsh_research.md         #   DeepSeek Harness 源码调研（62 项可借鉴设计）
