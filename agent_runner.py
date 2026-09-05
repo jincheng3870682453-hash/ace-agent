@@ -119,7 +119,7 @@ TOOLS = openai_tools()  # 由 tools/registry.py 的 TOOL_SPECS 派生，勿在�
 def tools_for_permission(level: str) -> List[Dict]:
     """按权限等级裁剪发给模型的工具列表。
 
-    理由：24 个工具全量发给 7B 小模型是认知超载（记不住参数、乱选工具的根源），
+    理由：把全部工具直接发给 7B 小模型是认知超载（数量随 registry 增长）（记不住参数、乱选工具的根源），
     而 readonly 权限下写工具反正会被执行层 403 —— 让模型"看得见但用不了"
     只会诱导它去申请权限。按等级裁剪后模型只在真实可用的工具里决策。
     控制类工具（plan_propose / request_permission）任何等级都保留。

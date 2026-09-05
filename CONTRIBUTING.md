@@ -1,51 +1,52 @@
-# 贡献指南
+# 贡献指南(Contributing)
+
+> 开发流程、接口契约、待办见:`docs/DEVELOPMENT.md`(标准化八步与新增工具清单)、
+> `docs/INTERFACES.md`(接口与类型契约)、`docs/BACKLOG.md`(待办)、`README.md`(总览)。
+> 本文件只留环境与最简纪律。
 
 ## 环境准备
 
-- Python ≥ 3.10（建议 3.11/3.12）
-- 核心零第三方依赖；跑测试不需要额外安装
-- 真实模型对话需要 `requests`（`pip install requests`）
-- 可选：`prompt_toolkit`（`/` 与 `@` 实时补全菜单，`ace --install-ui`）
+- Python ≥ 3.10(建议 3.11/3.12);核心零第三方依赖,跑测试不需要额外安装
+- 真实模型对话需要 `requests`(`pip install requests`)
+- 可选:`prompt_toolkit`(`/` 与 `@` 实时补全菜单,`ace --install-ui`)
+- 本机无系统 Python 时可用 `uv`(`uv python install 3.12` 后以该解释器运行)
 
-## 跑测试
+## 跑测试与校验(提交前本地全过)
 
 ```bash
-python test_all.py
+python test_all.py                          # 全量端到端测试;退出码非 0 即失败
+python benchmarks/bench_core.py --quick     # 基准健康;正确性 check 失败退出码非 0
+ruff check . --select E9,F63,F7,F82,F401,F841,E711,F811   # CI 同款;F401/F841 用 ruff --fix
+python -m compileall -q <改动的模块>          # 编译检查
+python e2e/real_model_smoke.py              # 真实模型冒烟(需 ACE_E2E_* env,缺省跳过)
 ```
 
-所有改动必须保证 `test_all.py` 全绿（当前 238 项，纯 stdlib，无 pytest 依赖）。
+- 用例总数**随平台浮动**,不写死数字——看退出码与失败列表。
+- 受限环境(无 Go Job Object / 禁联网 / 系统临时区只读)下,测试应优雅跳过并如实标注,
+  不许假绿、不许整脚本 traceback;临时目录统一落 `.test_tmp/`。
+- 改了行为就把断言旧行为的用例一起改,不要只加新用例。
 
-## 代码风格
+## 代码纪律(摘要;细节见 docs/)
 
-- 全项目补全 `typing` 类型注解（参数、返回值、dataclass 字段）。
-- 用户可见输出用 `print` + ANSI 颜色（`c()`），内部诊断用 `logging.getLogger("ace")`。
-- 错误策略：内部逻辑用异常（`raise RuntimeError`），对外边界统一返回 `ExecutionResult`。
-- 新工具注册：`execution_layer.ToolExecutor` 增加 `_exec_xxx` + 注册到分发表，
-  同时在 `agent_runner.TOOLS`（原生工具 schema）与提示词工具清单同步。
-- 网关新增逻辑按层放入 `gateway_v2/` 包对应模块（intent/model/guard/flywheel）。
+- **工具唯一真相源 = `tools/registry.py` 的 `TOOL_SPECS`**:新增工具在 registry 加一条 +
+  实现 handler(八步清单见 `docs/DEVELOPMENT.md` §2)。禁止手写第二份
+  function schema / 权限集合 / 提示词工具清单。
+- 对外边界返回 `tools.result.ExecutionResult`;内部逻辑用异常。
+- 类型注解补全;用户可见文案走 i18n,不许用中文 message 子串承载错误语义。
+- 读/检索类工具必须过与 `file_read` 同口径的路径闸门;执行类工具不许只靠 AST 精确名
+  拦截,要叠 Go 执行器/job/docker 边界或引用级白名单(历史教训见 BACKLOG SEC-01/02)。
+- 新模块用 `ace_` 前缀、小写下划线;旧名(`Archive/Nuwa/work/...`)不再新增同类。
 
 ## 提交流程
 
-1. 从 `main` 切分支，命名 `feat/xxx` 或 `fix/xxx`。
-2. 改动后本地跑 `python test_all.py` 全绿。
-3. 提交信息用中文一句话概括 + 要点列表（参考现有 git log）。
-4. 发起 PR 到 `main`，CI 会自动跑 3.10/3.11/3.12 测试与 ruff 安全子集。
+1. 从 `main` 切分支,命名 `feat/xxx` / `fix/xxx` / `docs/xxx`。
+2. 改动后本地跑完上面"跑测试与校验"一段,全绿。
+3. 提交信息 = 中文一句话主题(带前缀)+ 要点列表(参考 git log)。
+4. push 后等 GitHub Actions:Python 3.10/3.11/3.12 全量测试 + ruff + Go×2 +
+   bench + 真实模型 e2e(secrets 门控),8 个 job 全绿才算完。
 
-## 目录结构
+## 结构速览
 
-```
-ai_code.py                     ACE CLI（登录页/REPL/斜杠命令/@ 快捷方式）
-agent_runner.py                参考引擎（LLM + 执行层循环，支持 --tools）
-execution_layer.py             执行层（协议解析/权限/工具执行/Plan Mode/权限申请）
-gateway_v2/                    网关包（L1/L2/L4/L5）
-  intent.py                    L1 意图 + L2 技能推荐
-  guard.py                     L4 本能守门
-  flywheel.py                  L5 反馈飞轮
-work.py                        诱饵工厂 + AST 检测
-guardian.py                    物理快照回滚
-Archive.py                     SimHash 记忆
-Nuwa.py                        POC 报告
-universal_document_parser.py   N 合一文档解析
-test_all.py                    端到端测试（238 项）
-docs/ADR.md                    架构决策记录
-```
+完整目录树见 `README.md`「项目结构」(以它为准,这里不重复抄以免漂移)。
+关键入口:执行层 `execution_layer.py` · 工具注册表 `tools/registry.py` ·
+交互循环 `agent_runner.py` · 前端 `ai_code.py` · 全量测试 `test_all.py`。

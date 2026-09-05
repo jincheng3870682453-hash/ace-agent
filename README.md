@@ -123,7 +123,7 @@ docker compose up               # ACE + Ollama 编排
 | 能力 | 说明 |
 |---|---|
 | 三级权限裁决 | `readonly` / `write` / `full`，工具与权限组在 `tools/registry.py` 单点声明，schema 与权限集合全部由它派生 |
-| 按权限裁剪工具表 | 发给模型的工具列表随权限档位裁剪（readonly 只给 16 个只读+控制工具）——模型只在真实可用的工具里决策，小模型不再为"看得见用不了"的写工具分心 |
+| 按权限裁剪工具表 | 发给模型的工具列表随权限档位裁剪（readonly 只给只读+控制工具（集合由 registry 派生））——模型只在真实可用的工具里决策，小模型不再为"看得见用不了"的写工具分心 |
 | **三层沙箱** | `off`（Python 层策略校验）/ `job`（Windows Job Object：进程树/内存/进程数上限 + 受限令牌）/ `docker`（一次性容器：network none + 只挂工作目录 + cap-drop ALL）。job/docker 都不做静默回退 |
 | **Go 执行器** | `terminal_exec` / `code_execute` 委派给独立 Go 进程（NDJSON 协议），Job Object 整树回收 + 第二道策略复检 |
 | **持久目标（goal）** | `goal_create` 建目标后**自动逐轮续跑**直到完成/暂停/阻塞/预算耗尽；revision CAS 防旧状态覆盖；blocked 须给机器 code（难度不算阻塞）；重启后须 `/goal resume` 才续 |
@@ -138,7 +138,7 @@ docker compose up               # ACE + Ollama 编排
 | 局部编辑 | `str_replace` 按片段替换：唯一匹配才写，多匹配报 409 让模型补上下文，缩进以文件真实缩进为准 |
 | 审批疲劳缓解 | 确认过的命令**同前缀自动放行**（`pip install` 通过后 `pip install x` 不再问）；`bash -c`/`python -c` 等危险包装永不自动放行；`on_failure` 档在沙箱边界下"先试后问" |
 | 浏览器自动化 | `browser_navigate` / `browser_click` / `browser_type`：Playwright 受控页面（系统 Edge/Chrome channel），可点击/输入 |
-| 10 家提供商 | 智谱 GLM / DeepSeek / Kimi / OpenAI / Claude / Qwen / 硅基流动 / OpenRouter / Ollama，`/provider` 一键切换 |
+| 9 家厂商 · 10 入口 | 智谱 GLM / DeepSeek / Kimi / OpenAI / Claude / Qwen / 硅基流动 / OpenRouter / Ollama，`/provider` 一键切换 |
 | 真实工具全家桶 | 联网搜索（双引擎兜底，无需 Key）、SQLite 读写、文档解析（Word/Excel/PPT/PDF/OCR）、浏览器、截图、通知、图像生成 |
 | SimHash 记忆 | 主题切换时预注入相关历史，按会话隔离 |
 | AGENTS.md 项目指令 | 项目根的约定文件（AGENTS.md/CLAUDE.md）自动发现并注入系统提示（32 KiB 预算、会话缓存）——项目所有者的规则，模型不再猜 |
@@ -229,7 +229,7 @@ flowchart TB
 | 工具 | `/open <路径>` `/edit <路径>` `/search <关键词>` `/memory` `/report` |
 
 ```bash
-/provider                   # 列出 10 家提供商（当前标 ✓）
+/provider                   # 列出 9 家厂商 · 10 入口（当前标 ✓）
 /provider zhipu             # 一键切智谱（自动换到 glm-4.7-flash）
 /provider 3 sk-你的key      # 编号 + 密钥一把梭
 ```
@@ -403,10 +403,14 @@ ace-agent/
 ├── ace_context.py              # 上下文压缩判定：保住任务锚点，中间段折成摘要
 ├── ace_executor.py             # Go 执行器客户端（NDJSON 协议，纯 stdlib）
 ├── ace_sessionlog.py           # 会话事件日志：append-only JSONL，seq 契约，深冻结，replay 重建
+├── ace_theme.py                # 语义调色板（dark/light 自动检测）
+├── ace_selector.py             # 搜索式选择器（/model /provider 输入即过滤）
+├── ace_cards.py                # 工具结果卡片（状态+参数+折叠输出）
 ├── executor/                   # Go 执行器：Job Object 沙箱（唯一需要 go build 的部分）
 
-├── tools/                      # 工具执行器包（40 个工具）
+├── tools/                      # 工具执行器包（清单与权限以 tools/registry.py 为准）
 │   ├── registry.py             #   工具唯一声明处（name / schema / 权限组 / handler）
+│   ├── result.py               #   ExecutionResult 结果类型
 │   ├── base.py                 #   共享助手 + 敏感目标判定 + execute 分发
 │   ├── file_tools.py           #   文件/终端/检索（grep/glob/str_replace）
 │   ├── code_tools.py           #   代码执行（AST 白名单 + Go 执行器/docker 边界）
@@ -416,6 +420,7 @@ ace-agent/
 │   ├── parse_tools.py          #   文档解析（Word/Excel/PPT/PDF/OCR）
 │   ├── goal_tools.py           #   持久目标状态机（revision CAS / blocked 白名单 / 轮次驱动）
 │   ├── subagent_tools.py       #   子代理（spawn/fork，独立工具执行循环）
+│   ├── skill_tools.py         #   文件式技能库（SKILL.md 目录扫描）
 │   ├── kb_tools.py             #   自定义知识库（kb_search/kb_add/kb_list）
 │   └── docker_sandbox.py       #   容器执行层（--sandbox docker）
 ├── gateway_v2/                 # 网关包：intent(L1/L2) · guard(L4) · flywheel(L5)

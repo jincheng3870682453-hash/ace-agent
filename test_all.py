@@ -38,7 +38,7 @@ TEST_TMP = FOLDER / ".test_tmp"
 TEST_TMP.mkdir(exist_ok=True)
 
 
-def mktemp() -> Path:
+def mktemp(_name: str = "") -> Path:
     d = TEST_TMP / f"tmp_{uuid.uuid4().hex[:8]}"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -1294,7 +1294,7 @@ check("Bing RSS 解析器: 标题/链接/摘要（CDATA 剥离 + 真实链接）
 
 # —— search 双通道自动切换：免 key 爬虫为主通道；配了第三方搜索 API key 时
 #    API 优先、连不上/0 条/被拒自动回退爬虫（不报错糊弄） ——
-_scr_root = str(tempfile.mkdtemp(prefix="ace_scr_"))
+_scr_root = str(mktemp("scr"))
 _no_key = ToolExecutor(project_root=_scr_root, search_api={})
 _ok_res = [{"title": "T", "url": "https://example.com/1", "snippet": "S"}]
 # A) 默认（无 key）：纯免 key 爬虫主通道，route=crawler
@@ -3324,7 +3324,7 @@ check("execution_layer 把 egress_allowlist 透给执行器",
 # ============================================================
 print("[24] 收口补齐 —— 检索落点 / 读改写编码 / 409 熔断 / SQL 连接级只读 / SMTP 出站")
 
-_h_root = Path(tempfile.mkdtemp(prefix="ace_h_"))
+_h_root = Path(mktemp("h"))
 (_h_root / "pkg").mkdir()
 (_h_root / "pkg" / "hit.py").write_text("MAGIC_TOKEN = 1\n", encoding="utf-8")
 # 项目外的"凭据"：检索绝不能把它交出来
@@ -3520,7 +3520,7 @@ from tools.goal_tools import GoalStore  # noqa: E402
 from tools.goal_tools import (PHASE_ACTIVE, PHASE_BLOCKED,
                               PHASE_COMPLETE, PHASE_PAUSED)  # noqa: E402
 
-_groot = Path(tempfile.mkdtemp(prefix="ace_goal_"))
+_groot = Path(mktemp("goal"))
 _gs = GoalStore(str(_groot))
 _ge = _TE_CLS(project_root=str(_groot))
 
@@ -3598,7 +3598,7 @@ check("complete 不能恢复 active → GOAL_BAD_TRANSITION",
       (r.error_code, r.message))
 
 # 轮次驱动 + 持久化
-_g2root = Path(tempfile.mkdtemp(prefix="ace_goal2_"))
+_g2root = Path(mktemp("goal2"))
 _gs2 = GoalStore(str(_g2root))
 _g = _gs2.create("写 README", max_rounds=3)
 check("start_round 递增轮次", _gs2.start_round().rounds_started == 1
@@ -3664,7 +3664,7 @@ from ace_sessionlog import SessionLog  # noqa: E402
 from ace_sessionlog import (K_ASSISTANT_MESSAGE, K_REQUEST_SNAPSHOT,
                             K_TOOL_RESULT, K_USER_MESSAGE)  # noqa: E402
 
-_sl_root = Path(tempfile.mkdtemp(prefix="ace_slog_"))
+_sl_root = Path(mktemp("slog"))
 _sl = SessionLog(str(_sl_root / "s.jsonl"))
 check("append 返回递增 seq", _sl.record_user("你好") == 1
       and _sl.record_assistant("你好！") == 2, _sl.tail(2))
@@ -3705,7 +3705,7 @@ from ace_sessionlog import K_PERMISSION as _K_PERM  # noqa: E402
 from ace_sessionlog import K_SYSTEM_SNAPSHOT as _K_SYS  # noqa: E402
 from ace_sessionlog import K_TOOL_CALL as _K_CALL  # noqa: E402
 from ace_sessionlog import K_SNAPSHOT_CREATE as _K_SNAP  # noqa: E402
-_slfull_root = Path(tempfile.mkdtemp(prefix="ace_slogfull_"))
+_slfull_root = Path(mktemp("slogfull"))
 _slfull_path = str(_slfull_root / "full.jsonl")
 _el_sl = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
                         config={"bait": {"enabled": False},
@@ -3877,7 +3877,7 @@ check("浏览器工具已注册（navigate/click/type）",
 # ============================================================
 print("[29] 知识库 + 联网读取 —— kb_search/kb_add/kb_list + search_read")
 # ============================================================
-_kb_root = Path(tempfile.mkdtemp(prefix="ace_kb_"))
+_kb_root = Path(mktemp("kb"))
 _el_kb = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
                         config={"bait": {"enabled": False},
                                 "kb_root": str(_kb_root)})
@@ -3937,7 +3937,7 @@ print("[30] 文件式技能库 —— skill_list / skill_load（SKILL.md 按需�
 # 用真实技能目录（G:\AI_skils）验证；不存在则用临时构造的
 _skills_dir = r"G:\AI_skils" if os.path.isdir(r"G:\AI_skils") else None
 if _skills_dir is None:
-    _skills_dir = str(Path(tempfile.mkdtemp(prefix="ace_skills_")))
+    _skills_dir = str(mktemp("skills"))
     _sk = Path(_skills_dir) / "demo-skill" / "SKILL.md"
     _sk.parent.mkdir(parents=True)
     _sk.write_text("---\nname: demo-skill\ndescription: 演示技能\n---\n\n规则：总是先说你好。\n",
@@ -4115,7 +4115,7 @@ _fk_norm = _fk_line[len("\x00MENU:"):]
 check("F 键魔数可归一化为斜杠命令", _fk_norm == "/permission", _fk_norm)
 
 # —— 会话恢复：重启后从上次会话日志重建消息历史（DSH「历史 = 日志派生」落地） ——
-_res_root = Path(tempfile.mkdtemp(prefix="ace_resume_"))
+_res_root = Path(mktemp("resume"))
 _cli_r1 = ai_code.AgentCLI({"project_root": str(_res_root), "permission": "write",
                             "bait": False, "base_url": "", "api_key": "",
                             "model": "m1", "tools": False}, mock=True)
