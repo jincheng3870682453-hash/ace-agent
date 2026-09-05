@@ -15,7 +15,7 @@
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue">
   <img alt="Dependencies" src="https://img.shields.io/badge/core%20deps-zero-orange">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <a href="CHANGELOG.md"><img alt="Latest" src="https://img.shields.io/badge/latest-v3.0%20(2026--09--05)-brightgreen"></a>
+  <a href="CHANGELOG.md"><img alt="Latest" src="https://img.shields.io/badge/latest-v3.1%20(2026--09--05)-brightgreen"></a>
   <a href="CHANGELOG.md"><img alt="Changelog" src="https://img.shields.io/badge/%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97-CHANGELOG-blue"></a>
 </p>
 
@@ -31,6 +31,8 @@
 大多数 Agent 把安全交给提示词："请不要删除文件"。ACE 不这么做：模型的每一次工具调用都要穿过一个独立的执行层，由它做权限裁决、危险行为检测、写入前快照。提示词失效时，执行层仍然拦得住。
 
 配套一个 Claude Code 风格的终端：登录页、`/` 实时补全、10 家模型提供商一键切换、流式输出。核心零第三方依赖。
+
+v3.1 起仓库收敛为单一结构：提示词工程迭代文档归档进 [`docs/prompt-engineering/`](docs/prompt-engineering/README.md)，实测基准用 [`benchmarks/bench_core.py`](benchmarks/bench_core.py) 一键复现（正确性 24/24 全绿），真实模型端到端冒烟见 [`e2e/real_model_smoke.py`](e2e/real_model_smoke.py)（CI 配 `ACE_E2E_*` secrets 后自动启用）。
 
 ## 目录
 
@@ -426,12 +428,14 @@ ace-agent/
 ├── prompts/                    # 系统提示词：v7 完整版 · v8 精简版 · tools 原生调用版
 ├── test_all.py                 # 全模块端到端测试（纯 stdlib，950+ 断言，Windows 实测 955，随平台浮动）
 ├── benchmarks/                 # 实测基准：bench_core.py 一键复现，results/ 存报告（正确率/延迟/吞吐）
+├── e2e/                         # 真实模型端到端冒烟（real_model_smoke.py，OpenAI 兼容端点）
 ├── demo/                       # README 演示动画 + 录制脚本（跑真实 --mock 会话）
 ├── assets/logo.svg             # 标识（原创几何构图，无第三方素材）
 
 ├── docs/                       # 设计文档
 │   ├── ADR.md                  #   架构决策记录（内联序列 001-006）
 │   ├── ADR-002-executor-boundary.md  #   执行器进程边界 / NDJSON 协议 / Windows 沙箱选型
+│   ├── prompt-engineering/     #   提示词工程规范文档 v1→v7 + 上下文包（历史归档，独立版 v7 与 prompts/ 运行时版并存）
 │   ├── SECURITY-AUDIT.md       #   安全审计（OWASP + STRIDE，P0 全修复记录）
 │   ├── codex_research.md       #   Codex 源码调研（45+ 可借鉴设计）
 │   └── dsh_research.md         #   DeepSeek Harness 源码调研（62 项可借鉴设计）
@@ -440,7 +444,7 @@ ace-agent/
 ├── CHANGELOG.md                # 逐版本更新日志（Keep a Changelog 风格）
 ├── docker/                     # lite / standard / full 三档整体镜像 + sandbox 执行镜像 + 模型下载脚本
 
-└── .github/workflows/ci.yml    # CI：Python 3.10/3.11/3.12 全量测试 + ruff + Go 执行器 vet/build/test/race
+└── .github/workflows/ci.yml    # CI：Python 3.10/3.11/3.12 全量测试 + ruff + Go 执行器 vet/build/test/race + bench + 真实模型 e2e（secrets 门控）
 ```
 
 ## 开发与测试
@@ -448,6 +452,7 @@ ace-agent/
 ```bash
 python test_all.py                          # 全量测试，退出码非 0 即失败
 python benchmarks/bench_core.py             # 实测基准 → benchmarks/results/bench_report.md
+python e2e/real_model_smoke.py              # 真实模型端到端（需 ACE_E2E_* 环境变量，缺省自动跳过）
 ruff check . --select E9,F63,F7,F82         # CI 用的同一套硬错误检查
 python demo/record_demo.py                  # 重录 README 顶部的演示动画
 python demo/record_demo.py --check          # 只校验动画是否还和当前输出一致
@@ -467,6 +472,7 @@ ACE 从 2026-08 至今的迭代脉络（版本号为开发阶段代称，未打 
 
 | 版本 | 时间 | 主题 |
 |---|---|---|
+| [v3.1](CHANGELOG.md#v31-2026-09-05) | 2026-09-05 | 仓库结构统一（ai angent→ace、提示词工程文档并入 docs/）+ 实测基准 benchmarks + 真实模型 e2e/CI（secrets 门控） |
 | [v3.0](CHANGELOG.md#v30-2026-09-05) | 2026-09-05 | 联网搜索双通道（API key 自动回退免 key 爬虫）+ CLI 状态热切换（F1/F2/F3、回车弹选择框） |
 | [v2.2](CHANGELOG.md#v22-2026-08-30) | 2026-08-30 | CLI 视觉重设计：语义主题 / 结果卡片 / 搜索式选择器 |
 | [v2.1](CHANGELOG.md#v21-2026-08-29) | 2026-08-29 | Agent 能力爆发：持久目标 / 子代理 / 会话日志与恢复 / 知识库 / 浏览器自动化 |
