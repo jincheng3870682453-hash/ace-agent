@@ -104,11 +104,11 @@ jobs:
           cat benchmarks/results/bench_report.md
 
   e2e-real-model:
-    # 真实模型端到端冒烟：只有仓库配了 ACE_E2E_* secrets 才跑，否则整任务跳过（不红）
+    # 真实模型端到端冒烟：未配 ACE_E2E_* secrets 时在 step 内自检跳过（不红）。
+    # 注意：secrets 不能用于 job 级 if（GitHub 限制），故走 env 传空串 + shell 自检。
     name: E2E real model (OpenAI 兼容)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ secrets.ACE_E2E_API_KEY != '' && secrets.ACE_E2E_BASE_URL != '' && secrets.ACE_E2E_MODEL != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -119,4 +119,9 @@ jobs:
           ACE_E2E_BASE_URL: ${{ secrets.ACE_E2E_BASE_URL }}
           ACE_E2E_API_KEY: ${{ secrets.ACE_E2E_API_KEY }}
           ACE_E2E_MODEL: ${{ secrets.ACE_E2E_MODEL }}
-        run: python e2e/real_model_smoke.py
+        run: |
+          if [ -z "${ACE_E2E_API_KEY}" ] || [ -z "${ACE_E2E_BASE_URL}" ] || [ -z "${ACE_E2E_MODEL}" ]; then
+            echo "未配置 ACE_E2E_BASE_URL / ACE_E2E_API_KEY / ACE_E2E_MODEL → 跳过真实模型 e2e（配好 secrets 后自动启用）"
+            exit 0
+          fi
+          python e2e/real_model_smoke.py
