@@ -25,14 +25,14 @@
 | Q-04 | README/CI 手抄数字单一来源 | “40 工具”实为 41 声明/39 暴露;“readonly 16”实为 25;agent_runner 注释“24”;“10 家提供商”实为 9 家 10 端点;断言数“238/950/955”互斥 → 一律以源码/测试输出为准或 CI 生成 | S |
 | ✅ Q-05 | `ace.cmd` 硬编码 `C:\aider_env\...` | 第 10 行,换机器必炸;改 PATH 探测 python/py | S |
 | Q-06 | CI 结构一致性校验 | README 结构树漏 ace_cards/ace_selector/ace_theme/skill_tools/result;ci.yml compileall 漏 ace_http 等 7 根模块;补“树↔文件存在性”job | S |
-| Q-07 | prompts 工具清单 ↔ registry 差集 | tools 版提示词手写 26 漏 12(kb_/skill_/goal_/subagent 等);双份 v7(14KB/21KB)漂移 | 由 TOOL_SPECS 生成 + CI diff;docs 版标 archive 或同步 | S-M |
+| ◐ Q-07 | prompts 工具清单 ↔ registry 差集 | tools 版提示词手写 26 漏 12(kb_/skill_/goal_/subagent 等);双份 v7(14KB/21KB)漂移 | 由 TOOL_SPECS 生成 + CI diff;docs 版标 archive 或同步 | S-M |
 | Q-08 | e2e smoke 抗抖动 | 240s 单次硬超时 → 2-3 次浅提问重试 | S |
 | ✅ Q-09 | 死代码清理（BehaviorConstraint 已移除） | `work.py:326 BehaviorConstraint` 仅测试引用、AST 规则无人用;执行层死 import | S |
-| Q-10 | 错误语义与文案解耦 | 靠 message 中文子串判 403;`error_code` 自由字符串散落 ~30 处;状态码无集中常量 | error_code/status 枚举化,文案走 i18n | M |
+| ◐ Q-10 | 错误语义与文案解耦 | 靠 message 中文子串判 403;`error_code` 自由字符串散落 ~30 处;状态码无集中常量 | error_code/status 枚举化,文案走 i18n | M |
 | Q-11 | CONTRIBUTING 更新 + demo --check 入 CI + Docker run 示例补 `--project-root` | CONTRIBUTING:16“238 项”等全过期;章节号混乱 | S |
 | Q-12 | 版本单源 `__version__` + v3.1 git tag/Release | 徽章/CHANGELOG/版本表手动三份 | S-M |
-| Q-13 | `pyproject.toml`(console_scripts ace=…)或明示“源码运行” | 根目录无打包 | M |
-| Q-14 | locales 补齐 + 研究文档卫生 | ja.json 缺 2 键;codex/dsh/security 调研文档补上游 URL/许可证、脱敏本机路径 | S |
+| ◐ Q-13 | `pyproject.toml`(console_scripts ace=…)或明示“源码运行” | 根目录无打包 | M |
+| ✅ Q-14 | locales 补齐（ja 2 键已补全） + 研究文档卫生 | ja.json 缺 2 键;codex/dsh/security 调研文档补上游 URL/许可证、脱敏本机路径 | S |
 | Q-15 | 模块 docstring 检索词/命名说明 | Archive(记忆)/Nuwa(报告)/work(诱饵+AST)名称无信息量;不强行改名,补 docstring | S |
 
 ## P2 — 结构级(择机)

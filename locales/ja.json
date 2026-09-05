@@ -178,5 +178,7 @@
   "net_usage": "使い方: /net で on/off を選択、または /net on|off",
   "sandbox_set": "サンドボックス段階を切替: {mode}（セッション・履歴・権限は維持。以後の terminal_exec / code_execute のみ影響）",
   "sandbox_usage": "使い方: /sandbox を Enter で選択、または /sandbox off|job|docker（off=ホスト実行、job=Job Object 境界、docker=使い捨てコンテナ）",
-  "banner_net": "ネットワーク: {state}（/net で切替）"
+  "banner_net": "ネットワーク: {state}（/net で切替）",
+  "unverified_claim": "  ⚠ モデルは操作完了と主張しましたが、このターンではツールを一切実行していません——実際には何も起きていません。実際にツールを呼び出すよう要求しました。",
+  "unverified_claim_final": "  ⚠ 上記の「完了」はモデルによる創作です:この会話ではツールを一切実行しておらず、ファイルシステムにも変更はありません。ツール呼び出しに対応したより大きなモデルに切り替えるか、/status で確認してください。"
 }
