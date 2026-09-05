@@ -2915,7 +2915,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     if sys.stdin.isatty() and "--input" not in sys.argv \
-            and os.environ.get("ACE_NO_ALTSCREEN") != "1":
+            and os.environ.get("ACE_ALTSCREEN") == "1":
         AgentCLI._enable_windows_vt()
         sys.stdout.write("\x1b[?1049h\x1b[?25l")
         sys.stdout.flush()
