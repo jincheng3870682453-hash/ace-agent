@@ -1900,8 +1900,30 @@ class _LandingUI:
     ]
 
     @staticmethod
+    def _enable_windows_vt() -> None:
+        """自动开启 Windows 控制台 VT 支持(旧 cmd 默认关闭 → 清屏/光标码全部失效、
+        TUI 每帧往下叠)。
+
+        Windows Terminal(带 WT_SESSION)本就支持,此调用对其无害;
+        旧 conhost/cmd 开启后 ESC[2J/ESC[H 原地生效,菜单不再"一滑全是旧画面"。
+        失败(非 Windows/被策略禁用)静默忽略——退回原有渲染行为。
+        """
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_uint32(0)
+            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        except Exception:  # noqa: BLE001 —— 仅尽力而为
+            pass
+
+    @staticmethod
     def _clear_screen() -> None:
         if sys.stdout.isatty():
+            AgentCLI._enable_windows_vt()
             sys.stdout.write("\x1b[2J\x1b[H")
             sys.stdout.flush()
 
