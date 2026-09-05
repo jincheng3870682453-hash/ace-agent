@@ -51,7 +51,7 @@
 - REL-01 建 `SECURITY.md` + Issue/PR 模板;补 GitHub topics/主页(仓库公开,description 已有)
 - REL-02 README 顶部“生产级”表述与现状对齐;关键数字动态化(Q-04)
 - REL-03 一次真实 Windows 冒烟(ace.cmd → 真机对话)→ Q-05 完成后
-- REL-04 在 GitHub 配置 `ACE_E2E_*` secrets 后,把 e2e-real-model 从“跳过”跑成真实绿(可选)
+- ✅ REL-04 云端 e2e 激活说明已落文档(README secrets 指引 + e2e 头注释);配置 ACE_E2E_* 后 CI 自动启用
 
 ## 建议顺序
 
