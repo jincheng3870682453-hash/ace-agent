@@ -264,10 +264,12 @@ _WORKSPACE_WRITE_BASES = {
     "touch",
 }
 
-# git 只读子命令（沿用 tools/base.py 的口径）
+# git 只读子命令（沿用 tools/base.py 的口径）。
+# 注意不含 config：`git config --global` 会写 ~/.gitconfig（工作区外、且可注入
+# core.sshCommand 之类执行任意命令），绝不能进 allow（SEC-06）。
 _GIT_READONLY_SUBS = {
     "status", "log", "diff", "show", "ls-files", "rev-parse", "branch",
-    "describe", "blame", "shortlog", "config",
+    "describe", "blame", "shortlog",
 }
 
 # git 写子命令中，影响只落在本地仓库、且不触发 hook 执行任意代码的
@@ -305,17 +307,11 @@ def _paths_within(argv: Sequence[str], project_root: Path, *,
     """
     if posix is None:
         posix = os.name != "nt"
-    for tok in argv[1:]:
-        # 跳过选项。注意 `/` 的含义**依平台而定**：
-        #   Windows：`/s`、`/R`、`/Y` 是命令开关，必须跳过
-        #   POSIX：  `/tmp/x` 是绝对路径，跳过它等于把工作区外的目标当成"区内"
-        # 原实现无条件跳过 `/`，于是 Linux/macOS 上 `cp secret.txt /tmp/x` 会被判为
-        # allow 档、不经询问直接执行 —— 恰好是这个函数要防的那件事。
-        if tok.startswith("-") or (not posix and tok.startswith("/")):
-            continue
+
+    def _within(tok: str) -> Tuple[bool, str]:
+        """判定单个候选路径 token 是否落在 project_root 内（含裸相对文件名）"""
         if not _PATHLIKE_RE.search(tok) and not tok:
-            continue
-        # 不含分隔符的裸文件名（如 a.txt）视为工作区内相对路径
+            return True, ""
         candidate = Path(os.path.expanduser(tok))
         try:
             resolved = (candidate if candidate.is_absolute()
@@ -329,6 +325,27 @@ def _paths_within(argv: Sequence[str], project_root: Path, *,
             resolved.relative_to(project_root)
         except ValueError:
             return False, tok
+        return True, ""
+
+    for tok in argv[1:]:
+        # 跳过选项。注意 `/` 的含义**依平台而定**：
+        #   Windows：`/s`、`/R`、`/Y` 是命令开关，必须跳过
+        #   POSIX：  `/tmp/x` 是绝对路径，跳过它等于把工作区外的目标当成"区内"
+        # 原实现无条件跳过 `/`，于是 Linux/macOS 上 `cp secret.txt /tmp/x` 会被判为
+        # allow 档、不经询问直接执行 —— 恰好是这个函数要防的那件事。
+        if tok.startswith("-") or (not posix and tok.startswith("/")):
+            # SEC-06：`--opt=路径`（如 --target-directory=/tmp、-O/out）把路径
+            # 内嵌进单个选项 token。整 token 跳过 = 越界目标被当成"区内"，
+            # 必须把 '=' 右边的值单独过一遍路径校验。
+            _name, _sep, _value = tok.partition("=")
+            if _sep and _PATHLIKE_RE.search(_value):
+                _ok, _off = _within(_value)
+                if not _ok:
+                    return False, tok
+            continue
+        _ok, _off = _within(tok)
+        if not _ok:
+            return False, _off
     return True, ""
 
 

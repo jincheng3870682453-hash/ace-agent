@@ -114,7 +114,7 @@ TOOL_SPECS: List[ToolSpec] = [
         example='{"tool":"search","query":"Python 教程","top_k":5}',
     ),
     ToolSpec(
-        name="browser_screenshot", permission=PERM_READ, handler="_exec_browser_screenshot",
+        name="browser_screenshot", permission=PERM_WRITE, handler="_exec_browser_screenshot",
         description="截取屏幕画面保存到 .ace_shots/（需 pillow，Windows 可免依赖）",
     ),
     ToolSpec(

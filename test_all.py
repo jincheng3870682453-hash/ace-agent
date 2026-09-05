@@ -4446,6 +4446,52 @@ _sec2_key = run_agent(_sec2_el, "parse_document", path="secret.key")
 check("SEC-02 项目内敏感文件(.key) → 403", _sec2_key.get("status") == "403",
       _sec2_key.get("message"))
 
+# —— SEC-04: 快照 HMAC 默认开启 + 敏感文件不进快照 ——
+_sec4_root = mktemp()
+(_sec4_root / ".env").write_text("SECRET=1", encoding="utf-8")
+(_sec4_root / "a.txt").write_text("v1", encoding="utf-8")
+_g4 = Guardian(str(_sec4_root))
+_sid4 = _g4.snapshot("sec04")
+check("SEC-04 默认开启签名：无 key 快照也生成 meta.json.sig",
+      _sid4 is not None and (_g4.snap_dir / _sid4 / "meta.json.sig").exists())
+check("SEC-04 .env 不进快照 files/",
+      _sid4 is not None and not (_g4.snap_dir / _sid4 / "files" / ".env").exists())
+(_sec4_root / "a.txt").write_text("v2", encoding="utf-8")
+check("SEC-04 默认签名下 rollback 仍可用", _g4.rollback(_sid4))
+check("SEC-04 回滚恢复内容且 .env 原样保留",
+      (_sec4_root / "a.txt").read_text(encoding="utf-8") == "v1"
+      and (_sec4_root / ".env").read_text(encoding="utf-8") == "SECRET=1")
+_meta4 = _g4.snap_dir / _sid4 / "meta.json"
+_meta4.write_text(_meta4.read_text(encoding="utf-8").replace('"tag":', '"tamper":'),
+                  encoding="utf-8")
+check("SEC-04 默认密钥下篡改 meta 被检出", _g4.verify_snapshot(_sid4)[0] is False)
+
+# —— SEC-05: browser_screenshot 从只读降为写权限 ——
+_sec5_ro = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
+                          config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+_r5 = run_agent(_sec5_ro, "browser_screenshot")
+check("SEC-05 readonly 下 browser_screenshot → 授权请求(不再只读可达)",
+      _r5.get("status") == "PERMISSION_REQUEST", _r5.get("message"))
+_sec5_w = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                         config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+_r5w = run_agent(_sec5_w, "browser_screenshot")
+check("SEC-05 write 档不再被权限拦截",
+      _r5w.get("status") not in ("403", "PERMISSION_REQUEST"), _r5w.get("message"))
+
+# —— SEC-06: execpolicy 两个小洞（git config 免审批 / --opt=路径 整体跳过）——
+from ace_execpolicy import evaluate_command  # noqa: E402
+_sec6_root = mktemp()
+_gv = evaluate_command("git config --global user.name x",
+                       project_root=str(_sec6_root), posix=True)
+check("SEC-06 git config 不再免审批(→prompt)", _gv.decision != "allow", _gv.reason)
+_gv2 = evaluate_command("git status", project_root=str(_sec6_root), posix=True)
+check("SEC-06 git status 仍 allow", _gv2.decision == "allow", _gv2.reason)
+_gv3 = evaluate_command("cp a --target-directory=/tmp",
+                        project_root=str(_sec6_root), posix=True)
+check("SEC-06 --opt=越界路径 → 非 allow", _gv3.decision != "allow", _gv3.reason)
+_gv4 = evaluate_command("cp a b", project_root=str(_sec6_root), posix=True)
+check("SEC-06 工作区内 cp 仍 allow", _gv4.decision == "allow", _gv4.reason)
+
 
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")
 if FAILED:

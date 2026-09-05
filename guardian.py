@@ -16,9 +16,11 @@ guardian.py —— 物理快照回滚
 """
 
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import time
 import uuid
@@ -29,6 +31,23 @@ EXCLUDE_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
                 ".idea", ".vscode", ".guardian", ".agent_flywheel",
                 ".poc_reports", ".sandbox_tmp", ".test_tmp",
                 ".ace_shots", ".ace_images"}
+# SEC-04：快照是明文副本，绝不能把用户凭据/密钥文件再复制一份进 .guardian。
+# 命中这些名字的文件不进快照（也就不进 meta、不会被回滚重建）。
+_SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
+                       ".ovpn", ".ppk", ".asc")
+_SENSITIVE_BASENAMES = {".env", ".ai_code.json", ".claude.json"}
+_PRIVATE_KEY_PREFIXES = ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa")
+
+
+def _is_sensitive_file(path: Path) -> bool:
+    low = path.name.lower()
+    if low in _SENSITIVE_BASENAMES or low.startswith(".env."):
+        return True
+    if low.startswith(_PRIVATE_KEY_PREFIXES):
+        return True
+    if low.endswith(_SENSITIVE_SUFFIXES):
+        return True
+    return False
 
 
 class SnapshotError(Exception):
@@ -44,26 +63,40 @@ class Guardian:
         self.store = Path(store_dir) if store_dir else self.project_root / ".guardian"
         self.snap_dir = self.store / "snapshots"
         self.backup_dir = self.store / "rollback_backups"
-        self.signing_key = signing_key  # 配置后对快照元信息做 HMAC-SHA256 签名
+        # SEC-04：签名默认开启。显式提供 signing_key 用配置值；
+        # 否则用/建**本项目持久密钥**（存 .guardian/signing_key —— 该目录对 Agent
+        # 只读不可写删，宿主侧同用户可读）。持久化是为了让 /undo、重启后的
+        # rollback 等**另一个 Guardian 实例**能验同一批快照的签名。
+        self.store.mkdir(parents=True, exist_ok=True)
+        self.signing_key = signing_key
+        if self.signing_key is None:
+            _key_path = self.store / "signing_key"
+            if _key_path.exists():
+                self.signing_key = _key_path.read_text(encoding="utf-8").strip()
+            if not self.signing_key:
+                self.signing_key = secrets.token_hex(32)
+                _key_path.write_text(self.signing_key, encoding="utf-8")
         self.max_snapshots = max_snapshots  # 快照数量硬上限，超出自动清理最旧的
         for d in (self.snap_dir, self.backup_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def _sign(self, content: str) -> str:
         """对快照元信息做 HMAC-SHA256 签名（防伪造）"""
-        import hmac
         return hmac.new(self.signing_key.encode("utf-8"),
                         content.encode("utf-8"), hashlib.sha256).hexdigest()
 
     # ---------- 工具 ----------
 
     def _collect_files(self) -> List[Path]:
-        """收集项目完整文件树（排除构建/缓存/自身存储目录）"""
+        """收集项目完整文件树（排除构建/缓存/自身存储目录/敏感凭据文件）"""
         files: List[Path] = []
         for dirpath, dirnames, filenames in os.walk(self.project_root):
             dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
             for fn in filenames:
-                files.append(Path(dirpath) / fn)
+                p = Path(dirpath) / fn
+                if _is_sensitive_file(p):
+                    continue
+                files.append(p)
         return files
 
     @staticmethod

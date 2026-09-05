@@ -19,12 +19,15 @@
 
 ## [v3.2] · 2026-09-05（安全加固，未打 tag）
 
-**P0 安全批（BACKLOG SEC-01/02/03，来自四视角体检 + 实测复现）**
+**P0 安全批（BACKLOG SEC-01~06，来自四视角体检 + 实测复现）**
 
 - 🛡️ 修复（SEC-01，高危）：`code_execute` 沙箱只拦“调用点精确名”，`f=open`、`(lambda: exec)('…')`、`().__getattribute__('__class__')` 等别名/lambda/字符串脱壳可绕过 → 改为**危险内建引用级拦截**（`open/exec/eval/compile/__import__/input/breakpoint/globals/locals/vars/getattr/setattr/delattr` 的 Load 引用一律 403）+ 逃逸属性补 `__getattribute__`/`__getattr__`；新增 6 条绕过 payload 回归断言（含“无文件落地”“良性代码仍放行”）
 - 🛡️ 修复（SEC-02，高危）：`parse_document` 不过路径闸门，readonly 下可读项目外任意文件 → 与 `file_read` 同口径（存在文件越界/敏感目标 `.key`/`.pem` 等一律 403；不存在仍 404；项目内正常解析）；新增 4 条回归断言
 - 🛡️ 修复（SEC-03，部分）：`agent_runner --permission` 默认 `write` 与“默认 readonly”矛盾 → 默认改 `readonly`（对外发写工具的人工确认与 egress 白名单默认策略仍在 BACKLOG 跟进）
-- 回归：全量断言 931/940（本机受限环境 9 项失败均为缺 requests/禁联网等环境项，ubuntu CI 应全绿）
+- 🛡️ 修复（SEC-04，中）：快照 HMAC 默认关闭 + `.env/*.pem` 明文进 `.guardian` → 签名**默认开启**（无配置时用/建本项目持久密钥 `.guardian/signing_key`，/undo 与重启后回滚仍可验签）；敏感凭据/密钥文件（`.env*`、`*.pem/.key/.p12/…`、`id_rsa` 等）不再拷进快照；新增 5 条回归断言
+- 🛡️ 修复（SEC-05，中）：`browser_screenshot` 误归只读且无确认（截图可 OCR 外带）→ 降为写权限；readonly 下自动授权请求；新增 2 条回归断言
+- 🛡️ 修复（SEC-06，低-中）：execpolicy 两处小洞 → `git config` 移出免审批白名单（防 `--global` 写 `~/.gitconfig`/注入 hook）；`--opt=路径`（如 `cp a --target-directory=/tmp`）单 token 内嵌越界路径不再被整体跳过，选项值单独过路径校验；新增 4 条回归断言
+- 回归：全量断言 942/951（本机受限环境 9 项失败均为缺 requests/禁联网/计时抖动等环境项，ubuntu CI 应全绿）
 
 ## [v3.1] · 2026-09-05
 
