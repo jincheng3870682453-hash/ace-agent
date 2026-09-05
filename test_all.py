@@ -448,6 +448,7 @@ check("request_permission 仍生成授权请求",
 # —— 同前缀免确认（借鉴 Codex exec_policy 的"同前缀不再问"，会话级） ——
 from execution_layer import command_prefix as _cp  # noqa: E402
 from execution_layer import BANNED_AUTO_PREFIXES as _banned  # noqa: E402
+from execution_layer import RoundCtx as _RC  # noqa: E402
 check("前缀提取：2-token 小写",
       _cp("pip install numpy") == "pip install"
       and _cp("Git Clone https://x") == "git clone"
@@ -478,24 +479,27 @@ with _mockp.patch.object(el_pref.executor, "execute", return_value=_OK_RES):
     r = run_agent(el_pref, "terminal_exec", command="python -c 'print(1)'", user="前缀测试")
 check("BANNED 前缀确认过也不自动放行", r["status"] == "PERMISSION_REQUEST",
       r.get("status"))
-# 确认后记住前缀：hook 在 _round_confirmed 时记一次
+# 确认后记住前缀：hook 在 _round.confirmed 时记一次
 el_pref2 = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
                           config={"bait": {"enabled": False},
                                   "sandbox_base": str(TEST_TMP)})
 class _V:
     def __init__(self, norm): self.normalized = norm
-el_pref2._round_confirmed = True
+el_pref2._round = _RC(confirmed=True)
 _okv = el_pref2._exec_approval_hook(_V("git pull origin main"))
 check("确认后 hook 放行并记住前缀",
       _okv is True and "git pull" in el_pref2._approved_prefixes,
       (el_pref2._approved_prefixes, _okv))
-el_pref2._round_confirmed = False
+el_pref2._round = _RC(confirmed=False)
 check("同前缀未确认也自动放行（前缀已被记住）",
       el_pref2._exec_approval_hook(_V("git pull upstream")) is True, "")
-el_pref2._round_confirmed = True
+el_pref2._round = _RC(confirmed=True)
 el_pref2._exec_approval_hook(_V("bash -c 'rm -rf /'"))
 check("BANNED 前缀确认后不被记住", "bash -c" not in el_pref2._approved_prefixes,
       el_pref2._approved_prefixes)
+el_pref2._round = None
+check("hook 在轮外/无 RoundCtx 时读不到确认（fail-close）",
+      el_pref2._exec_approval_hook(_V("touch outside.txt")) is False, "")
 
 # —— on_failure 审批档（"沙箱内失败后才问"，此前声明未实现） ——
 # 有真实边界（docker/job）→ 先试后问：prompt 档不弹确认，直接让沙箱拦
@@ -538,6 +542,57 @@ r = run_agent(el_route, "datetime_now", user="帮我写一个 Python 爬虫抓�
 check("L1 意图识别接入结果", r.get("intent") == "coding", r)
 check("L2 技能推荐接入结果",
       isinstance(r.get("skills"), list) and len(r["skills"]) >= 1, r)
+
+# —— R-01 状态机化验收：阶段可脱离整轮单测 + 顺序守卫 + RoundCtx 轮末回收 ——
+# (a) 阶段可脱离整轮单测：直接调 _stage_parse，不跑工具/记忆/守门
+_el_u = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
+                       config={"bait": {"enabled": False}})
+_p_ok, _p_early = _el_u._stage_parse(
+    "<INTERNAL>\n[INTERNAL_THINKING]\n[x]\n[/INTERNAL_THINKING]\n</INTERNAL>\n"
+    "<EXTERNAL>\nanswer.\n{\"tool\": \"datetime_now\"}\n</EXTERNAL>")
+_p_bad, _p_early2 = _el_u._stage_parse("no tags at all")
+check("R-01 _stage_parse 脱离整轮单测（合法→parsed 无早退）",
+      _p_ok is not None and _p_ok["valid"] and _p_early is None, _p_early)
+check("R-01 _stage_parse 脱离整轮单测（非法→FORMAT_ERROR）",
+      _p_bad is None and _p_early2["status"] == "FORMAT_ERROR", _p_early2)
+
+# (b) _stage_permission 脱离整轮单测：显式传入 RoundCtx（不依赖 self._round）
+_ctx_pu = _RC()
+_el_pu = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
+                        config={"bait": {"enabled": False}})
+_r_pu = _el_pu._stage_permission({"tool": "terminal_exec", "command": "echo hi"},
+                                 "terminal_exec", {}, _ctx_pu)
+check("R-01 _stage_permission 脱离整轮单测（权限不足→PERMISSION_REQUEST）",
+      _r_pu is not None and _r_pu["status"] == "PERMISSION_REQUEST"
+      and _r_pu["tool"] == "terminal_exec", _r_pu)
+_ctx_pu2 = _RC()
+_el_pu2 = ExecutionLayer(project_root=str(mktemp()), permission_level="write",
+                         config={"bait": {"enabled": False}})
+_r_pu2 = _el_pu2._stage_permission({"tool": "datetime_now"}, "datetime_now", {}, _ctx_pu2)
+check("R-01 _stage_permission 放行返回 None 且确认标志写入 ctx",
+      _r_pu2 is None and _ctx_pu2.confirmed is False, (_r_pu2, _ctx_pu2))
+
+# (c) RoundCtx 轮末回收：连续整轮后实例上不残留本轮临时状态（不泄漏到下一轮）
+_el_r = ExecutionLayer(project_root=str(mktemp()), permission_level="readonly",
+                       config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+run_agent(_el_r, "datetime_now", user="ctx 回收测试 1")
+check("R-01 轮末回收 RoundCtx（_round 为 None）",
+      _el_r._round is None, _el_r._round)
+run_agent(_el_r, "datetime_now", user="ctx 回收测试 2")
+run_agent(_el_r, "datetime_now", user="ctx 回收测试 3")
+check("R-01 连续多轮后仍无上下文残留", _el_r._round is None, _el_r._round)
+
+# (d) 源码守卫：_run_round 中阶段调用顺序与文件顶部流程图一致（防无意重排/漏调）
+_r01_src = (Path(__file__).parent / "execution_layer.py").read_text(encoding="utf-8")
+_run_body = _r01_src[_r01_src.index("def _run_round"):_r01_src.index("def _stage_new_task")]
+_r01_stages = ["_stage_new_task", "_stage_route", "_stage_parse", "_stage_memory",
+               "_stage_final_reply", "_stage_tool_precheck", "_stage_permission",
+               "_stage_code_gate", "_stage_snapshot", "_stage_execute",
+               "_stage_output_guard", "_stage_bait_rearm", "_stage_poc_metrics",
+               "_stage_result"]
+_r01_idxs = [_run_body.index(s) for s in _r01_stages]
+check("R-01 _run_round 阶段顺序与流程图一致（防重排/漏调）",
+      _r01_idxs == sorted(_r01_idxs), _r01_stages)
 
 # ============================================================
 print("[8] agent_runner —— 交互循环（mock 模型离线验证）")
@@ -2644,8 +2699,8 @@ check("未确认时 hook 回 False（无人点头）",
 _r = run_confirmed(_el_pol, "terminal_exec", command="echo done > out.txt")
 check("人点头后 prompt 档命令照跑（shell 元字符也不例外）",
       _r["status"] == "SUCCESS", _r.get("message"))
-check("确认后 hook 读到的是 True（标记在 can_execute 消费 temp_grants 之前取）",
-      _el_pol._round_confirmed is True)
+check("R-01 逐次确认随轮结束即回收（RoundCtx 不泄漏到下一轮）",
+      _el_pol._round is None, _el_pol._round)
 _r = run_confirmed(_el_pol, "terminal_exec", command="rm -rf /")
 check("人点头也拦不住 forbidden 档", _r["status"] == "403", _r.get("message"))
 
@@ -2658,8 +2713,8 @@ check("正则黑名单表已被 execpolicy 取代",
 check("terminal_exec 判定走 execpolicy",
       "execpolicy.evaluate_command" in _ft_src and "execpolicy.should_execute" in _ft_src)
 check("执行层透传审批通道", "approval_hook=self._exec_approval_hook" in _el_src)
-check("_round_confirmed 取值早于 can_execute",
-      _el_src.index("self._round_confirmed = (") < _el_src.index("self.permission.can_execute("))
+check("R-01 ctx.confirmed 取值早于 can_execute（消费 temp_grants 前）",
+      _el_src.index("ctx.confirmed = (") < _el_src.index("self.permission.can_execute("))
 check("allow 档以 shell=False 执行", "target, use_shell = verdict.argv, False" in _ft_src)
 
 # ============================================================

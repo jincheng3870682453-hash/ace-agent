@@ -22,6 +22,38 @@ execution_layer.py —— Agent 执行层（完整版）
     from execution_layer import ExecutionLayer
     el = ExecutionLayer(project_root="./my_project")
     result = el.process_agent_output(agent_output_text, user_input="帮我写代码")
+
+process_agent_output 单轮状态机（阶段流程图；与 README「架构」图执行层对应）：
+
+  每轮在 RoundCtx（本轮临时状态容器，轮末回收，见下）上依次执行 _stage_* 阶段：
+  阶段返回 dict = 本轮结束、直接返回；返回 None = 继续下一阶段。
+
+    ① _stage_new_task       新任务重置（诱饵/计划/权限残留清零；跨轮状态在 self）
+    ② _stage_route          L1 意图 / L2 技能（仅新输入计算一次并缓存）
+    ③ _stage_parse          <INTERNAL>/<EXTERNAL> 解析 ──格式错→ FORMAT_ERROR
+    ④ _stage_memory         Archive 记忆记录/注入（与 prepare_context 共享缓存）
+    ⑤ _stage_final_reply    模式 B：L4 文本守门 → GUARD_VIOLATION / FINAL_REPLY
+    ⑥ _stage_tool_precheck  模式 A 预检：控制工具直通/熔断/Plan Mode
+                            → TOOL_BANNED / PLAN_PENDING
+    ⑦ _stage_permission     权限裁决：5.0 逐次确认闸门（→ ctx.confirmed）→ 等级判定
+                            → PERMISSION_REQUEST
+    ⑧ _stage_code_gate      code_execute 专属：诱饵验证 + AST 检测
+                            → BAIT_TRIGGERED / AST_FAILED（风格规则仅警告）
+    ⑨ _stage_snapshot       写前快照（guardian）→ ctx.snapshot_id
+    ⑩ _stage_execute        工具执行（tools/registry 分发 + 全链路日志）
+    ⑪ _stage_output_guard   成功结果过 L4 守门 ──违规→ 回滚 ctx.snapshot_id
+                            → GUARD_VIOLATION
+    ⑫ _stage_bait_rearm     诱饵按 bait_frequency 重武装
+    ⑬ _stage_poc_metrics    Nuwa 指标（工具执行/响应时间/失败）
+    ⑭ _stage_result         构建返回：SUCCESS / 错误码(400/403/404/409/500…)
+                            回喂示例与熔断提示
+
+  与 README「架构」图对应：解析(PARSE) → 权限(PERM) → 闸门(GATE) → 执行(EXEC)；
+  记忆(Archive)/守门(L4/L5)/快照(guardian)/报告(Nuwa) 是本层的支撑模块。
+
+RoundCtx（本轮上下文）：只承载“活在一轮内”的临时状态（confirmed / snapshot_id），
+process_agent_output 每轮创建、轮末 finally 回收；跨轮状态（授权/计划/诱饵/熔断
+计数/前缀免确认）不放进 ctx，仍挂在 ExecutionLayer 实例上。
 """
 
 import re
@@ -29,6 +61,7 @@ import sys
 import json
 import time
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 
 from tools import ToolExecutor, repair_backslash_json
@@ -383,6 +416,26 @@ class PermissionManager:
 # 主执行层
 # ============================================================
 
+
+@dataclass
+class RoundCtx:
+    """单轮上下文的显式承载（R-01）：只存放“活在一轮内”的临时状态。
+
+    - confirmed: 用户是否已就本轮调用点过头。approval hook 在工具执行期间读取
+      （经 ExecutionLayer._round）；必须在 can_execute() 之前由 _stage_permission
+      算好——can_execute 会消费临时授权（用后即焚），之后再读永远是 False。
+    - snapshot_id: 本轮写入前由 guardian 创建的快照 id；守门回滚（⑪）与结果
+      返回（⑭）共用，轮末随 ctx 一起回收，杜绝回滚到过期快照。
+
+    跨轮状态（授权/计划/诱饵/熔断计数/前缀免确认等）不属于 RoundCtx，仍挂在
+    ExecutionLayer 实例上。process_agent_output 每轮 new 一个、轮末（含异常路径）
+    经 finally 回收：本轮临时标志不得在轮与轮之间漂移。
+    """
+
+    confirmed: bool = False
+    snapshot_id: Optional[str] = None
+
+
 class ExecutionLayer:
     """
     Agent 执行层主入口
@@ -409,8 +462,9 @@ class ExecutionLayer:
             network_enabled=bool((config or {}).get("network_enabled", True)),
             search_api=(config or {}).get("search_api"),
         )
-        # 逐次确认闸门是否已就本轮调用放行；供 _exec_approval_hook 读取。
-        self._round_confirmed = False
+        # 本轮上下文（RoundCtx）：process_agent_output 每轮创建、轮末 finally 回收。
+        # _exec_approval_hook 在工具执行期间经 self._round.confirmed 判断“人已确认”。
+        self._round: Optional[RoundCtx] = None
         # 同前缀免确认白名单（会话级）：用户确认过的命令前缀，同前缀 prompt 档自动放行
         self._approved_prefixes: List[str] = []
         # 目标状态机（持久化长任务）：CLI 轮次驱动与工具共用同一个 store
@@ -458,7 +512,6 @@ class ExecutionLayer:
 
         # 状态
         self.conversation_history: List[Dict] = []
-        self.current_snapshot_id: Optional[str] = None
         self.violation_count = 0
         self.ast_fail_count = 0
         self.last_user_input = ""
@@ -495,8 +548,13 @@ class ExecutionLayer:
         为什么不干脆在工具里直接当成已批准：ToolExecutor 是公开类，可以脱离执行层
         单独构造（测试和嵌入方都这么用）。那种情况下 approval_hook 是 None，
         prompt 档一律拒绝——方向朝安全。
+
+        确认标志写在每轮的 RoundCtx（self._round.confirmed，由 _stage_permission 在
+        can_execute 之前赋值），轮末随 ctx 回收：本 hook 在轮外/异常后读不到 →
+        一律按未确认处理（fail-close）。
         """
-        if self._round_confirmed:
+        round_ctx = self._round
+        if round_ctx is not None and round_ctx.confirmed:
             # 人刚刚确认过本次调用：记住其命令前缀，后续同前缀命令免问。
             # 只在确认当下记一次（且不在 BANNED 名单时），不重复入列。
             prefix = command_prefix(verdict.normalized or "")
@@ -550,13 +608,27 @@ class ExecutionLayer:
 
     def process_agent_output(self, agent_output: str, user_input: str) -> Dict[str, Any]:
         """
-        处理 Agent 的一轮输出（阶段编排，不写业务逻辑）
+        处理 Agent 的一轮输出
 
-        每个阶段是一个 _stage_* 私有方法：只读写明确的入参/返回值，可脱离整轮
-        单独单测；阶段返回 dict 表示“本轮到此结束、直接返回该结果”，返回 None
-        表示继续下一阶段。
+        每轮 new 一个 RoundCtx（本轮临时状态容器）并交给 _run_round 编排各 _stage_*
+        阶段；轮末（含异常路径）经 finally 回收——本轮临时状态（confirmed/snapshot_id）
+        不泄漏到下一轮。阶段流程图见文件顶部 docstring（与 README 架构图对应）。
 
         返回标准化结果，Agent 收到后继续下一轮
+        """
+        ctx = RoundCtx()
+        self._round = ctx
+        try:
+            return self._run_round(ctx, agent_output, user_input)
+        finally:
+            self._round = None
+
+    def _run_round(self, ctx: RoundCtx, agent_output: str,
+                   user_input: str) -> Dict[str, Any]:
+        """单轮状态机：按 ①~⑭ 顺序执行 _stage_* 阶段（流程见文件顶部 docstring）。
+
+        阶段约定：返回 dict = 本轮结束、直接返回该结果；返回 None = 继续下一阶段。
+        ctx 只承载本轮临时状态（确认标志/本轮快照），跨轮状态直接读写 self。
         """
         # ① 新任务重置：用户输入变化时清空跨任务诱饵/计划/权限残留
         self._stage_new_task(user_input)
@@ -577,29 +649,28 @@ class ExecutionLayer:
             parsed, user_input, route_meta)
         if early is not None:
             return early
-        # ⑦ 权限裁决：5.0 逐次确认闸门 → 等级判定（执行层说了算，不让 AI 预判）
-        early = self._stage_permission(tool_call, tool_name, route_meta)
+        # ⑦ 权限裁决：5.0 逐次确认闸门（→ ctx.confirmed）→ 等级判定
+        early = self._stage_permission(tool_call, tool_name, route_meta, ctx)
         if early is not None:
             return early
         # ⑧ code_execute 专属安全闸门：诱饵验证 + AST 行为检测（work.py）
         gate_warnings, early = self._stage_code_gate(tool_call, tool_name)
         if early is not None:
             return early
-        # ⑨ 写入操作前创建快照（guardian.py）；本轮快照用完即清
-        round_snapshot_id = self._stage_snapshot(tool_name)
+        # ⑨ 写入操作前创建快照（guardian.py）→ ctx.snapshot_id（轮末回收）
+        self._stage_snapshot(tool_name, ctx)
         # ⑩ 执行工具（全链路日志：调用原始参数 + 结果）
         result = self._stage_execute(tool_call, tool_name)
-        # ⑪ L4 输出守门：成功结果过文本/代码规则；违规回滚本轮快照
-        early = self._stage_output_guard(tool_name, result, user_input,
-                                         round_snapshot_id)
+        # ⑪ L4 输出守门：成功结果过文本/代码规则；违规回滚 ctx.snapshot_id
+        early = self._stage_output_guard(tool_name, result, user_input, ctx)
         if early is not None:
             return early
-        # ⑫ 诱饵重新武装 + POC 指标（成功执行后按频率再验证）
+        # ⑫ 诱饵重新武装 + ⑬ POC 指标（成功执行后按频率再验证）
         self._stage_bait_rearm(tool_name, result)
         self._stage_poc_metrics(tool_name, result)
-        # ⑬ 构建返回：成功清该工具熔断计数；失败按错误码回喂示例/守门提示
+        # ⑭ 构建返回：成功清该工具熔断计数；失败按错误码回喂示例/守门提示
         return self._stage_result(tool_name, result, parsed, injected_memory,
-                                  round_snapshot_id, gate_warnings, route_meta)
+                                  ctx, gate_warnings, route_meta)
 
     # ---------- 单轮阶段（_stage_*）：每个阶段只读写明确入参/返回值 ----------
     # 约定：返回 dict = 本轮直接返回该结果并结束；返回 None = 继续下一阶段。
@@ -730,18 +801,19 @@ class ExecutionLayer:
         return tool_call, tool_name, None
 
     def _stage_permission(self, tool_call: Dict[str, Any], tool_name: str,
-                          route_meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                          route_meta: Dict[str, Any], ctx: RoundCtx
+                          ) -> Optional[Dict[str, Any]]:
         """⑦ 权限裁决（执行层说了算，不让 AI 预判）。
 
         5.0 逐次确认闸门：CONFIRM_TOOLS 里的工具即使权限等级放行，也必须每次由人点头。
         terminal_exec 属于这一类——危险命令黑名单可被引号 / 长选项 / $HOME 展开 /
         PowerShell 别名 / python -c 绕过，策略层拦不住，最终防线是人。临时授权用后即焚，
         所以“已在 temp_grants 里”= 用户刚刚已确认过本次调用，不再重复问。
-        这个标记必须在 can_execute() 之前取：它会消费掉 temp_grants，之后再读永远是
-        False；ace_execpolicy 的 prompt 档就靠它判断“人已经点过头”。
+        本轮确认标志写入 ctx.confirmed（approval hook 经 self._round 读取），必须在
+        can_execute() 之前取：can_execute 会消费掉 temp_grants，之后再读永远是 False。
         """
-        self._round_confirmed = (tool_name in self.permission.temp_grants
-                                 or tool_name in self.permission.session_grants)
+        ctx.confirmed = (tool_name in self.permission.temp_grants
+                         or tool_name in self.permission.session_grants)
         if (tool_name in CONFIRM_TOOLS
                 and tool_name not in self.permission.temp_grants
                 and tool_name in self.permission.allowed_tools(self.permission.level)):
@@ -805,20 +877,18 @@ class ExecutionLayer:
             return None, gate["result"]
         return gate.get("warnings"), None
 
-    def _stage_snapshot(self, tool_name: str) -> Optional[str]:
-        """⑨ 写入操作前创建快照（guardian.py）；本轮快照用完即清，防止回滚到过期快照。"""
-        round_snapshot_id: Optional[str] = None
+    def _stage_snapshot(self, tool_name: str, ctx: RoundCtx) -> None:
+        """⑨ 写入操作前创建快照（guardian.py）；快照 id 挂 ctx.snapshot_id，轮末回收。"""
+        ctx.snapshot_id = None
         if tool_name in WRITE_TOOLS and self.guardian:
             try:
-                round_snapshot_id = self.guardian.snapshot(
+                ctx.snapshot_id = self.guardian.snapshot(
                     f"before_{tool_name}_{int(time.time())}")
-                if self.session_log and round_snapshot_id:
+                if self.session_log and ctx.snapshot_id:
                     self.session_log.record_snapshot(K_SNAPSHOT_CREATE,
-                                                     round_snapshot_id, tool_name)
+                                                     ctx.snapshot_id, tool_name)
             except Exception:
-                round_snapshot_id = None
-        self.current_snapshot_id = round_snapshot_id
-        return round_snapshot_id
+                ctx.snapshot_id = None
 
     def _stage_execute(self, tool_call: Dict[str, Any], tool_name: str) -> Any:
         """⑩ 执行工具（全链路日志：调用原始参数 + 结果）。"""
@@ -832,11 +902,11 @@ class ExecutionLayer:
         return result
 
     def _stage_output_guard(self, tool_name: str, result: Any, user_input: str,
-                            round_snapshot_id: Optional[str]
-                            ) -> Optional[Dict[str, Any]]:
+                            ctx: RoundCtx) -> Optional[Dict[str, Any]]:
         """⑪ L4 守门检测（gateway_v2 InstinctGuard）：成功结果按工具性质过文本/代码规则。
 
-        代码风格规则仅作用于生成/写入类工具，读文件等输出只过文本规则；违规回滚本轮快照。
+        代码风格规则仅作用于生成/写入类工具，读文件等输出只过文本规则；违规回滚
+        本轮快照（ctx.snapshot_id），引用用完即清。
         """
         if result.status != "success":
             return None
@@ -850,8 +920,8 @@ class ExecutionLayer:
         guard_result = self._guard_output(output_text, user_input, code_rules=code_rules)
         if guard_result is None:
             return None
-        self._rollback_current_snapshot(round_snapshot_id)
-        self.current_snapshot_id = None
+        self._rollback_current_snapshot(ctx.snapshot_id)
+        ctx.snapshot_id = None
         return guard_result
 
     def _stage_bait_rearm(self, tool_name: str, result: Any) -> None:
@@ -873,11 +943,12 @@ class ExecutionLayer:
             self.nuwa.add_metric("工具失败", tool_name, result.message, "warn")
 
     def _stage_result(self, tool_name: str, result: Any, parsed: Dict[str, Any],
-                      injected_memory: List[Dict], round_snapshot_id: Optional[str],
+                      injected_memory: List[Dict], ctx: RoundCtx,
                       gate_warnings: Optional[Dict], route_meta: Dict[str, Any]
                       ) -> Dict[str, Any]:
-        """⑭ 构建返回（本轮快照引用用完即清，防止后续轮次误回滚）。"""
-        self.current_snapshot_id = None
+        """⑭ 构建返回：本轮快照引用用完即清（防止后续轮次误回滚）。"""
+        snapshot_id = ctx.snapshot_id
+        ctx.snapshot_id = None
         if result.status == "success":
             # 成功推进：只清空该工具的失败计数，保留其他工具的计数。
             # 防止模型"成功一个工具"就把失败工具的计数清零、交替绕过熔断。
@@ -889,7 +960,7 @@ class ExecutionLayer:
                 "data": result.data,
                 "elapsed": result.metadata.get("elapsed", 0),
                 "internal": parsed["internal"],
-                "snapshot_id": round_snapshot_id,
+                "snapshot_id": snapshot_id,
                 "memory_injected": injected_memory or None,
                 "ast_warnings": gate_warnings,
                 **route_meta,

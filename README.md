@@ -395,7 +395,7 @@ config = {
 ace-agent/
 ├── ai_code.py                  # 命令行前端：登录页 / REPL / 斜杠补全 / 提供商注册表 / goal 续跑 / 会话恢复
 ├── agent_runner.py             # 交互循环：模型 ↔ 执行层多轮闭环，错误自动回喂，工具结果确定性裁剪
-├── execution_layer.py          # 执行层主入口：协议解析、权限、安全闸门、Plan Mode、全链路日志
+├── execution_layer.py          # 执行层主入口：单轮 _stage_* 状态机（RoundCtx）；协议解析、权限、安全闸门、Plan Mode、全链路日志
 ├── ace_execpolicy.py           # 命令三值判定（allow / prompt / forbidden），纯函数、可单测
 ├── ace_net.py                  # 出站请求闸门：全记录校验 + pin-to-IP + 逐跳复检（SSRF）
 ├── ace_isolation.py            # 外部内容定界与来源标注（SEC-011）

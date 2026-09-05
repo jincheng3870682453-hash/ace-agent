@@ -22,12 +22,16 @@
 
 ## [v3.5] · 2026-09-05（开发中）
 
-**Q-10 错误码唯一目录 + 403 语义集中判定**
+**Q-10 错误码唯一目录 + 403 语义集中判定;P2 R-01 执行层状态机化**
 
 - ✨ 新增 `tools/status.py`：错误码唯一目录（400/403/404/409/500/501/503/504，8 个规范码）
 - ⚙️ 403“安全限制”语义在 `tools/base.execute` **集中判定一次**并写入 `metadata.security_denied`，执行层不再用中文 message 子串各自猜测
 - 🛡️ 新增 test_all [36] AST 守卫：代码库中散落的 `error_code` 字面量必须已登记，否则测试红
 - 📦 Q-13 打包结论:维持源码运行;扁平模块+__file__ 相对资源(带无 wheel 意义),待 P2 布局重构(ace/ 包 + importlib.resources)后给 console 入口;详见 docs/PACKAGING.md
+- ⚙️ P2 R-01 阶段一：`process_agent_output`（约 288 行串行）拆为 14 个 `_stage_*` 阶段编排（_stage_new_task/_stage_route/_stage_parse/_stage_memory/_stage_final_reply/_stage_tool_precheck/_stage_permission/_stage_code_gate/_stage_snapshot/_stage_execute/_stage_output_guard/_stage_bait_rearm/_stage_poc_metrics/_stage_result），每阶段只读写明确入参/返回值、可脱离整轮单测；逻辑零行为变更搬移
+- ⚙️ P2 R-01 阶段二：轮内临时实例标志（`_round_confirmed`、无读者的 `current_snapshot_id`）收敛为 `RoundCtx` 本轮上下文；process_agent_output 每轮创建、轮末 finally 回收，approval hook 经 `self._round.confirmed` 读“人已确认”，状态不再跨轮漂移/泄漏
+- 📚 execution_layer.py 顶部 docstring 新增单轮状态机流程图（与 README 架构图 PARSE→PERM→GATE→EXEC 对应）；test_all [7] 新增阶段级单测/阶段顺序守卫/上下文不泄漏断言，[19] 守卫与 hook 用例迁到 RoundCtx 口径
+- 回归：full-access `945/945 · 跳过 8`（0 失败）；受限环境与基线同为 9 项 Go 沙箱环境失败（Go Job Object 受进程沙箱限制，非 R-01 引入）
 - 回归：本机 945/945 · 跳过 8（受限环境 0 失败）
 
 ## [v3.4] · 2026-09-05
