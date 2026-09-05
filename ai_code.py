@@ -2768,7 +2768,7 @@ class AgentCLI(_AtCommands, _SlashCommands, _LandingUI):
                     key_bindings=kb,
                     bottom_toolbar=self._footer,
                     style=Style.from_dict({
-                        "prompt": "ansimagenta bold blink",
+                        "prompt": "ansimagenta bold",
                         "perm": "ansicyan bold",
                         "footer": "bg:#2b2b3c #aaaaaa",
                         "footer-dim": "bg:#2b2b3c #666666",
