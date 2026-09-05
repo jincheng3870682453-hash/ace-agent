@@ -4,6 +4,7 @@ rem Usage: ace [extra args]   e.g.  ace --input "what time is it"
 chcp 65001 >nul
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
+if not defined ACE_DIRECT_CHAT set ACE_DIRECT_CHAT=1
 cd /d "%~dp0"
 
 rem Interpreter resolution order:

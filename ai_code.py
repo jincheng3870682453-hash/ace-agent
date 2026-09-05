@@ -2907,6 +2907,10 @@ def main() -> None:
     if args.input:
         cli.converse(args.input)
         return
+    if os.environ.get("ACE_DIRECT_CHAT") == "1":
+        # 直进聊天：会话滚回缓冲里没有“登录主页”，上滑只见开场横幅+对话本身
+        cli.repl()
+        return
     if args.mock:
         cli.repl()          # 显式离线演示直接进聊天
         return
