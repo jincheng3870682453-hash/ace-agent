@@ -8,6 +8,11 @@
 
 ## R-01 · `process_agent_output` 状态机化(execution_layer.py:560-849,约 288 行)
 
+> ✅ 完成(2026-09-05):两小步提交 `aa4f472`(纯抽取 `_stage_*` 阶段编排,行为不变)+
+> `d66bf39`(轮内临时标志收敛 `RoundCtx` + 顶部 docstring 阶段流程图 + 验收断言);
+> 回归 test_all full-access `945/945 · 跳过 8`(0 失败)、bench --quick 24/24;
+> 受限环境与基线同为 9 项 Go 沙箱环境失败(非本次引入)。
+
 - 现状:单函数串 解析→记忆→熔断→权限→快照→守门→回滚→返回,并穿插
   `pending_permission` / `current_snapshot_id` / `_round_confirmed` 等临时实例标志,状态易漂移、难单测。
 - 范围:把每轮拆成显式阶段对象或至少一组私有方法(如 `_stage_parse/_stage_guard/…`),
