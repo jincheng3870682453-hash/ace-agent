@@ -4400,6 +4400,52 @@ check("highlight_match 重叠区间合并",
       ace_selector.highlight_match("abcabc", "abc abc")
       == [("sel.hl", "abcabc")], "")
 
+# ============================================================
+print("[35] 安全回归 —— SEC-01 沙箱引用级拦截 / SEC-02 parse_document 越界")
+# ============================================================
+# —— SEC-01: 危险内建"引用级"拦截（别名 / lambda 间接调用必须与直接调用同命运） ——
+_sec1_root = mktemp()
+_sec1_el = ExecutionLayer(project_root=str(_sec1_root), permission_level="write",
+                          config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+_sec1_cases = {
+    "直接 open 仍拦截": ("open('x.txt','w').write('a')", "403"),
+    "别名 f=open 拦截": ("f = open\nf('x.txt','w').write('a')", "403"),
+    "lambda 包 open 拦截": ("(lambda: open)('x.txt','w').write('a')", "403"),
+    "lambda 包 exec 拦截": ("(lambda: exec)('print(1)')", "403"),
+    "别名 e=exec 拦截": ("e = exec\ne('print(2)')", "403"),
+    "getattribute 脱壳拦截": ("().__getattribute__('__class__')", "403"),
+}
+for _sec1_name, (_sec1_code, _sec1_expect) in _sec1_cases.items():
+    _sec1_r = run_agent(_sec1_el, "code_execute", language="python", code=_sec1_code)
+    check(f"SEC-01 {_sec1_name}", _sec1_r.get("status") == _sec1_expect,
+          _sec1_r.get("message"))
+_sec1_benign = run_agent(_sec1_el, "code_execute", language="python",
+                         code="print(40 + 2)")
+check("SEC-01 良性代码仍放行",
+      _sec1_benign.get("status") == "SUCCESS"
+      and "42" in (_sec1_benign.get("data") or {}).get("stdout", ""),
+      _sec1_benign)
+check("SEC-01 拦截后无文件落地", not (_sec1_root / "x.txt").exists())
+
+# —— SEC-02: parse_document 与 file_read 同口径（只读不越界、敏感目标拒绝） ——
+_sec2_root = mktemp()
+_sec2_el = ExecutionLayer(project_root=str(_sec2_root), permission_level="readonly",
+                          config={"bait": {"enabled": False}, "sandbox_base": str(TEST_TMP)})
+(_sec2_root / "in.txt").write_text("内部内容", encoding="utf-8")
+(_sec2_root / "secret.key").write_text("fake-key", encoding="utf-8")
+_sec2_out = run_agent(_sec2_el, "parse_document", path=str(FOLDER / "execution_layer.py"))
+check("SEC-02 项目外已存在文件 → 403（不再可外带）",
+      _sec2_out.get("status") == "403", _sec2_out.get("message"))
+_sec2_miss = run_agent(_sec2_el, "parse_document", path="no_such.pdf")
+check("SEC-02 不存在文件仍报 404", _sec2_miss.get("status") == "404",
+      _sec2_miss.get("message"))
+_sec2_ok = run_agent(_sec2_el, "parse_document", path="in.txt")
+check("SEC-02 项目内文件 → SUCCESS", _sec2_ok.get("status") == "SUCCESS",
+      _sec2_ok.get("message"))
+_sec2_key = run_agent(_sec2_el, "parse_document", path="secret.key")
+check("SEC-02 项目内敏感文件(.key) → 403", _sec2_key.get("status") == "403",
+      _sec2_key.get("message"))
+
 
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}")
 if FAILED:

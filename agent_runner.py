@@ -665,7 +665,7 @@ def main() -> None:
     parser.add_argument("--api-key", help="API Key")
     parser.add_argument("--model", help="模型名")
     parser.add_argument("--project-root", default=".", help="Agent 工作目录")
-    parser.add_argument("--permission", default="write", choices=["readonly", "write", "full"])
+    parser.add_argument("--permission", default="readonly", choices=["readonly", "write", "full"])
     parser.add_argument("--no-bait", action="store_true", help="关闭诱饵验证")
     parser.add_argument("--verbose", action="store_true", help="打印每轮原始输出")
     parser.add_argument("--tools", action="store_true",

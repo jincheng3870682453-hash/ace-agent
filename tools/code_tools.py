@@ -40,7 +40,8 @@ class CodeTools:
                        "delattr", "input", "breakpoint"}
     DANGEROUS_NAMES = {"__builtins__", "__loader__", "__spec__", "__import__"}
     DANGEROUS_ATTRS = {"__class__", "__bases__", "__subclasses__", "__globals__",
-                       "__mro__", "__builtins__", "__code__", "__dict__"}
+                       "__mro__", "__builtins__", "__code__", "__dict__",
+                       "__getattribute__", "__getattr__"}
 
     @staticmethod
     def _qualname(node) -> str:
@@ -74,6 +75,11 @@ class CodeTools:
             elif isinstance(node, ast.Name):
                 if node.id in self.DANGEROUS_NAMES:
                     return f"沙箱禁止访问内建对象: {node.id}"
+                # 引用级拦截（SEC-01）：危险内建只要被“读到”就拒绝——
+                # 否则 f=open / (lambda: exec) 这类先取引用再调用的写法能绕过调用点黑名单。
+                if (isinstance(node.ctx, ast.Load)
+                        and (node.id in self.DANGEROUS_FUNCS or node.id == "open")):
+                    return f"沙箱禁止引用危险内建: {node.id}（别名/间接调用同样禁止）"
             elif isinstance(node, ast.Attribute):
                 if node.attr in self.DANGEROUS_ATTRS:
                     return f"沙箱禁止访问: .{node.attr}"
