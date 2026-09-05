@@ -22,6 +22,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows 控制台 GBK 兼容:打印含 emoji 的捕获输出前强制 UTF-8
+for _s in (sys.stdout, sys.stderr):
+    try:
+        if _s.encoding and _s.encoding.lower() not in ("utf-8", "utf8"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 FOLDER = Path(__file__).resolve().parent.parent
 
 
@@ -39,7 +47,7 @@ def main() -> int:
     )
     cmd = [sys.executable, "agent_runner.py",
            "--base-url", base, "--api-key", key, "--model", model,
-           "--input", prompt, "--permission", "readonly", "--max-history", 8]
+           "--input", prompt, "--permission", "readonly", "--max-history", "8"]
     print("运行 agent_runner（真实模型）…")
     try:
         proc = subprocess.run(cmd, cwd=FOLDER, capture_output=True, text=True,
