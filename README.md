@@ -407,6 +407,7 @@ ace-agent/
 ├── ace_selector.py             # 搜索式选择器（/model /provider 输入即过滤）
 ├── ace_cards.py                # 工具结果卡片（状态+参数+折叠输出）
 ├── ace_doctor.py               # 环境自检（python ace_doctor.py）
+├── ace_chatscroll.py            # 聊天内置滚动引擎(方案 C:视口只滚会话行)
 ├── executor/                   # Go 执行器：Job Object 沙箱（唯一需要 go build 的部分）
 
 ├── tools/                      # 工具执行器包（清单与权限以 tools/registry.py 为准）
@@ -448,6 +449,7 @@ ace-agent/
 │   ├── BACKLOG.md              #   待办事项（P0 安全 / P1 快速项 / P2 结构 / REL）
 │   ├── BACKLOG-P2.md            #   P2 重构立项卡(R-01~R-05 范围/验收/顺序,供新会话照做)
 │   ├── PACKAGING.md            #   打包与分发评估（Q-13 结论:源运行,布局重构后再 wheel）
+│   ├── UI-CHAT-SCROLL.md         #   聊天内置滚动立项卡(引擎已实现,接线待真机)
 │   ├── codex_research.md       #   Codex 源码调研（45+ 可借鉴设计）
 │   └── dsh_research.md         #   DeepSeek Harness 源码调研（62 项可借鉴设计）
 

@@ -4594,6 +4594,43 @@ check("Q-10 执行层 403 判定引用集中标记(security_denied)",
       and "_403_SECURITY_MARKERS" in (FOLDER / "tools" / "base.py").read_text(encoding="utf-8"))
 
 
+
+# ============================================================
+print("[37] ace_chatscroll —— 聊天内置滚动引擎(方案 C,纯逻辑)")
+# ============================================================
+from ace_chatscroll import ChatScroll, decode_wheel, key_to_delta  # noqa: E402
+
+_cs = ChatScroll(view_height=5)
+for _i in range(12):
+    _cs.append(f"L{_i}")
+check("缓冲 12 行入列", len(_cs.lines) == 12)
+_s, _e, _vl = _cs.view()
+check("贴底视口 = 最后 5 行", _e == 12 and len(_vl) == 5 and _vl[-1] == "L11", _vl)
+_cs.scroll_line(-3)
+check("上滚 3 行后 scroll=3 且视口上移", _cs.scroll == 3 and _cs.view()[1] == 9,
+      (_cs.scroll, _cs.view()[1]))
+_cs2 = ChatScroll(view_height=5)
+for _i in range(100):
+    _cs2.append(f"x{_i}")
+_cs2.scroll_line(-9999)
+check("上滚封顶 = max_scroll", _cs2.scroll == _cs2.max_scroll() and _cs2.view()[0] >= 0,
+      (_cs2.scroll, _cs2.max_scroll()))
+_cs2.scroll_line(9999)
+check("下滚回底", _cs2.scroll == 0 and _cs2.at_bottom())
+_cs2.page(1)
+check("PageUp 翻页上移", _cs2.scroll > 0)
+_t = ChatScroll(max_lines=3)
+for _i in range(10):
+    _t.append(f"y{_i}")
+check("超上限裁剪保留最新 3 行", len(_t.lines) == 3 and _t.lines[-1] == "y9")
+check("滚轮 SGR 上=+1", decode_wheel("\x1b[<64;10;5M") == 1)
+check("滚轮 SGR 下=-1", decode_wheel("\x1b[<65;10;5m") == -1)
+check("普通文本非滚轮=None", decode_wheel("hello") is None)
+check("鼠标左键按下不算滚动", decode_wheel("\x1b[<0;10;5M") == 0)
+check("键位映射 up 上翻", (key_to_delta("up") or 0) < 0)
+check("键位映射 pagedown 下翻", (key_to_delta("pagedown") or 0) > 0)
+
+
 print(f"通过 {len(PASSED)} / {len(PASSED) + len(FAILED)}" + (f"  · 跳过 {len(SKIPPED)}" if SKIPPED else ""))
 if FAILED:
     print("失败项:")
